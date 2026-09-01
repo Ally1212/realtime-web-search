@@ -2,6 +2,9 @@ use_default_settings:
   engines:
     keep_only:
       - bing
+      - brave
+      - duckduckgo
+      - mojeek
 
 general:
   debug: false

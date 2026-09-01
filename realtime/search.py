@@ -12,7 +12,7 @@ from .fetcher import LiveDocument
 
 INDEX_MAPPING = {
     "settings": {"index": {"number_of_shards": 1, "number_of_replicas": 0}},
-    "mappings": {"properties": {
+    "mappings": {"_source": {"excludes": ["content"]}, "properties": {
         "url": {"type": "keyword", "ignore_above": 2048},
         "title": {"type": "text"},
         "content": {"type": "text"},
@@ -23,6 +23,8 @@ INDEX_MAPPING = {
         "fetched_at": {"type": "date"},
         "http_status": {"type": "integer"},
         "content_hash": {"type": "keyword", "index": False},
+        "language": {"type": "keyword"},
+        "campaign_id": {"type": "keyword"},
     }},
 }
 
@@ -39,11 +41,13 @@ class SearchIndex:
             response = requests.put(f"{self.base_url}/{self.index_name}", json=INDEX_MAPPING, timeout=self.timeout)
         response.raise_for_status()
 
-    def bulk_index(self, documents: Iterable[LiveDocument]) -> tuple[int, list[str]]:
+    def bulk_index(self, documents: Iterable[LiveDocument | dict[str, Any]]) -> tuple[int, list[str]]:
         lines: list[str] = []
         for document in documents:
-            lines.append(json.dumps({"index": {"_index": self.index_name, "_id": document.document_id}}))
-            lines.append(json.dumps(asdict(document), ensure_ascii=False))
+            payload = dict(document) if isinstance(document, dict) else asdict(document)
+            document_id = str(payload.pop("document_id"))
+            lines.append(json.dumps({"index": {"_index": self.index_name, "_id": document_id}}))
+            lines.append(json.dumps(payload, ensure_ascii=False))
         if not lines:
             return 0, []
         response = requests.post(

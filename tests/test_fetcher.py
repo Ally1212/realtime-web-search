@@ -1,6 +1,6 @@
 import unittest
 
-from realtime.fetcher import extract_text, normalize_url
+from realtime.fetcher import detect_language, extract_text, normalize_url, relevant_to
 
 
 class FetcherTests(unittest.TestCase):
@@ -13,4 +13,13 @@ class FetcherTests(unittest.TestCase):
         self.assertEqual(text, "Example Hello world")
 
     def test_normalizes_url(self):
-        self.assertEqual(normalize_url("HTTPS://Example.COM:443/a?q=1#x"), "https://example.com/a?q=1")
+        self.assertEqual(
+            normalize_url("HTTPS://Example.COM:443/a?q=1&utm_source=x#x"),
+            "https://example.com/a?q=1",
+        )
+
+    def test_relevance_and_language(self):
+        self.assertTrue(relevant_to("Singapore released a new AI policy", "News", ("AI policy",)))
+        self.assertFalse(relevant_to("Sports results and weather", "News", ("AI policy",)))
+        self.assertFalse(relevant_to("Visit Singapore for food and culture", "Singapore", ("Singapore AI policy",)))
+        self.assertEqual(detect_language("这是一个中文网页，包含足够多的中文内容用于判断。"), "zh")

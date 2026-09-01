@@ -1,17 +1,73 @@
-# 实时网页搜索爬虫
+# Realtime Web Search
 
-输入关键词后实时调用免费搜索引擎发现 URL，再由本机并发访问原网页、提取当前正文并写入 OpenSearch。项目不读取 Common Crawl，也不使用付费 API。
+面向关键词的持续网页采集系统。使用 SearXNG、Sitemap、站内链接发现 URL，Scrapy 并发抓取，按正文指纹去重后写入 OpenSearch。目标容量为每个关键词每天 50,000 个相关唯一页面。
+
+## 组件
+
+- Scrapy：异步抓取、重试、限速和持久队列。
+- SearXNG：Bing、Brave、DuckDuckGo、Mojeek 多引擎发现。
+- PostgreSQL：Campaign、正文指纹、关键词关联和 30 天事件记录。
+- Valkey：Campaign 调度队列。
+- OpenSearch：全文索引；完整正文不保存在 `_source` 中。
+- Pekpik Proxy API：私有/公共代理池同步、健康筛选和域名级冷却。
+
+## 启动
 
 ```bash
+cp .env.example .env
+# 在 .env 中填写代理 API key、共享代理用户名和密码
 docker compose up -d --build
 ```
 
-打开 <http://localhost:8091>，输入关键词并点击“实时抓取”。
+打开 <http://localhost:8091>。默认 Campaign 使用私有代理；生产 Worker 的公网出口 IP 必须提前加入代理节点防火墙白名单。
 
-## 数据口径
+凭据只允许存放在未提交的 `.env` 或 Docker Secret 中，不得写入 Git、URL、浏览器或日志。
 
-- “搜索发现”是一条搜索结果 URL。
-- “实时成功”表示本机刚刚访问原 URL 并成功提取正文。
-- “索引网页总数”按规范化 URL 去重；同一 URL 再抓会更新，不重复累计。
-- 搜索引擎可能限流，网页可能受 `robots.txt`、登录、JavaScript 或反爬限制。
-- 本爬虫只请求公网 HTTP/HTTPS 地址，遵守 `robots.txt`，限制单页下载大小。
+## API
+
+创建每日 5 万目标的 Campaign：
+
+```bash
+curl -X POST http://127.0.0.1:8091/api/campaigns \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Singapore AI policy","aliases":[],"daily_target":50000,"proxy_profile":"private"}'
+```
+
+```text
+GET  /api/stats
+GET  /api/search?q=关键词
+GET  /metrics
+POST /api/campaigns/{id}/pause
+POST /api/campaigns/{id}/resume
+POST /api/campaigns/{id}/stop
+```
+
+## 代理同步
+
+私有池每 30 分钟完整读取 `/v1/private/proxies` 的游标链，只有全链成功才原子替换缓存。同步失败保留旧缓存，不回退公共池；记录超过 120 分钟或缓存连续 120 分钟未更新后停止使用。
+
+手动检查同步：
+
+```bash
+docker compose run --rm crawler sync-proxies --profile private
+```
+
+## 24 小时验收
+
+```bash
+docker compose run --rm crawler benchmark \
+  --query 'Singapore AI policy' \
+  --profile private \
+  --hours 24 \
+  --target 50000
+```
+
+验收口径是同一 Campaign 当天新增、正文有效、相关且正文 SHA-256 不重复的页面。达到 50,000 需要平均至少 `0.579 篇/秒`；Dashboard 和 `/metrics` 会显示实时速率及预计日量。
+
+## 测试
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/python -m unittest discover -s tests -v
+```

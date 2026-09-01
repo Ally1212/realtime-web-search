@@ -1,11 +1,16 @@
 [project]
 name = "realtime-web-search"
-version = "0.1.0"
+version = "0.2.0"
 description = "Live search discovery and real-time web crawler"
 requires-python = ">=3.11"
 dependencies = [
   "beautifulsoup4>=4.13,<5",
+  "psycopg[binary]>=3.3,<4",
+  "redis>=7,<9",
   "requests>=2.32,<3",
+  "requests[socks]>=2.32,<3",
+  "scrapy>=2.18,<3",
+  "scrapy-curl-cffi>=0.3,<1",
 ]
 
 [project.scripts]

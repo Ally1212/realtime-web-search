@@ -19,7 +19,10 @@ class SearchDiscovery:
         self.timeout = timeout
         self.session = session or requests.Session()
 
-    def discover(self, query: str, pages: int) -> tuple[list[SearchResult], list[str]]:
+    def discover(
+        self, query: str, pages: int,
+        engines: tuple[str, ...] = ("bing", "brave", "duckduckgo", "mojeek"),
+    ) -> tuple[list[SearchResult], list[str]]:
         found: dict[str, SearchResult] = {}
         errors: list[str] = []
         for page in range(1, pages + 1):
@@ -30,7 +33,7 @@ class SearchDiscovery:
                         "q": query,
                         "format": "json",
                         "categories": "general",
-                        "engines": "bing",
+                        "engines": ",".join(engines),
                         "pageno": page,
                     },
                     timeout=self.timeout,
@@ -47,4 +50,21 @@ class SearchDiscovery:
                     errors.append(": ".join(str(value) for value in item))
             except Exception as exc:
                 errors.append(f"page {page}: {exc}")
+        return list(found.values()), list(dict.fromkeys(errors))
+
+    def discover_many(
+        self, queries: tuple[str, ...], pages: int,
+    ) -> tuple[list[SearchResult], list[str]]:
+        found: dict[str, SearchResult] = {}
+        errors: list[str] = []
+        for query in queries:
+            results, query_errors = self.discover(query, pages)
+            for result in results:
+                previous = found.get(result.url)
+                if previous:
+                    engines = tuple(dict.fromkeys((*previous.engines, *result.engines)))
+                    found[result.url] = SearchResult(result.url, previous.title, engines)
+                else:
+                    found[result.url] = result
+            errors.extend(f"{query}: {value}" for value in query_errors)
         return list(found.values()), list(dict.fromkeys(errors))

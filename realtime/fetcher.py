@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
 import requests
@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 
 MAX_DOWNLOAD_BYTES = 5_000_000
 MAX_TEXT_CHARS = 100_000
+TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src"}
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class LiveDocument:
     fetched_at: str
     http_status: int
     content_hash: str
+    language: str = "other"
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,38 @@ def normalize_url(url: str) -> str:
     netloc = host
     if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
         netloc = f"{host}:{port}"
-    return urlunsplit((scheme, netloc, parsed.path or "/", parsed.query, ""))
+    query = urlencode([
+        (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_") and key.lower() not in TRACKING_PARAMS
+    ])
+    return urlunsplit((scheme, netloc, parsed.path or "/", query, ""))
+
+
+def detect_language(text: str) -> str:
+    sample = text[:5000]
+    cjk = sum("\u3400" <= char <= "\u9fff" for char in sample)
+    latin = sum(char.isascii() and char.isalpha() for char in sample)
+    if cjk >= max(5, latin // 8):
+        return "zh"
+    return "en" if latin >= 20 else "other"
+
+
+def relevant_to(text: str, title: str, terms: tuple[str, ...]) -> bool:
+    title_folded = title.casefold()
+    text_folded = text.casefold()
+    for term in terms:
+        phrase = " ".join(term.casefold().split())
+        if not phrase:
+            continue
+        if phrase in title_folded or phrase in text_folded:
+            return True
+        tokens = [token for token in phrase.replace("-", " ").split() if len(token) >= 2]
+        if tokens:
+            distinct_hits = sum(token in title_folded or token in text_folded for token in tokens)
+            required = 1 if len(tokens) == 1 else max(2, (len(tokens) * 3 + 4) // 5)
+            if distinct_hits >= required:
+                return True
+    return False
 
 
 def is_public_url(url: str) -> bool:
@@ -176,6 +209,7 @@ class LiveFetcher:
                 fetched_at=datetime.now(timezone.utc).isoformat(),
                 http_status=response.status_code,
                 content_hash=sha256(content.encode()).hexdigest(),
+                language=detect_language(content),
             )
             return FetchResult("success", normalized_url, title, response.status_code, document=document)
         except Exception as exc:

@@ -15,7 +15,7 @@ services:
     environment:
       discovery.type: single-node
       DISABLE_SECURITY_PLUGIN: "true"
-      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      OPENSEARCH_JAVA_OPTS: -Xms2g -Xmx2g
     ports:
       - "127.0.0.1:9201:9200"
     volumes:
@@ -27,13 +27,47 @@ services:
       timeout: 5s
       retries: 30
 
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: realtime
+      POSTGRES_USER: realtime
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-realtime-local}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U realtime -d realtime"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - valkey-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   web:
     build: .
     environment:
       OPENSEARCH_URL: http://opensearch:9200
       SEARXNG_URL: http://searxng:8080
-      STATE_DB: /app/state/realtime-v2.db
-      OPENSEARCH_INDEX: realtime-pages-v2
+      OPENSEARCH_INDEX: realtime-pages-v3
+      DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
+      VALKEY_URL: redis://valkey:6379/0
+      PROXY_API_BASE: https://proxyapi.pekpik.com
+      PRIVATE_READER_API_KEY: ${PRIVATE_READER_API_KEY:-}
+      SHARED_PROXY_USERNAME: ${SHARED_PROXY_USERNAME:-}
+      SHARED_PROXY_PASSWORD: ${SHARED_PROXY_PASSWORD:-}
+      DEFAULT_PROXY_PROFILE: ${DEFAULT_PROXY_PROFILE:-private}
+      ROBOTS_BYPASS_DOMAINS: ${ROBOTS_BYPASS_DOMAINS:-}
       WEB_HOST: 0.0.0.0
       WEB_PORT: "8091"
       PYTHONUNBUFFERED: "1"
@@ -46,6 +80,10 @@ services:
         condition: service_healthy
       searxng:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz', timeout=2)"]
@@ -53,5 +91,39 @@ services:
       timeout: 3s
       retries: 10
 
+  crawler:
+    build: .
+    command: ["worker"]
+    environment:
+      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_INDEX: realtime-pages-v3
+      SEARXNG_URL: http://searxng:8080
+      DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
+      VALKEY_URL: redis://valkey:6379/0
+      PROXY_API_BASE: https://proxyapi.pekpik.com
+      PRIVATE_READER_API_KEY: ${PRIVATE_READER_API_KEY:-}
+      SHARED_PROXY_USERNAME: ${SHARED_PROXY_USERNAME:-}
+      SHARED_PROXY_PASSWORD: ${SHARED_PROXY_PASSWORD:-}
+      DEFAULT_PROXY_PROFILE: ${DEFAULT_PROXY_PROFILE:-private}
+      PROXY_CACHE_DIR: /app/state/proxies
+      ROBOTS_BYPASS_DOMAINS: ${ROBOTS_BYPASS_DOMAINS:-}
+      CRAWLER_SLOTS: ${CRAWLER_SLOTS:-2}
+      CRAWLER_CONCURRENCY: ${CRAWLER_CONCURRENCY:-32}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./state:/app/state
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   opensearch-data:
+  postgres-data:
+  valkey-data:
