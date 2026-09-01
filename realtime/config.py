@@ -28,6 +28,7 @@ class Config:
     proxy_sync_seconds: int = int(os.getenv("PROXY_SYNC_SECONDS", "1800"))
     proxy_sticky_seconds: int = int(os.getenv("PROXY_STICKY_SECONDS", "300"))
     proxy_selection_window: int = int(os.getenv("PROXY_SELECTION_WINDOW", "20"))
+    proxy_sort: str = os.getenv("PROXY_SORT", "quality")
     default_proxy_profile: str = os.getenv("DEFAULT_PROXY_PROFILE", "private")
     crawler_slots: int = int(os.getenv("CRAWLER_SLOTS", "2"))
     crawler_concurrency: int = int(os.getenv("CRAWLER_CONCURRENCY", "32"))

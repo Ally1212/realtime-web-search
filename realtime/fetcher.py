@@ -6,6 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from hashlib import sha256
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
@@ -87,14 +88,25 @@ def relevant_to(text: str, title: str, terms: tuple[str, ...]) -> bool:
     return False
 
 
+@lru_cache(maxsize=32_768)
+def _is_public_endpoint(hostname: str, port: int) -> bool:
+    try:
+        addresses = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        return bool(addresses) and all(
+            ipaddress.ip_address(item[4][0]).is_global for item in addresses
+        )
+    except OSError:
+        return False
+
+
 def is_public_url(url: str) -> bool:
     try:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
             return False
-        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
-        return bool(addresses) and all(ipaddress.ip_address(item[4][0]).is_global for item in addresses)
-    except (ValueError, OSError):
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        return _is_public_endpoint(parsed.hostname.lower(), port)
+    except ValueError:
         return False
 
 

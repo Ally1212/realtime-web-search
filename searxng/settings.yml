@@ -4,7 +4,15 @@ use_default_settings:
       - bing
       - brave
       - duckduckgo
+      - google
+      - marginalia
       - mojeek
+      - qwant
+      - startpage
+      - wikidata
+      - wikipedia
+      - yahoo
+      - yep
 
 general:
   debug: false

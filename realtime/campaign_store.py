@@ -216,6 +216,8 @@ class CampaignStore:
             campaigns = connection.execute(
                 "SELECT c.*, (SELECT count(*) FROM campaign_pages cp WHERE cp.campaign_id=c.id "
                 "AND cp.first_seen >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS today, "
+                "(SELECT count(*) FROM campaign_pages cp WHERE cp.campaign_id=c.id "
+                "AND cp.first_seen >= now()-interval '60 seconds') AS recent_count, "
                 "EXTRACT(EPOCH FROM (now()-GREATEST(c.created_at, "
                 "date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))) AS elapsed_seconds "
                 "FROM campaigns c ORDER BY c.created_at DESC"
@@ -232,7 +234,9 @@ class CampaignStore:
             ).fetchall()
         for campaign in campaigns:
             elapsed = max(float(campaign.pop("elapsed_seconds") or 0), 1)
-            campaign["rate_per_second"] = round(int(campaign["today"]) / elapsed, 3)
+            recent = int(campaign.pop("recent_count") or 0)
+            recent_window = min(elapsed, 60)
+            campaign["rate_per_second"] = round(recent / recent_window, 3)
             campaign["projected_daily"] = round(campaign["rate_per_second"] * 86400)
         return {"totals": totals, "campaigns": campaigns, "events": events}
 

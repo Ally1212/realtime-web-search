@@ -111,13 +111,19 @@ class PagePipeline:
         if inserted:
             setattr(spider, "accepted", int(getattr(spider, "accepted", 0)) + 1)
             target = int(getattr(spider, "daily_target", 50_000))
-            if self.store.daily_count(campaign_id) >= target and not getattr(spider, "closing_for_target", False):
+            accepted = int(getattr(spider, "accepted", 0))
+            starting = int(getattr(spider, "starting_daily_count", 0))
+            if starting + accepted >= target and not getattr(spider, "closing_for_target", False):
                 setattr(spider, "closing_for_target", True)
                 asyncio.get_running_loop().create_task(
                     spider.crawler.engine.close_spider_async(reason="daily_target_reached")
                 )
         else:
-            self.store.increment(campaign_id, duplicates=1)
+            increment = getattr(spider, "_increment", None)
+            if increment:
+                increment(duplicates=1)
+            else:
+                self.store.increment(campaign_id, duplicates=1)
         if duplicate_content and not inserted:
             spider.crawler.stats.inc_value("content_duplicates")
         if len(self.buffer) >= 20:
@@ -196,24 +202,59 @@ class FocusedSpider(scrapy.Spider):
         self.pending_accepts = 0
         self.closing_for_target = False
         self._sitemap_hosts: set[str] = set()
+        self._pending_counters: dict[str, int] = {}
+        self._counter_loop: LoopingCall | None = None
+
+    def _increment(self, **values: int) -> None:
+        for field, value in values.items():
+            self._pending_counters[field] = self._pending_counters.get(field, 0) + value
+        if sum(self._pending_counters.values()) >= 100:
+            self._flush_counters()
+
+    def _flush_counters(self) -> None:
+        if not self._pending_counters:
+            return
+        values = self._pending_counters
+        self._pending_counters = {}
+        try:
+            self.store.increment(self.campaign_id, **values)
+        except Exception as exc:
+            for field, value in values.items():
+                self._pending_counters[field] = self._pending_counters.get(field, 0) + value
+            self.logger.error("campaign counter flush failed: %s", type(exc).__name__)
+
+    def closed(self, reason: str) -> None:
+        if self._counter_loop and self._counter_loop.running:
+            self._counter_loop.stop()
+        self._flush_counters()
 
     async def start(self):  # type: ignore[no-untyped-def]
+        self._counter_loop = LoopingCall(self._flush_counters)
+        self._counter_loop.start(2, now=False)
         discovery = SearchDiscovery(self.config.searxng_url, self.config.request_timeout)
         results, errors = discovery.discover_many(self.terms, self.config.discovery_pages)
-        self.store.increment(self.campaign_id, discovered=len(results))
+        self._increment(discovered=len(results))
         for error in errors:
             self.store.record_event(self.campaign_id, "", "discovery_failed", error_code=error[:120])
+        candidates: list[tuple[str, tuple[str, ...]]] = []
         for result in results:
             try:
                 url = normalize_url(result.url)
             except Exception:
                 continue
-            if not is_public_url(url):
-                continue
-            yield self._page_request(url, tuple(result.engines))
-            sitemap = self._sitemap_request(url)
-            if sitemap:
-                yield sitemap
+            candidates.append((url, tuple(result.engines)))
+        for offset in range(0, len(candidates), 64):
+            batch = candidates[offset:offset + 64]
+            public = await asyncio.gather(*(
+                asyncio.to_thread(is_public_url, url) for url, _ in batch
+            ))
+            for (url, engines), allowed in zip(batch, public):
+                if not allowed:
+                    continue
+                yield self._page_request(url, engines)
+                sitemap = self._sitemap_request(url)
+                if sitemap:
+                    yield sitemap
 
     def _page_request(self, url: str, engines: tuple[str, ...] = ()) -> scrapy.Request:
         return scrapy.Request(
@@ -253,7 +294,8 @@ class FocusedSpider(scrapy.Spider):
                 url = normalize_url(node.text.strip())
             except Exception:
                 continue
-            if url.lower().endswith(SKIP_SUFFIXES) or not is_public_url(url):
+            same_host = urlsplit(url).netloc == urlsplit(response.url).netloc
+            if url.lower().endswith(SKIP_SUFFIXES) or (not same_host and not is_public_url(url)):
                 continue
             count += 1
             if count > 10_000:
@@ -267,14 +309,14 @@ class FocusedSpider(scrapy.Spider):
                 yield self._page_request(url)
 
     def parse_page(self, response: scrapy.http.Response):  # type: ignore[no-untyped-def]
-        self.store.increment(self.campaign_id, fetched=1)
+        self._increment(fetched=1)
         content_type = response.headers.get(b"Content-Type", b"").decode(errors="ignore").lower()
         if "html" not in content_type:
-            self.store.increment(self.campaign_id, failed=1)
+            self._increment(failed=1)
             return
         title, content = extract_text(response.body, response.url)
         if len(content) < 100:
-            self.store.increment(self.campaign_id, failed=1)
+            self._increment(failed=1)
             self.store.record_event(self.campaign_id, response.url, "failed", response.status, "short_content")
             return
         language = detect_language(content)
@@ -303,7 +345,7 @@ class FocusedSpider(scrapy.Spider):
             if self.starting_daily_count + self.pending_accepts >= self.daily_target:
                 return
         else:
-            self.store.increment(self.campaign_id, irrelevant=1)
+            self._increment(irrelevant=1)
 
         parsed = urlsplit(response.url)
         candidates: list[tuple[int, str]] = []
@@ -315,10 +357,10 @@ class FocusedSpider(scrapy.Spider):
                 url = normalize_url(urljoin(response.url, href))
             except Exception:
                 continue
-            if url.lower().endswith(SKIP_SUFFIXES) or not is_public_url(url):
-                continue
             text = " ".join(anchor.css("::text").getall())
             same_host = urlsplit(url).netloc == parsed.netloc
+            if url.lower().endswith(SKIP_SUFFIXES) or (not same_host and not is_public_url(url)):
+                continue
             linked_relevant = relevant_to(f"{text} {url}", text, self.terms)
             if linked_relevant or (same_host and relevant):
                 candidates.append((0 if linked_relevant else 1, url))
@@ -327,7 +369,7 @@ class FocusedSpider(scrapy.Spider):
 
     def on_error(self, failure):  # type: ignore[no-untyped-def]
         request = failure.request
-        self.store.increment(self.campaign_id, failed=1)
+        self._increment(failed=1)
         self.store.record_event(
             self.campaign_id, request.url, "failed", error_code=type(failure.value).__name__
         )

@@ -267,16 +267,33 @@ class ProxyPool:
             sticky = self._sticky.get((profile, domain))
             if sticky and sticky[1] > now:
                 record = self._records.get(profile, {}).get(sticky[0])
-                if record and self._cooldown.get((record.key, domain), 0) <= now:
+                if record and max(
+                    self._cooldown.get((record.key, domain), 0),
+                    self._cooldown.get((record.key, "*"), 0),
+                ) <= now:
                     return self._url(profile, record), record.key
             eligible = [
                 record for record in records
-                if self._cooldown.get((record.key, domain), 0) <= now
+                if max(
+                    self._cooldown.get((record.key, domain), 0),
+                    self._cooldown.get((record.key, "*"), 0),
+                ) <= now
             ]
             if not eligible:
                 return None
-            # Prefer HTTP because it is cheapest; keep SOCKS5 as a fully supported fallback.
-            eligible.sort(key=lambda item: (item.protocol != "http", -item.quality, item.latency_ms or 999999))
+            # Prefer HTTP because it is cheapest; use measured latency for load tests.
+            if self.config.proxy_sort == "latency":
+                eligible.sort(
+                    key=lambda item: (
+                        item.protocol != "http", item.latency_ms or 999999, -item.quality
+                    )
+                )
+            else:
+                eligible.sort(
+                    key=lambda item: (
+                        item.protocol != "http", -item.quality, item.latency_ms or 999999
+                    )
+                )
             top = eligible[: max(1, min(self.config.proxy_selection_window, len(eligible)))]
             record = random.choice(top)
             if self.config.proxy_sticky_seconds > 0:
@@ -303,5 +320,8 @@ class ProxyPool:
         elif status == 403:
             seconds = 300
         if seconds:
+            scope = "*" if failed or status == 407 else domain
             with self._lock:
-                self._cooldown[(key, domain)] = time.monotonic() + seconds
+                self._cooldown[(key, scope)] = time.monotonic() + seconds
+                self._sticky.pop(("private", domain), None)
+                self._sticky.pop(("public", domain), None)
