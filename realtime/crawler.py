@@ -9,6 +9,7 @@ from xml.etree import ElementTree
 import scrapy
 from scrapy.downloadermiddlewares.robotstxt import RobotsTxtMiddleware
 from scrapy.exceptions import IgnoreRequest
+from twisted.internet.task import LoopingCall
 
 from .campaign_store import CampaignStore, PageRecord
 from .config import Config
@@ -81,6 +82,7 @@ class PagePipeline:
         self.store = CampaignStore(config.database_url)
         self.index = SearchIndex(config.opensearch_url, config.index_name, config.request_timeout)
         self.buffer: list[dict[str, object]] = []
+        self.flush_loop: LoopingCall | None = None
 
     @classmethod
     def from_crawler(cls, crawler: scrapy.crawler.Crawler) -> "PagePipeline":
@@ -88,6 +90,8 @@ class PagePipeline:
 
     def open_spider(self, spider: scrapy.Spider) -> None:
         self.index.ensure_index()
+        self.flush_loop = LoopingCall(self.flush)
+        self.flush_loop.start(15, now=False)
 
     def process_item(self, item: dict[str, object], spider: scrapy.Spider) -> dict[str, object]:
         campaign_id = str(item["campaign_id"])
@@ -101,12 +105,11 @@ class PagePipeline:
             fetched_at=str(item["fetched_at"]),
             source_engines=tuple(item.get("source_engines") or ()),
         )
-        _, inserted, duplicate_content = self.store.record_page(campaign_id, page)
-        if inserted:
+        _, inserted, duplicate_content, needs_indexing = self.store.record_page(campaign_id, page)
+        if needs_indexing:
             self.buffer.append(item)
+        if inserted:
             setattr(spider, "accepted", int(getattr(spider, "accepted", 0)) + 1)
-            if len(self.buffer) >= 100:
-                self.flush()
             target = int(getattr(spider, "daily_target", 50_000))
             if self.store.daily_count(campaign_id) >= target and not getattr(spider, "closing_for_target", False):
                 setattr(spider, "closing_for_target", True)
@@ -117,17 +120,24 @@ class PagePipeline:
             self.store.increment(campaign_id, duplicates=1)
         if duplicate_content and not inserted:
             spider.crawler.stats.inc_value("content_duplicates")
+        if len(self.buffer) >= 20:
+            self.flush()
         return item
 
     def flush(self) -> None:
         if not self.buffer:
             return
-        indexed, errors = self.index.bulk_index(self.buffer)
+        batch = self.buffer
+        self.buffer = []
+        indexed, errors = self.index.bulk_index(batch)
         if errors:
+            self.buffer = batch + self.buffer
             raise RuntimeError(f"OpenSearch bulk indexing failed for {len(errors)} documents")
-        self.buffer.clear()
+        self.store.mark_indexed([str(item["content_hash"]) for item in batch])
 
     def close_spider(self, spider: scrapy.Spider) -> None:
+        if self.flush_loop and self.flush_loop.running:
+            self.flush_loop.stop()
         self.flush()
         self.index.refresh()
 

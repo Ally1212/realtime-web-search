@@ -36,8 +36,10 @@ CREATE TABLE IF NOT EXISTS pages (
   language varchar(8),
   http_status integer NOT NULL,
   fetched_at timestamptz NOT NULL,
-  source_engines jsonb NOT NULL DEFAULT '[]'::jsonb
+  source_engines jsonb NOT NULL DEFAULT '[]'::jsonb,
+  indexed_at timestamptz
 );
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS indexed_at timestamptz;
 CREATE TABLE IF NOT EXISTS campaign_pages (
   campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   page_id bigint NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
@@ -140,16 +142,17 @@ class CampaignStore:
                 (campaign_id, url[:4096], status, http_status, (error_code or "")[:120]),
             )
 
-    def record_page(self, campaign_id: str, page: PageRecord) -> tuple[int, bool, bool]:
-        """Returns (page_id, new campaign association, duplicate content)."""
+    def record_page(self, campaign_id: str, page: PageRecord) -> tuple[int, bool, bool, bool]:
+        """Returns (page_id, new association, duplicate content, needs indexing)."""
         with self.connect() as connection:
             with connection.transaction():
                 existing = connection.execute(
-                    "SELECT id,url,content_hash FROM pages WHERE url=%s OR content_hash=%s "
+                    "SELECT id,url,content_hash,indexed_at FROM pages WHERE url=%s OR content_hash=%s "
                     "ORDER BY (content_hash=%s) DESC LIMIT 1 FOR UPDATE",
                     (page.url, page.content_hash, page.content_hash),
                 ).fetchone()
                 duplicate_content = bool(existing and existing["content_hash"] == page.content_hash)
+                needs_indexing = not existing or existing["indexed_at"] is None
                 if existing:
                     page_id = int(existing["id"])
                     connection.execute(
@@ -174,7 +177,7 @@ class CampaignStore:
                     else:
                         # Another worker inserted the same URL or content hash concurrently.
                         concurrent = connection.execute(
-                            "SELECT id,content_hash FROM pages WHERE url=%s OR content_hash=%s "
+                            "SELECT id,content_hash,indexed_at FROM pages WHERE url=%s OR content_hash=%s "
                             "ORDER BY (content_hash=%s) DESC LIMIT 1 FOR UPDATE",
                             (page.url, page.content_hash, page.content_hash),
                         ).fetchone()
@@ -182,12 +185,22 @@ class CampaignStore:
                             raise RuntimeError("page deduplication race could not be resolved")
                         page_id = int(concurrent["id"])
                         duplicate_content = concurrent["content_hash"] == page.content_hash
+                        needs_indexing = concurrent["indexed_at"] is None
                 inserted = connection.execute(
                     "INSERT INTO campaign_pages(campaign_id,page_id) VALUES(%s,%s) "
                     "ON CONFLICT DO NOTHING RETURNING page_id",
                     (campaign_id, page_id),
                 ).fetchone()
-        return page_id, inserted is not None, duplicate_content
+        return page_id, inserted is not None, duplicate_content, needs_indexing
+
+    def mark_indexed(self, content_hashes: list[str]) -> None:
+        if not content_hashes:
+            return
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE pages SET indexed_at=now() WHERE content_hash=ANY(%s)",
+                (content_hashes,),
+            )
 
     def daily_count(self, campaign_id: str) -> int:
         with self.connect() as connection:
