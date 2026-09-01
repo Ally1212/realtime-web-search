@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.venv/
+venv/
+*.egg-info/
+.env
+.DS_Store
+
+# Local crawler state
+state/

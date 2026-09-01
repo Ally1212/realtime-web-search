@@ -1,0 +1,57 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:8080/healthz' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1:9201:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  web:
+    build: .
+    environment:
+      OPENSEARCH_URL: http://opensearch:9200
+      SEARXNG_URL: http://searxng:8080
+      STATE_DB: /app/state/realtime-v2.db
+      OPENSEARCH_INDEX: realtime-pages-v2
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: "8091"
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "127.0.0.1:8091:8091"
+    volumes:
+      - ./state:/app/state
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  opensearch-data:

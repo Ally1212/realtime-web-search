@@ -1,0 +1,19 @@
+[project]
+name = "realtime-web-search"
+version = "0.1.0"
+description = "Live search discovery and real-time web crawler"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.13,<5",
+  "requests>=2.32,<3",
+]
+
+[project.scripts]
+realtime-web-search = "realtime.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["realtime*"]
