@@ -277,9 +277,12 @@ class ProxyPool:
                 return None
             # Prefer HTTP because it is cheapest; keep SOCKS5 as a fully supported fallback.
             eligible.sort(key=lambda item: (item.protocol != "http", -item.quality, item.latency_ms or 999999))
-            top = eligible[: max(1, min(20, len(eligible)))]
+            top = eligible[: max(1, min(self.config.proxy_selection_window, len(eligible)))]
             record = random.choice(top)
-            self._sticky[(profile, domain)] = (record.key, now + 300)
+            if self.config.proxy_sticky_seconds > 0:
+                self._sticky[(profile, domain)] = (
+                    record.key, now + self.config.proxy_sticky_seconds
+                )
             return self._url(profile, record), record.key
 
     def _url(self, profile: str, record: ProxyRecord) -> str:

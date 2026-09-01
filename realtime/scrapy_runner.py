@@ -15,7 +15,17 @@ def main() -> None:
     args = parser.parse_args()
     config = Config()
     settings = get_project_settings()
-    settings.set("CONCURRENT_REQUESTS", config.crawler_concurrency)
+    settings.set("CONCURRENT_REQUESTS", config.crawler_concurrency, priority="cmdline")
+    settings.set(
+        "CONCURRENT_REQUESTS_PER_DOMAIN", config.crawler_concurrency_per_domain,
+        priority="cmdline",
+    )
+    settings.set("DOWNLOAD_DELAY", config.crawler_download_delay, priority="cmdline")
+    settings.set(
+        "AUTOTHROTTLE_TARGET_CONCURRENCY", config.crawler_autothrottle_target,
+        priority="cmdline",
+    )
+    settings.set("DEPTH_LIMIT", config.crawler_depth_limit, priority="cmdline")
     settings.set("USER_AGENT", config.user_agent)
     settings.set("JOBDIR", f"state/jobs/{args.campaign_id}")
     process = CrawlerProcess(settings)
@@ -25,4 +35,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
