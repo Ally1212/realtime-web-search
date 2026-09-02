@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
@@ -9,11 +10,32 @@ from .config import Config
 from .crawler import FocusedSpider
 
 
+def repair_jobdir(job_dir: Path) -> int:
+    """Remove truncated LIFO queue files left by an interrupted container stop."""
+    queue_dir = job_dir / "requests.queue"
+    if not queue_dir.exists():
+        return 0
+    repaired = 0
+    for queue_file in queue_dir.rglob("*"):
+        if (
+            queue_file.is_file()
+            and queue_file.name.lstrip("-").isdigit()
+            and queue_file.stat().st_size < 4
+        ):
+            queue_file.unlink()
+            repaired += 1
+    return repaired
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("campaign_id")
     args = parser.parse_args()
     config = Config()
+    job_dir = Path("state/jobs") / args.campaign_id
+    repaired = repair_jobdir(job_dir)
+    if repaired:
+        print(f"repaired {repaired} interrupted scheduler queue files", flush=True)
     settings = get_project_settings()
     settings.set("CONCURRENT_REQUESTS", config.crawler_concurrency, priority="cmdline")
     settings.set(
@@ -27,7 +49,7 @@ def main() -> None:
     )
     settings.set("DEPTH_LIMIT", config.crawler_depth_limit, priority="cmdline")
     settings.set("USER_AGENT", config.user_agent)
-    settings.set("JOBDIR", f"state/jobs/{args.campaign_id}")
+    settings.set("JOBDIR", str(job_dir))
     process = CrawlerProcess(settings)
     process.crawl(FocusedSpider, campaign_id=args.campaign_id)
     process.start()

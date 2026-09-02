@@ -1,8 +1,50 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+
+DEFAULT_DISCOVERY_FEEDS: tuple[tuple[str, str], ...] = (
+    (
+        "google-news-rss",
+        "https://news.google.com/rss/search?q={query}&hl=en-SG&gl=SG&ceid=SG:en",
+    ),
+    ("rsshub-zaobao-singapore", "http://rsshub:1200/zaobao/realtime/singapore"),
+)
+
+
+def _enabled(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _discovery_feeds() -> tuple[tuple[str, str], ...]:
+    raw = os.getenv("DISCOVERY_FEEDS_JSON", "").strip()
+    if not raw:
+        return DEFAULT_DISCOVERY_FEEDS
+    try:
+        payload: Any = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("DISCOVERY_FEEDS_JSON must be valid JSON") from exc
+    if not isinstance(payload, list):
+        raise ValueError("DISCOVERY_FEEDS_JSON must be a JSON array")
+    feeds: list[tuple[str, str]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("each discovery feed must be an object")
+        name = str(item.get("name", "")).strip()
+        url = str(item.get("url", "")).strip()
+        if not name or not url.startswith(("http://", "https://")):
+            raise ValueError("each discovery feed requires name and an HTTP(S) url")
+        if "{" in url.replace("{query}", "") or "}" in url.replace("{query}", ""):
+            raise ValueError("discovery feed URLs only support the {query} placeholder")
+        feeds.append((name[:80], url))
+    return tuple(dict.fromkeys(feeds))
 
 
 @dataclass(frozen=True)
@@ -38,6 +80,8 @@ class Config:
     crawler_depth_limit: int = int(os.getenv("CRAWLER_DEPTH_LIMIT", "12"))
     discovery_pages: int = int(os.getenv("DISCOVERY_PAGES", "10"))
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
+    discovery_feeds: tuple[tuple[str, str], ...] = _discovery_feeds()
+    trafilatura_enabled: bool = _enabled("TRAFILATURA_ENABLED")
     robots_bypass_domains: tuple[str, ...] = tuple(
         value.strip().lower()
         for value in os.getenv("ROBOTS_BYPASS_DOMAINS", "").split(",")

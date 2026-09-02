@@ -3,9 +3,13 @@ from __future__ import annotations
 import concurrent.futures
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 from xml.etree import ElementTree
 
 import requests
+
+
+MAX_FEED_BYTES = 5_000_000
 
 
 @dataclass(frozen=True)
@@ -16,10 +20,87 @@ class SearchResult:
 
 
 class SearchDiscovery:
-    def __init__(self, base_url: str, timeout: int = 20, session: requests.Session | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 20,
+        session: requests.Session | None = None,
+        feeds: tuple[tuple[str, str], ...] = (),
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = session or requests.Session()
+        self.feeds = feeds
+
+    @staticmethod
+    def _read_limited(response: requests.Response) -> bytes:
+        declared = int(response.headers.get("Content-Length", "0") or 0)
+        if declared > MAX_FEED_BYTES:
+            raise ValueError("feed_too_large")
+        chunks: list[bytes] = []
+        size = 0
+        for chunk in response.iter_content(65_536):
+            size += len(chunk)
+            if size > MAX_FEED_BYTES:
+                raise ValueError("feed_too_large")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    @staticmethod
+    def _parse_feed(content: bytes, source: str) -> list[SearchResult]:
+        root = ElementTree.fromstring(content)
+        results: list[SearchResult] = []
+        for entry in root.iter():
+            if entry.tag.rsplit("}", 1)[-1].lower() not in {"item", "entry"}:
+                continue
+            title = ""
+            link = ""
+            for child in entry:
+                tag = child.tag.rsplit("}", 1)[-1].lower()
+                if tag == "title" and not title:
+                    title = "".join(child.itertext()).strip()
+                elif tag == "link" and not link:
+                    rel = child.attrib.get("rel", "alternate")
+                    if rel == "alternate":
+                        link = (child.attrib.get("href") or child.text or "").strip()
+            if link:
+                results.append(SearchResult(link, title or link, (source,)))
+        return results
+
+    def discover_feeds(
+        self, queries: tuple[str, ...]
+    ) -> tuple[list[SearchResult], list[str]]:
+        rendered: dict[str, str] = {}
+        for query in queries:
+            encoded = quote(query, safe="")
+            for name, template in self.feeds:
+                rendered.setdefault(template.replace("{query}", encoded), name)
+        if not rendered:
+            return [], []
+
+        def fetch(item: tuple[str, str]) -> tuple[list[SearchResult], str | None]:
+            url, name = item
+            try:
+                response = self.session.get(url, timeout=self.timeout, stream=True)
+                response.raise_for_status()
+                return self._parse_feed(self._read_limited(response), name), None
+            except Exception as exc:
+                return [], f"{name}: {type(exc).__name__}"
+
+        found: dict[str, SearchResult] = {}
+        errors: list[str] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(rendered))) as executor:
+            for results, error in executor.map(fetch, rendered.items()):
+                if error:
+                    errors.append(error)
+                for result in results:
+                    previous = found.get(result.url)
+                    if previous:
+                        engines = tuple(dict.fromkeys((*previous.engines, *result.engines)))
+                        found[result.url] = SearchResult(result.url, previous.title, engines)
+                    else:
+                        found[result.url] = result
+        return list(found.values()), errors
 
     def discover(
         self, query: str, pages: int,
@@ -108,4 +189,13 @@ class SearchDiscovery:
                     else:
                         found[result.url] = result
                 errors.extend(f"{query}: {value}" for value in query_errors)
+        feed_results, feed_errors = self.discover_feeds(queries)
+        for result in feed_results:
+            previous = found.get(result.url)
+            if previous:
+                engines = tuple(dict.fromkeys((*previous.engines, *result.engines)))
+                found[result.url] = SearchResult(result.url, previous.title, engines)
+            else:
+                found[result.url] = result
+        errors.extend(feed_errors)
         return list(found.values()), list(dict.fromkeys(errors))

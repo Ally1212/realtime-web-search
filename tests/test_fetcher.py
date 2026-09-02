@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from realtime.fetcher import detect_language, extract_text, normalize_url, relevant_to
 
@@ -11,6 +12,26 @@ class FetcherTests(unittest.TestCase):
         )
         self.assertEqual(title, "Example")
         self.assertEqual(text, "Example Hello world")
+
+    def test_trafilatura_removes_navigation_boilerplate(self):
+        article = "Singapore AI policy provides governance guidance. " * 8
+        raw = (
+            "<html><head><title>AI policy</title></head><body>"
+            "<nav>Navigation marker</nav><main><h1>AI policy</h1><p>"
+            f"{article}</p></main><footer>Footer marker</footer></body></html>"
+        ).encode()
+        title, text = extract_text(raw, "https://example.com/policy")
+        self.assertIn("Singapore AI policy", text)
+        self.assertNotIn("Navigation marker", text)
+        self.assertNotIn("Footer marker", text)
+        self.assertTrue(title)
+
+    def test_falls_back_when_trafilatura_fails(self):
+        raw = b"<html><head><title>Fallback</title></head><body><main>Visible text</main></body></html>"
+        with patch("realtime.fetcher.bare_extraction", side_effect=RuntimeError("failed")):
+            title, text = extract_text(raw, "https://example.com/")
+        self.assertEqual(title, "Fallback")
+        self.assertEqual(text, "Fallback Visible text")
 
     def test_normalizes_url(self):
         self.assertEqual(

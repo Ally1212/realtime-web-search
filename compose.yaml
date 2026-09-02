@@ -10,6 +10,18 @@ services:
       timeout: 5s
       retries: 12
 
+  rsshub:
+    image: docker.io/diygod/rsshub:latest
+    environment:
+      NODE_ENV: production
+      CACHE_TYPE: memory
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:1200/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   opensearch:
     image: opensearchproject/opensearch:3.8.0
     environment:
@@ -121,6 +133,8 @@ services:
       CRAWLER_DEPTH_LIMIT: ${CRAWLER_DEPTH_LIMIT:-12}
       DISCOVERY_PAGES: ${DISCOVERY_PAGES:-10}
       MAX_LINKS_PER_PAGE: ${MAX_LINKS_PER_PAGE:-100}
+      DISCOVERY_FEEDS_JSON: ${DISCOVERY_FEEDS_JSON:-}
+      TRAFILATURA_ENABLED: ${TRAFILATURA_ENABLED:-true}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./state:/app/state
@@ -128,6 +142,8 @@ services:
       opensearch:
         condition: service_healthy
       searxng:
+        condition: service_healthy
+      rsshub:
         condition: service_healthy
       postgres:
         condition: service_healthy

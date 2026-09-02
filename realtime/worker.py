@@ -86,6 +86,8 @@ class WorkerManager:
                 self.run_campaign(campaign_id)
 
     def run(self) -> None:
+        for campaign_id in self.store.active_campaign_ids():
+            self.queue.recover(campaign_id)
         threading.Thread(target=self.proxy_sync_loop, daemon=True).start()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.config.crawler_slots) as pool:
             futures = [pool.submit(self.worker_loop) for _ in range(self.config.crawler_slots)]

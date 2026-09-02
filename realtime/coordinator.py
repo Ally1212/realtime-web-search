@@ -41,7 +41,11 @@ class CrawlCoordinator:
                 return
             index = SearchIndex(self.config.opensearch_url, self.config.index_name, self.config.request_timeout)
             index.ensure_index()
-            fetcher = LiveFetcher(self.config.user_agent, self.config.request_timeout)
+            fetcher = LiveFetcher(
+                self.config.user_agent,
+                self.config.request_timeout,
+                self.config.trafilatura_enabled,
+            )
             discovered_at = _now()
             batch: list[LiveDocument] = []
             with ThreadPoolExecutor(max_workers=workers) as pool:

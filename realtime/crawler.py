@@ -231,7 +231,11 @@ class FocusedSpider(scrapy.Spider):
     async def start(self):  # type: ignore[no-untyped-def]
         self._counter_loop = LoopingCall(self._flush_counters)
         self._counter_loop.start(2, now=False)
-        discovery = SearchDiscovery(self.config.searxng_url, self.config.request_timeout)
+        discovery = SearchDiscovery(
+            self.config.searxng_url,
+            self.config.request_timeout,
+            feeds=self.config.discovery_feeds,
+        )
         results, errors = discovery.discover_many(self.terms, self.config.discovery_pages)
         self._increment(discovered=len(results))
         for error in errors:
@@ -314,7 +318,9 @@ class FocusedSpider(scrapy.Spider):
         if "html" not in content_type:
             self._increment(failed=1)
             return
-        title, content = extract_text(response.body, response.url)
+        title, content = extract_text(
+            response.body, response.url, self.config.trafilatura_enabled
+        )
         if len(content) < 100:
             self._increment(failed=1)
             self.store.record_event(self.campaign_id, response.url, "failed", response.status, "short_content")

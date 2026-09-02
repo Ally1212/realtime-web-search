@@ -13,6 +13,7 @@ from urllib.robotparser import RobotFileParser
 
 import requests
 from bs4 import BeautifulSoup
+from trafilatura import bare_extraction
 
 
 MAX_DOWNLOAD_BYTES = 5_000_000
@@ -110,7 +111,7 @@ def is_public_url(url: str) -> bool:
         return False
 
 
-def extract_text(raw: bytes, url: str) -> tuple[str, str]:
+def _fallback_extract_text(raw: bytes, url: str) -> tuple[str, str]:
     soup = BeautifulSoup(raw, "html.parser")
     for node in soup(["script", "style", "noscript", "svg", "canvas", "template", "nav", "footer"]):
         node.decompose()
@@ -119,10 +120,32 @@ def extract_text(raw: bytes, url: str) -> tuple[str, str]:
     return (title or url)[:300], text
 
 
+def extract_text(raw: bytes, url: str, use_trafilatura: bool = True) -> tuple[str, str]:
+    if use_trafilatura:
+        try:
+            document = bare_extraction(
+                raw,
+                url=url,
+                include_comments=False,
+                include_tables=True,
+                favor_precision=True,
+                deduplicate=True,
+            )
+            if document:
+                title = " ".join(str(document.title or "").split())
+                text = " ".join(str(document.text or "").split())[:MAX_TEXT_CHARS]
+                if len(text) >= 100:
+                    return (title or url)[:300], text
+        except Exception:
+            pass
+    return _fallback_extract_text(raw, url)
+
+
 class LiveFetcher:
-    def __init__(self, user_agent: str, timeout: int = 20):
+    def __init__(self, user_agent: str, timeout: int = 20, use_trafilatura: bool = True):
         self.user_agent = user_agent
         self.timeout = timeout
+        self.use_trafilatura = use_trafilatura
         self._robots: dict[str, RobotFileParser] = {}
         self._robots_lock = threading.Lock()
         self._host_locks: dict[str, threading.Lock] = {}
@@ -205,7 +228,7 @@ class LiveFetcher:
                 self._last_request[host] = time.monotonic()
             if response.status_code >= 400:
                 return FetchResult("failed", url, fallback_title, response.status_code, error=f"HTTP {response.status_code}")
-            title, content = extract_text(raw, response.url)
+            title, content = extract_text(raw, response.url, self.use_trafilatura)
             if len(content) < 100:
                 return FetchResult("failed", url, title, response.status_code, error="可提取正文不足 100 字符")
             normalized_url = normalize_url(response.url)

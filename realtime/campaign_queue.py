@@ -18,6 +18,14 @@ class CampaignQueue:
         if self.redis.set(marker, "1", nx=True, ex=3600):
             self.redis.lpush(self.READY, campaign_id)
 
+    def recover(self, campaign_id: str) -> None:
+        """Requeue work interrupted when the single worker process stopped."""
+        with self.redis.pipeline() as pipe:
+            pipe.delete(f"realtime:campaign:queued:{campaign_id}")
+            pipe.zrem(self.DELAYED, campaign_id)
+            pipe.execute()
+        self.enqueue(campaign_id)
+
     def schedule(self, campaign_id: str, delay_seconds: int = 300) -> None:
         self.redis.zadd(self.DELAYED, {campaign_id: time.time() + delay_seconds})
 

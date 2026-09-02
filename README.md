@@ -1,11 +1,13 @@
 # Realtime Web Search
 
-面向关键词的持续网页采集系统。使用 SearXNG、Sitemap、站内链接发现 URL，Scrapy 并发抓取，按正文指纹去重后写入 OpenSearch。目标容量为每个关键词每天 50,000 个相关唯一页面。
+面向关键词的持续网页采集系统。使用 SearXNG、RSSHub、RSS/Atom、Sitemap 和站内链接发现 URL，Scrapy 并发抓取，按正文指纹去重后写入 OpenSearch。目标容量为每个关键词每天 50,000 个相关唯一页面。
 
 ## 组件
 
 - Scrapy：异步抓取、重试、限速和持久队列。
 - SearXNG：Bing、Brave、DuckDuckGo、Mojeek 多引擎发现。
+- RSSHub/RSS/Atom：按关键词持续补充 Feed URL；单个来源故障不会中断采集。
+- Trafilatura：提取主要正文；提取失败时自动回退 BeautifulSoup。
 - PostgreSQL：Campaign、正文指纹、关键词关联和 30 天事件记录。
 - Valkey：Campaign 调度队列。
 - OpenSearch：全文索引；完整正文不保存在 `_source` 中。
@@ -22,6 +24,8 @@ docker compose up -d --build
 打开 <http://localhost:8091>。默认 Campaign 使用私有代理；生产 Worker 的公网出口 IP 必须提前加入代理节点防火墙白名单。
 
 凭据只允许存放在未提交的 `.env` 或 Docker Secret 中，不得写入 Git、URL、浏览器或日志。
+
+`DISCOVERY_FEEDS_JSON` 是全局 Feed 模板数组，`{query}` 会替换为 URL 编码后的 Campaign 关键词。设置为 `[]` 可关闭额外 Feed；`TRAFILATURA_ENABLED=false` 可回退到原正文提取方式。
 
 ## API
 
@@ -41,6 +45,8 @@ POST /api/campaigns/{id}/pause
 POST /api/campaigns/{id}/resume
 POST /api/campaigns/{id}/stop
 ```
+
+统计页会显示各搜索引擎和 Feed 当天贡献的有效唯一页面数。`/metrics` 同时暴露发现、抓取、失败、重复、无关和预计日量指标。
 
 ## 代理同步
 

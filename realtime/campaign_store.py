@@ -112,6 +112,13 @@ class CampaignStore:
             ).fetchall()
         return {str(row["proxy_profile"]) for row in rows}
 
+    def active_campaign_ids(self) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM campaigns WHERE status='active' ORDER BY created_at"
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
     def set_status(self, campaign_id: str, status: str, error: str | None = None) -> bool:
         if status not in {"active", "paused", "stopped", "failed"}:
             raise ValueError("invalid campaign status")
@@ -232,13 +239,25 @@ class CampaignStore:
                 "SELECT campaign_id,url,status,http_status,error_code,created_at "
                 "FROM crawl_events ORDER BY id DESC LIMIT 20"
             ).fetchall()
+            source_stats = connection.execute(
+                "SELECT cp.campaign_id, source.value AS source, count(DISTINCT cp.page_id) AS today "
+                "FROM campaign_pages cp JOIN pages p ON p.id=cp.page_id "
+                "CROSS JOIN LATERAL jsonb_array_elements_text(p.source_engines) AS source(value) "
+                "WHERE cp.first_seen >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' "
+                "GROUP BY cp.campaign_id,source.value ORDER BY today DESC,source.value"
+            ).fetchall()
         for campaign in campaigns:
             elapsed = max(float(campaign.pop("elapsed_seconds") or 0), 1)
             recent = int(campaign.pop("recent_count") or 0)
             recent_window = min(elapsed, 60)
             campaign["rate_per_second"] = round(recent / recent_window, 3)
             campaign["projected_daily"] = round(campaign["rate_per_second"] * 86400)
-        return {"totals": totals, "campaigns": campaigns, "events": events}
+        return {
+            "totals": totals,
+            "campaigns": campaigns,
+            "events": events,
+            "source_stats": source_stats,
+        }
 
     def purge_old_events(self, days: int = 30) -> int:
         with self.connect() as connection:
