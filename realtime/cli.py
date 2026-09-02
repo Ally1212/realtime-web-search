@@ -8,6 +8,7 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("serve")
     commands.add_parser("worker")
+    commands.add_parser("whale-worker")
     sync = commands.add_parser("sync-proxies")
     sync.add_argument("--profile", choices=("private", "public"), default="private")
     benchmark = commands.add_parser("benchmark")
@@ -22,6 +23,9 @@ def main() -> None:
     elif args.command == "worker":
         from .worker import run_worker
         run_worker()
+    elif args.command == "whale-worker":
+        from .whale_collector import run_whale_worker
+        run_whale_worker()
     elif args.command == "sync-proxies":
         from .config import Config
         from .proxy_pool import ProxySynchronizer

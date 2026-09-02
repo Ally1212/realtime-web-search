@@ -17,6 +17,7 @@ from .discovery import SearchDiscovery
 from .fetcher import detect_language, extract_text, is_public_url, normalize_url, relevant_to
 from .proxy_pool import ProxyPool
 from .search import SearchIndex
+from .whale_collector import whale_message
 
 
 SKIP_SUFFIXES = (
@@ -100,12 +101,17 @@ class PagePipeline:
             content_hash=str(item["content_hash"]),
             title=str(item["title"]),
             summary=str(item["summary"]),
+            content=str(item["content"]),
             language=str(item["language"]),
             http_status=int(item["http_status"]),
             fetched_at=str(item["fetched_at"]),
             source_engines=tuple(item.get("source_engines") or ()),
         )
         _, inserted, duplicate_content, needs_indexing = self.store.record_page(campaign_id, page)
+        whale_task = self.store.whale_task_for_campaign(campaign_id)
+        if whale_task:
+            record_key, message = whale_message(item, whale_task, self.config)
+            self.store.queue_whale_message(str(whale_task["task_id"]), record_key, message)
         if needs_indexing:
             self.buffer.append(item)
         if inserted:
@@ -231,6 +237,17 @@ class FocusedSpider(scrapy.Spider):
     async def start(self):  # type: ignore[no-untyped-def]
         self._counter_loop = LoopingCall(self._flush_counters)
         self._counter_loop.start(2, now=False)
+        whale_task = self.store.whale_task_for_campaign(self.campaign_id)
+        if whale_task and whale_task["task_type"] == "content_detail":
+            payload = dict(whale_task.get("payload") or {})
+            for raw_url in payload.get("urls") or []:
+                try:
+                    url = normalize_url(str(raw_url))
+                except Exception:
+                    continue
+                if is_public_url(url):
+                    yield self._page_request(url, ("whale-content-detail",))
+            return
         discovery = SearchDiscovery(
             self.config.searxng_url,
             self.config.request_timeout,

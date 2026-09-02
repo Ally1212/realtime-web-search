@@ -106,15 +106,30 @@ services:
       timeout: 3s
       retries: 10
 
-  crawler:
+  collector:
     build: .
-    command: ["worker"]
+    # Run the checked-out module so operational fixes take effect without a
+    # Docker image rebuild while the registry is unavailable.
+    entrypoint: ["python", "-m", "realtime.cli"]
+    command: ["whale-worker"]
     environment:
       OPENSEARCH_URL: http://opensearch:9200
       OPENSEARCH_INDEX: realtime-pages-v3
       SEARXNG_URL: http://searxng:8080
       DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
       VALKEY_URL: redis://valkey:6379/0
+      WHALE_ENABLED: ${WHALE_ENABLED:-false}
+      WHALE_BASE_URL: ${WHALE_BASE_URL:-http://20.169.21.11}
+      WHALE_COLLECTOR_API_KEY: ${WHALE_COLLECTOR_API_KEY:-}
+      WHALE_AGENT_ID: ${WHALE_AGENT_ID:-realtime-web-search-01}
+      WHALE_DATASET_ID: ${WHALE_DATASET_ID:-web_raw}
+      WHALE_SOURCE_PLATFORM: ${WHALE_SOURCE_PLATFORM:-google_search}
+      WHALE_SOURCE_NAME: ${WHALE_SOURCE_NAME:-realtime-web-search}
+      WHALE_SUPPORTED_TASK_TYPES: ${WHALE_SUPPORTED_TASK_TYPES:-keyword_search}
+      WHALE_MAX_CONCURRENCY: ${WHALE_MAX_CONCURRENCY:-2}
+      WHALE_CLAIM_LIMIT: ${WHALE_CLAIM_LIMIT:-2}
+      WHALE_HEARTBEAT_SECONDS: ${WHALE_HEARTBEAT_SECONDS:-20}
+      WHALE_INGEST_BATCH_SIZE: ${WHALE_INGEST_BATCH_SIZE:-50}
       PROXY_API_BASE: https://proxyapi.pekpik.com
       PRIVATE_READER_API_KEY: ${PRIVATE_READER_API_KEY:-}
       SHARED_PROXY_USERNAME: ${SHARED_PROXY_USERNAME:-}
@@ -138,6 +153,9 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./state:/app/state
+      # Keep the running collector aligned with the checked-out application
+      # code; persistent state remains isolated in ./state.
+      - ./realtime:/app/realtime:ro
     depends_on:
       opensearch:
         condition: service_healthy

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS pages (
   content_hash char(64) NOT NULL UNIQUE,
   title text NOT NULL,
   summary text NOT NULL,
+  content text NOT NULL DEFAULT '',
   language varchar(8),
   http_status integer NOT NULL,
   fetched_at timestamptz NOT NULL,
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS pages (
   indexed_at timestamptz
 );
 ALTER TABLE pages ADD COLUMN IF NOT EXISTS indexed_at timestamptz;
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS campaign_pages (
   campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   page_id bigint NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
@@ -57,6 +59,33 @@ CREATE TABLE IF NOT EXISTS crawl_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS crawl_events_recent ON crawl_events(campaign_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS whale_task_runs (
+  task_id text PRIMARY KEY,
+  campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  dataset_id text NOT NULL,
+  source_platform text NOT NULL,
+  task_type text NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  cursor text,
+  status text NOT NULL CHECK (status IN ('running','paused','canceled','succeeded','failed')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE whale_task_runs ADD COLUMN IF NOT EXISTS payload jsonb NOT NULL DEFAULT '{}'::jsonb;
+CREATE INDEX IF NOT EXISTS whale_task_runs_campaign ON whale_task_runs(campaign_id);
+CREATE TABLE IF NOT EXISTS whale_ingest_outbox (
+  id bigserial PRIMARY KEY,
+  task_id text NOT NULL REFERENCES whale_task_runs(task_id) ON DELETE CASCADE,
+  source_record_key text NOT NULL UNIQUE,
+  payload jsonb NOT NULL,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','delivered','rejected')),
+  attempts integer NOT NULL DEFAULT 0,
+  last_error text,
+  delivered_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS whale_ingest_outbox_pending ON whale_ingest_outbox(task_id, status, id);
 """
 
 
@@ -66,6 +95,7 @@ class PageRecord:
     content_hash: str
     title: str
     summary: str
+    content: str
     language: str
     http_status: int
     fetched_at: str
@@ -98,6 +128,97 @@ class CampaignStore:
                 (campaign_id, query, json.dumps(aliases, ensure_ascii=False), daily_target, proxy_profile),
             )
         return campaign_id
+
+    def create_whale_campaign(
+        self, *, task_id: str, dataset_id: str, source_platform: str, task_type: str,
+        query: str, aliases: list[str], daily_target: int, proxy_profile: str, task_payload: dict[str, Any],
+    ) -> str:
+        """Create one local campaign for a claimed Whale task, exactly once."""
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT campaign_id FROM whale_task_runs WHERE task_id=%s", (task_id,)
+            ).fetchone()
+            if existing:
+                return str(existing["campaign_id"])
+            campaign_id = str(uuid4())
+            with connection.transaction():
+                connection.execute(
+                    "INSERT INTO campaigns(id,query,aliases,daily_target,proxy_profile,status) "
+                    "VALUES(%s,%s,%s::jsonb,%s,%s,'active')",
+                    (campaign_id, query, json.dumps(aliases, ensure_ascii=False), daily_target, proxy_profile),
+                )
+                connection.execute(
+                    "INSERT INTO whale_task_runs(task_id,campaign_id,dataset_id,source_platform,task_type,payload,status) "
+                    "VALUES(%s,%s,%s,%s,%s,%s::jsonb,'running')",
+                    (task_id, campaign_id, dataset_id, source_platform, task_type,
+                     json.dumps(task_payload, ensure_ascii=False)),
+                )
+        return campaign_id
+
+    def whale_task_for_campaign(self, campaign_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM whale_task_runs WHERE campaign_id=%s", (campaign_id,)
+            ).fetchone()
+
+    def update_whale_task(self, task_id: str, *, status: str | None = None, cursor: str | None = None) -> None:
+        assignments = ["updated_at=now()"]
+        values: list[Any] = []
+        if status is not None:
+            assignments.append("status=%s")
+            values.append(status)
+        if cursor is not None:
+            assignments.append("cursor=%s")
+            values.append(cursor)
+        values.append(task_id)
+        with self.connect() as connection:
+            connection.execute(
+                f"UPDATE whale_task_runs SET {','.join(assignments)} WHERE task_id=%s", values
+            )
+
+    def queue_whale_message(self, task_id: str, source_record_key: str, payload: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO whale_ingest_outbox(task_id,source_record_key,payload) VALUES(%s,%s,%s::jsonb) "
+                "ON CONFLICT (source_record_key) DO NOTHING",
+                (task_id, source_record_key, json.dumps(payload, ensure_ascii=False)),
+            )
+
+    def whale_outbox(self, task_id: str, limit: int) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT id,source_record_key,payload,attempts FROM whale_ingest_outbox "
+                "WHERE task_id=%s AND status='pending' ORDER BY id LIMIT %s",
+                (task_id, limit),
+            ).fetchall()
+
+    def mark_whale_outbox(self, ids: list[int], *, status: str, error: str | None = None) -> None:
+        if not ids:
+            return
+        delivered = "now()" if status == "delivered" else "NULL"
+        with self.connect() as connection:
+            connection.execute(
+                f"UPDATE whale_ingest_outbox SET status=%s,attempts=attempts+1,last_error=%s,"
+                f"delivered_at={delivered},updated_at=now() WHERE id=ANY(%s)",
+                (status, (error or "")[:500] or None, ids),
+            )
+
+    def retry_whale_outbox(self, ids: list[int], error: str) -> None:
+        if not ids:
+            return
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE whale_ingest_outbox SET attempts=attempts+1,last_error=%s,updated_at=now() "
+                "WHERE id=ANY(%s)", (error[:500], ids),
+            )
+
+    def whale_outbox_counts(self, task_id: str) -> dict[str, int]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT status,count(*) AS count FROM whale_ingest_outbox WHERE task_id=%s GROUP BY status",
+                (task_id,),
+            ).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}
 
     def campaign(self, campaign_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
@@ -163,19 +284,19 @@ class CampaignStore:
                 if existing:
                     page_id = int(existing["id"])
                     connection.execute(
-                        "UPDATE pages SET title=%s,summary=%s,language=%s,http_status=%s,"
+                        "UPDATE pages SET title=%s,summary=%s,content=%s,language=%s,http_status=%s,"
                         "fetched_at=%s,source_engines=%s::jsonb WHERE id=%s",
                         (
-                            page.title, page.summary, page.language, page.http_status,
+                            page.title, page.summary, page.content, page.language, page.http_status,
                             page.fetched_at, json.dumps(page.source_engines), page_id,
                         ),
                     )
                 else:
                     row = connection.execute(
-                        "INSERT INTO pages(url,content_hash,title,summary,language,http_status,fetched_at,source_engines) "
-                        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING RETURNING id",
+                        "INSERT INTO pages(url,content_hash,title,summary,content,language,http_status,fetched_at,source_engines) "
+                        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING RETURNING id",
                         (
-                            page.url, page.content_hash, page.title, page.summary, page.language,
+                            page.url, page.content_hash, page.title, page.summary, page.content, page.language,
                             page.http_status, page.fetched_at, json.dumps(page.source_engines),
                         ),
                     ).fetchone()
