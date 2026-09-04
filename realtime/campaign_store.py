@@ -426,6 +426,7 @@ class CampaignStore:
                 "JOIN pages p ON p.id=cp.page_id "
                 "CROSS JOIN LATERAL jsonb_array_elements_text(p.source_engines) AS source(value) "
                 "WHERE cp.first_seen >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' "
+                "AND source.value='google' "
                 "GROUP BY source.value ORDER BY today DESC,source.value"
             ).fetchall()
         for campaign in campaigns:
