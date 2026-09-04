@@ -10,8 +10,8 @@ class DiscoveryTests(unittest.TestCase):
         response.raise_for_status.return_value = None
         response.json.return_value = {
             "results": [
-                {"url": "https://example.com/a", "title": "A", "engines": ["bing"]},
-                {"url": "https://example.com/a", "title": "A2", "engines": ["brave"]},
+                {"url": "https://example.com/a", "title": "A", "engines": ["google"]},
+                {"url": "https://example.com/a", "title": "A2", "engines": ["google"]},
             ],
             "unresponsive_engines": [],
         }
@@ -57,6 +57,27 @@ class DiscoveryTests(unittest.TestCase):
         SearchDiscovery("http://search", session=session).discover("test", 1)
 
         self.assertEqual(session.get.call_args.kwargs["params"]["engines"], "google")
+
+    def test_ignores_non_google_results_and_errors(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "results": [
+                {"url": "https://google.example/a", "title": "A", "engines": ["google"]},
+                {"url": "https://ddg.example/b", "title": "B", "engines": ["duckduckgo"]},
+            ],
+            "unresponsive_engines": [
+                ["duckduckgo", "captcha"],
+                ["google", "timeout"],
+            ],
+        }
+        session = Mock()
+        session.get.return_value = response
+
+        results, errors = SearchDiscovery("http://search", session=session).discover("test", 1)
+
+        self.assertEqual([result.url for result in results], ["https://google.example/a"])
+        self.assertEqual(errors, ["google: timeout"])
 
     def test_parses_atom_alternate_link(self):
         content = (

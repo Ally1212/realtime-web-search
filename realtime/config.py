@@ -111,6 +111,7 @@ class Config:
     crawler_autothrottle_target: float = float(os.getenv("CRAWLER_AUTOTHROTTLE_TARGET", "3"))
     crawler_retry_http_codes: tuple[int, ...] = _int_csv("CRAWLER_RETRY_HTTP_CODES", "408,425,429,500,502,503,504")
     crawler_depth_limit: int = int(os.getenv("CRAWLER_DEPTH_LIMIT", "12"))
+    crawler_min_content_chars: int = int(os.getenv("CRAWLER_MIN_CONTENT_CHARS", "100"))
     discovery_pages: int = int(os.getenv("DISCOVERY_PAGES", "20"))
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
     discovery_feeds: tuple[tuple[str, str], ...] = _discovery_feeds()

@@ -1,18 +1,7 @@
 use_default_settings:
   engines:
     keep_only:
-      - bing
-      - brave
-      - duckduckgo
       - google
-      - marginalia
-      - mojeek
-      - qwant
-      - startpage
-      - wikidata
-      - wikipedia
-      - yahoo
-      - yep
 
 general:
   debug: false

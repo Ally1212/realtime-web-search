@@ -10,6 +10,7 @@ import requests
 
 
 MAX_FEED_BYTES = 5_000_000
+GOOGLE_ENGINES = ("google",)
 
 
 @dataclass(frozen=True)
@@ -130,10 +131,19 @@ class SearchDiscovery:
 
     def discover(
         self, query: str, pages: int,
-        engines: tuple[str, ...] = ("google",),
+        engines: tuple[str, ...] = GOOGLE_ENGINES,
     ) -> tuple[list[SearchResult], list[str]]:
         found: dict[str, SearchResult] = {}
         errors: list[str] = []
+        allowed_engines = {engine.lower() for engine in engines}
+
+        def allowed_item_engines(values: tuple[str, ...]) -> tuple[str, ...]:
+            filtered = tuple(
+                engine for engine in values
+                if engine.lower().split()[0] in allowed_engines
+            )
+            return filtered
+
         def fetch_page(page: int) -> tuple[list[SearchResult], list[str]]:
             try:
                 response = self.session.get(
@@ -156,9 +166,14 @@ class SearchDiscovery:
                     if not url:
                         continue
                     item_engines = tuple(str(value) for value in (item.get("engines") or [item.get("engine", "unknown")]))
+                    item_engines = allowed_item_engines(item_engines)
+                    if not item_engines:
+                        continue
                     page_results.append(SearchResult(url, str(item.get("title") or url), item_engines))
                 for item in payload.get("unresponsive_engines", []):
-                    page_errors.append(": ".join(str(value) for value in item))
+                    engine = str(item[0] if item else "").lower()
+                    if engine in allowed_engines:
+                        page_errors.append(": ".join(str(value) for value in item))
                 return page_results, page_errors
             except Exception as exc:
                 return [], [f"page {page}: {exc}"]

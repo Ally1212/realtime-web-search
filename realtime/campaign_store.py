@@ -307,6 +307,27 @@ class CampaignStore:
             ).fetchall()
         return {str(row["url"]) for row in rows}
 
+    def reusable_pages(self, campaign_id: str, urls: list[str]) -> list[dict[str, Any]]:
+        if not urls:
+            return []
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT p.* FROM pages p WHERE p.url=ANY(%s) "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM campaign_pages cp WHERE cp.campaign_id=%s AND cp.page_id=p.id"
+                ")",
+                (urls, campaign_id),
+            ).fetchall()
+
+    def attach_page(self, campaign_id: str, page_id: int) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "INSERT INTO campaign_pages(campaign_id,page_id) VALUES(%s,%s) "
+                "ON CONFLICT DO NOTHING RETURNING page_id",
+                (campaign_id, page_id),
+            ).fetchone()
+        return row is not None
+
     def record_page(self, campaign_id: str, page: PageRecord) -> tuple[int, bool, bool, bool]:
         """Returns (page_id, new association, duplicate content, needs indexing)."""
         with self.connect() as connection:

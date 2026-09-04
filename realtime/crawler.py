@@ -263,6 +263,29 @@ class FocusedSpider(scrapy.Spider):
                 continue
             candidates.append((url, tuple(result.engines)))
         candidate_urls = list(dict.fromkeys(url for url, _ in candidates))
+        whale_task = self.store.whale_task_for_campaign(self.campaign_id)
+        reusable = self.store.reusable_pages(self.campaign_id, candidate_urls)
+        for row in reusable:
+            page_id = int(row["id"])
+            if not self.store.attach_page(self.campaign_id, page_id):
+                continue
+            self.pending_accepts += 1
+            if whale_task:
+                item = {
+                    "campaign_id": self.campaign_id,
+                    "url": str(row["url"]),
+                    "title": str(row["title"]),
+                    "content": str(row["content"]),
+                    "content_hash": str(row["content_hash"]),
+                    "language": str(row["language"] or "unknown"),
+                    "fetched_at": str(row["fetched_at"]),
+                    "discovered_at": datetime.now(timezone.utc).isoformat(),
+                    "query": self.query,
+                    "source_engines": tuple(row.get("source_engines") or ()),
+                    "http_status": int(row["http_status"]),
+                }
+                record_key, message = whale_message(item, whale_task, self.config)
+                self.store.queue_whale_message(str(whale_task["task_id"]), record_key, message)
         processed = self.store.processed_urls(self.campaign_id, candidate_urls)
         if processed:
             self._increment(duplicates=len(processed))
@@ -298,7 +321,7 @@ class FocusedSpider(scrapy.Spider):
         title, content = extract_text(
             response.body, response.url, self.config.trafilatura_enabled
         )
-        if len(content) < 100:
+        if len(content) < self.config.crawler_min_content_chars:
             self._increment(failed=1)
             self.store.record_event(self.campaign_id, response.url, "failed", response.status, "short_content")
             return
