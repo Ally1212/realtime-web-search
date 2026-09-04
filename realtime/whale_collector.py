@@ -7,9 +7,7 @@ import logging
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
 
 import requests
 
@@ -379,9 +377,8 @@ class ContinuousWhaleRunner:
         self.runner = WhaleRunner(config)
 
     def _task_id(self, keyword: str) -> str:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         keyword_hash = hashlib.sha256(keyword.encode()).hexdigest()[:12]
-        return f"{self.TASK_PREFIX}:{timestamp}:{keyword_hash}:{uuid4().hex[:8]}"
+        return f"{self.TASK_PREFIX}:{keyword_hash}"
 
     def _flush_pending(self) -> None:
         for task_id in self.store.pending_whale_task_ids(f"{self.TASK_PREFIX}:"):
@@ -406,6 +403,7 @@ class ContinuousWhaleRunner:
             daily_target=target,
             proxy_profile=profile,
             task_payload={"keyword": keyword, "max_items": target, "continuous": True},
+            reactivate_existing=True,
         )
         _diagnostic("continuous_whale_keyword_started", task_id=task_id, keyword=keyword, target=target)
         process = subprocess.Popen([sys.executable, "-m", "realtime.scrapy_runner", campaign_id])
@@ -424,8 +422,6 @@ class ContinuousWhaleRunner:
                     raise RuntimeError("Whale outbox delivery failed")
             if process.returncode:
                 raise RuntimeError(f"crawler exit={process.returncode}")
-            self.store.update_whale_task(task_id, status="succeeded")
-            self.store.set_status(campaign_id, "stopped")
             stats = self.runner._stats(campaign_id, task_id)
             _diagnostic(
                 "continuous_whale_keyword_finished", task_id=task_id,

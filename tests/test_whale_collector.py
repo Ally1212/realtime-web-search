@@ -93,7 +93,9 @@ class WhaleCollectorTests(unittest.TestCase):
         self.assertEqual(kwargs["query"], "AI chips")
         self.assertEqual(kwargs["daily_target"], 7)
         self.assertEqual(kwargs["proxy_profile"], "direct")
-        store.update_whale_task.assert_called_once_with(kwargs["task_id"], status="succeeded")
+        self.assertTrue(kwargs["reactivate_existing"])
+        self.assertEqual(kwargs["task_id"], "continuous:b5ffddc26966")
+        store.update_whale_task.assert_not_called()
 
 
 if __name__ == "__main__":

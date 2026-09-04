@@ -132,6 +132,7 @@ class CampaignStore:
     def create_whale_campaign(
         self, *, task_id: str, dataset_id: str, source_platform: str, task_type: str,
         query: str, aliases: list[str], daily_target: int, proxy_profile: str, task_payload: dict[str, Any],
+        reactivate_existing: bool = False,
     ) -> str:
         """Create one local campaign for a claimed Whale task, exactly once."""
         with self.connect() as connection:
@@ -139,7 +140,23 @@ class CampaignStore:
                 "SELECT campaign_id FROM whale_task_runs WHERE task_id=%s", (task_id,)
             ).fetchone()
             if existing:
-                return str(existing["campaign_id"])
+                campaign_id = str(existing["campaign_id"])
+                if reactivate_existing:
+                    with connection.transaction():
+                        connection.execute(
+                            "UPDATE campaigns SET daily_target=%s,proxy_profile=%s,status='active',"
+                            "last_error=NULL,updated_at=now() WHERE id=%s",
+                            (daily_target, proxy_profile, campaign_id),
+                        )
+                        connection.execute(
+                            "UPDATE whale_task_runs SET dataset_id=%s,source_platform=%s,task_type=%s,"
+                            "payload=%s::jsonb,status='running',updated_at=now() WHERE task_id=%s",
+                            (
+                                dataset_id, source_platform, task_type,
+                                json.dumps(task_payload, ensure_ascii=False), task_id,
+                            ),
+                        )
+                return campaign_id
             campaign_id = str(uuid4())
             with connection.transaction():
                 connection.execute(
