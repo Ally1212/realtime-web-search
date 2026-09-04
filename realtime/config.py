@@ -119,6 +119,7 @@ class Config:
         "CONTINUOUS_AI_KEYWORDS",
         "artificial intelligence,AI news,generative AI,OpenAI,AI regulation",
     )
-    continuous_interval_seconds: int = int(os.getenv("CONTINUOUS_INTERVAL_SECONDS", "600"))
-    continuous_max_items_per_keyword: int = int(os.getenv("CONTINUOUS_MAX_ITEMS_PER_KEYWORD", "100"))
+    continuous_interval_seconds: int = int(os.getenv("CONTINUOUS_INTERVAL_SECONDS", "60"))
+    continuous_max_items_per_keyword: int = int(os.getenv("CONTINUOUS_MAX_ITEMS_PER_KEYWORD", "1000000"))
+    continuous_keyword_concurrency: int = int(os.getenv("CONTINUOUS_KEYWORD_CONCURRENCY", "3"))
     continuous_proxy_profile: str = os.getenv("CONTINUOUS_PROXY_PROFILE", "direct")

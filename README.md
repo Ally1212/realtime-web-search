@@ -56,12 +56,13 @@ WHALE_ENABLED=true
 COLLECTOR_COMMAND=continuous-whale
 CONTINUOUS_WHALE_ENABLED=true
 CONTINUOUS_AI_KEYWORDS=artificial intelligence,AI news,generative AI,OpenAI,AI regulation
-CONTINUOUS_INTERVAL_SECONDS=600
-CONTINUOUS_MAX_ITEMS_PER_KEYWORD=100
+CONTINUOUS_INTERVAL_SECONDS=60
+CONTINUOUS_MAX_ITEMS_PER_KEYWORD=1000000
+CONTINUOUS_KEYWORD_CONCURRENCY=3
 CONTINUOUS_PROXY_PROFILE=direct
 ```
 
-启动后，`collector` 会每 10 分钟按关键词创建本地采集轮次，只使用 Google 搜索和 Google News RSS 发现 URL，抓取、过滤、去重后直接调用 `POST /v1/documents/bulk` 上传 Whale。上传失败的数据会留在本地 Outbox，下一轮优先补投。
+启动后，`collector` 会按关键词持续创建本地采集轮次，只使用 Google 搜索和 Google News RSS 发现 URL，抓取、过滤、去重后直接调用 `POST /v1/documents/bulk` 上传 Whale。上传失败的数据会留在本地 Outbox，下一轮优先补投。
 
 ## API
 

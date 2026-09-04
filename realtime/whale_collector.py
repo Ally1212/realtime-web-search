@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -447,9 +448,18 @@ class ContinuousWhaleRunner:
         while True:
             started = time.monotonic()
             self._flush_pending()
-            for keyword in self.config.continuous_ai_keywords:
-                self._run_keyword(keyword)
-                self._flush_pending()
+            workers = min(
+                max(self.config.continuous_keyword_concurrency, 1),
+                len(self.config.continuous_ai_keywords),
+            )
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [
+                    pool.submit(ContinuousWhaleRunner(self.config)._run_keyword, keyword)
+                    for keyword in self.config.continuous_ai_keywords
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()
+                    self._flush_pending()
             elapsed = time.monotonic() - started
             sleep_seconds = max(0, self.config.continuous_interval_seconds - elapsed)
             _diagnostic("continuous_whale_round_sleep", seconds=round(sleep_seconds, 2))

@@ -3,7 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
 
 import requests
@@ -67,6 +67,24 @@ class SearchDiscovery:
                 results.append(SearchResult(link, title or link, (source,)))
         return results
 
+    def _resolve_google_news(self, result: SearchResult) -> SearchResult:
+        if not any("google-news" in engine for engine in result.engines):
+            return result
+        host = (urlsplit(result.url).hostname or "").lower()
+        if host != "news.google.com":
+            return result
+        response = self.session.get(
+            result.url, timeout=self.timeout, allow_redirects=True, stream=True
+        )
+        try:
+            response.raise_for_status()
+            resolved = str(response.url or "").strip()
+            if resolved and resolved != result.url:
+                return SearchResult(resolved, result.title, result.engines)
+            return result
+        finally:
+            response.close()
+
     def discover_feeds(
         self, queries: tuple[str, ...]
     ) -> tuple[list[SearchResult], list[str]]:
@@ -83,7 +101,11 @@ class SearchDiscovery:
             try:
                 response = self.session.get(url, timeout=self.timeout, stream=True)
                 response.raise_for_status()
-                return self._parse_feed(self._read_limited(response), name), None
+                results = self._parse_feed(self._read_limited(response), name)
+                if "google-news" in name:
+                    resolved = [self._resolve_google_news(result) for result in results]
+                    return resolved, None
+                return results, None
             except Exception as exc:
                 return [], f"{name}: {type(exc).__name__}"
 

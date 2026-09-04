@@ -108,3 +108,28 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(results, [])
         self.assertEqual(errors, ["large-feed: ValueError"])
+
+    def test_resolves_google_news_feed_urls(self):
+        feed = Mock()
+        feed.headers = {}
+        feed.raise_for_status.return_value = None
+        feed.iter_content.return_value = [
+            b"<rss><channel><item><title>AI</title>"
+            b"<link>https://news.google.com/rss/articles/abc</link></item></channel></rss>"
+        ]
+        article = Mock()
+        article.url = "https://publisher.example/ai"
+        article.raise_for_status.return_value = None
+        article.close.return_value = None
+        session = Mock()
+        session.get.side_effect = [feed, article]
+        discovery = SearchDiscovery(
+            "http://search",
+            session=session,
+            feeds=(("google-news-rss", "https://news.google.com/rss/search?q={query}"),),
+        )
+
+        results, errors = discovery.discover_feeds(("AI",))
+
+        self.assertEqual(errors, [])
+        self.assertEqual(results[0].url, "https://publisher.example/ai")
