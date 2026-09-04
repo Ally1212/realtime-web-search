@@ -30,7 +30,7 @@ if [[ "$(awk -F= '$1 == "WHALE_ENABLED" { print $2; exit }' .env)" != "true" ]];
 fi
 
 docker compose up -d --build --wait --remove-orphans \
-  postgres opensearch searxng rsshub valkey web collector
+  postgres opensearch searxng valkey web collector
 
 curl -fsS --max-time 10 http://127.0.0.1:8091/healthz >/dev/null
 if [[ "$(docker compose ps --status running -q collector)" == "" ]]; then

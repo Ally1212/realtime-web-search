@@ -1,12 +1,12 @@
 # Realtime Web Search
 
-面向关键词的持续网页采集系统。使用 SearXNG、RSSHub、RSS/Atom、Sitemap 和站内链接发现 URL，Scrapy 并发抓取，按正文指纹去重后写入 OpenSearch。目标容量为每个关键词每天 50,000 个相关唯一页面。
+面向关键词的持续网页采集系统。使用 SearXNG 的 Google 引擎和 Google News RSS 发现 URL，Scrapy 并发抓取，按正文指纹去重后写入 OpenSearch。目标容量为每个关键词每天 50,000 个相关唯一页面。
 
 ## 组件
 
 - Scrapy：异步抓取、重试、限速和持久队列。
-- SearXNG：Bing、Brave、DuckDuckGo、Mojeek 多引擎发现。
-- RSSHub/RSS/Atom：按关键词持续补充 Feed URL；单个来源故障不会中断采集。
+- SearXNG：仅启用 Google 引擎发现。
+- Google News RSS：按关键词持续补充 Google News URL；单个来源故障不会中断采集。
 - Trafilatura：提取主要正文；提取失败时自动回退 BeautifulSoup。
 - PostgreSQL：Campaign、正文指纹、关键词关联和 30 天事件记录。
 - Valkey：Campaign 调度队列。
@@ -35,7 +35,7 @@ Whale 平台发任务前，只需确保 Docker Desktop 已运行并已配置 `.e
 
 该命令会启动数据库、索引、搜索源、统计网站和唯一的 `collector`，等待它们健康后才返回。完成后 Whale 平台即可向已注册的 `google_search` 采集器派发匹配任务。
 
-`DISCOVERY_FEEDS_JSON` 是全局 Feed 模板数组，`{query}` 会替换为 URL 编码后的 Campaign 关键词。设置为 `[]` 可关闭额外 Feed；`TRAFILATURA_ENABLED=false` 可回退到原正文提取方式。
+`DISCOVERY_FEEDS_JSON` 是全局 Feed 模板数组，默认只包含 Google News RSS，`{query}` 会替换为 URL 编码后的 Campaign 关键词。设置为 `[]` 可关闭额外 Feed；`TRAFILATURA_ENABLED=false` 可回退到原正文提取方式。
 
 ## Whale 采集器接入
 

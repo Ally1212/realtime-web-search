@@ -117,7 +117,7 @@ class WhaleClient:
             "declared_capabilities": ["identity", "title", "body"],
             "max_concurrency": self.config.whale_max_concurrency,
             "current_load": current_load,
-            "metadata": {"crawler": "scrapy", "discovery": ["searxng", "rss"]},
+            "metadata": {"crawler": "scrapy", "discovery": ["google", "google-news-rss"]},
         })
         response.raise_for_status()
         data = response.json()

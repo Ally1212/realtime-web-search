@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 DEFAULT_DISCOVERY_FEEDS: tuple[tuple[str, str], ...] = (
@@ -12,7 +13,6 @@ DEFAULT_DISCOVERY_FEEDS: tuple[tuple[str, str], ...] = (
         "google-news-rss",
         "https://news.google.com/rss/search?q={query}&hl=en-SG&gl=SG&ceid=SG:en",
     ),
-    ("rsshub-zaobao-singapore", "http://rsshub:1200/zaobao/realtime/singapore"),
 )
 
 
@@ -43,6 +43,9 @@ def _discovery_feeds() -> tuple[tuple[str, str], ...]:
             raise ValueError("each discovery feed requires name and an HTTP(S) url")
         if "{" in url.replace("{query}", "") or "}" in url.replace("{query}", ""):
             raise ValueError("discovery feed URLs only support the {query} placeholder")
+        host = (urlsplit(url).hostname or "").lower()
+        if host != "news.google.com":
+            continue
         feeds.append((name[:80], url))
     return tuple(dict.fromkeys(feeds))
 

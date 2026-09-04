@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlsplit
-from xml.etree import ElementTree
+from urllib.parse import urlsplit
 
 import scrapy
 from scrapy.downloadermiddlewares.robotstxt import RobotsTxtMiddleware
@@ -207,7 +206,6 @@ class FocusedSpider(scrapy.Spider):
         self.starting_daily_count = self.store.daily_count(campaign_id)
         self.pending_accepts = 0
         self.closing_for_target = False
-        self._sitemap_hosts: set[str] = set()
         self._pending_counters: dict[str, int] = {}
         self._counter_loop: LoopingCall | None = None
 
@@ -273,9 +271,7 @@ class FocusedSpider(scrapy.Spider):
                 if not allowed:
                     continue
                 yield self._page_request(url, engines)
-                sitemap = self._sitemap_request(url)
-                if sitemap:
-                    yield sitemap
+                # Keep Whale google_search tasks restricted to Google-discovered URLs.
 
     def _page_request(self, url: str, engines: tuple[str, ...] = ()) -> scrapy.Request:
         return scrapy.Request(
@@ -285,49 +281,6 @@ class FocusedSpider(scrapy.Spider):
             meta={"source_engines": engines, "proxy_profile": self.proxy_profile},
             headers={"Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1"},
         )
-
-    def _sitemap_request(self, url: str) -> scrapy.Request | None:
-        parsed = urlsplit(url)
-        host = parsed.netloc.lower()
-        if host in self._sitemap_hosts:
-            return None
-        self._sitemap_hosts.add(host)
-        return scrapy.Request(
-            f"{parsed.scheme}://{host}/sitemap.xml",
-            callback=self.parse_sitemap,
-            errback=self.ignore_error,
-            meta={"proxy_profile": self.proxy_profile, "handle_httpstatus_all": True},
-            dont_filter=True,
-        )
-
-    def parse_sitemap(self, response: scrapy.http.Response):  # type: ignore[no-untyped-def]
-        if response.status >= 400 or len(response.body) > 5_000_000:
-            return
-        try:
-            root = ElementTree.fromstring(response.body)
-        except ElementTree.ParseError:
-            return
-        count = 0
-        for node in root.iter():
-            if not node.tag.endswith("loc") or not node.text:
-                continue
-            try:
-                url = normalize_url(node.text.strip())
-            except Exception:
-                continue
-            same_host = urlsplit(url).netloc == urlsplit(response.url).netloc
-            if url.lower().endswith(SKIP_SUFFIXES) or (not same_host and not is_public_url(url)):
-                continue
-            count += 1
-            if count > 10_000:
-                break
-            if url.lower().endswith((".xml", ".xml.gz")):
-                yield scrapy.Request(
-                    url, callback=self.parse_sitemap, errback=self.ignore_error,
-                    meta={"proxy_profile": self.proxy_profile},
-                )
-            else:
-                yield self._page_request(url)
 
     def parse_page(self, response: scrapy.http.Response):  # type: ignore[no-untyped-def]
         self._increment(fetched=1)
@@ -370,25 +323,7 @@ class FocusedSpider(scrapy.Spider):
         else:
             self._increment(irrelevant=1)
 
-        parsed = urlsplit(response.url)
-        candidates: list[tuple[int, str]] = []
-        for anchor in response.css("a"):
-            href = anchor.attrib.get("href")
-            if not href:
-                continue
-            try:
-                url = normalize_url(urljoin(response.url, href))
-            except Exception:
-                continue
-            text = " ".join(anchor.css("::text").getall())
-            same_host = urlsplit(url).netloc == parsed.netloc
-            if url.lower().endswith(SKIP_SUFFIXES) or (not same_host and not is_public_url(url)):
-                continue
-            linked_relevant = relevant_to(f"{text} {url}", text, self.terms)
-            if linked_relevant or (same_host and relevant):
-                candidates.append((0 if linked_relevant else 1, url))
-        for _, url in sorted(candidates)[: self.config.max_links_per_page]:
-            yield self._page_request(url, tuple(response.meta.get("source_engines") or ()))
+        return
 
     def on_error(self, failure):  # type: ignore[no-untyped-def]
         request = failure.request

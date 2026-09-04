@@ -21,16 +21,6 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(errors, [])
 
-    def test_discovers_bing_rss_results(self):
-        response = Mock()
-        response.content = b"<rss><channel><item><title>Policy</title><link>https://example.com/policy</link></item></channel></rss>"
-        response.raise_for_status.return_value = None
-        session = Mock()
-        session.get.return_value = response
-        results, errors = SearchDiscovery("http://search", session=session).discover_rss("test")
-        self.assertEqual([result.url for result in results], ["https://example.com/policy"])
-        self.assertEqual(errors, [])
-
     def test_discovers_configured_rss_and_encodes_query(self):
         response = Mock()
         response.headers = {}
@@ -56,6 +46,17 @@ class DiscoveryTests(unittest.TestCase):
             session.get.call_args.args[0],
             "https://feeds.example/search?q=Singapore%20AI",
         )
+
+    def test_google_is_the_only_search_engine_requested(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"results": [], "unresponsive_engines": []}
+        session = Mock()
+        session.get.return_value = response
+
+        SearchDiscovery("http://search", session=session).discover("test", 1)
+
+        self.assertEqual(session.get.call_args.kwargs["params"]["engines"], "google")
 
     def test_parses_atom_alternate_link(self):
         content = (

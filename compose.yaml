@@ -10,18 +10,6 @@ services:
       timeout: 5s
       retries: 12
 
-  rsshub:
-    image: docker.io/diygod/rsshub:latest
-    environment:
-      NODE_ENV: production
-      CACHE_TYPE: memory
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:1200/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-
   opensearch:
     image: opensearchproject/opensearch:3.8.0
     environment:
@@ -160,8 +148,6 @@ services:
       opensearch:
         condition: service_healthy
       searxng:
-        condition: service_healthy
-      rsshub:
         condition: service_healthy
       postgres:
         condition: service_healthy
