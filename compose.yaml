@@ -99,7 +99,7 @@ services:
     # Run the checked-out module so operational fixes take effect without a
     # Docker image rebuild while the registry is unavailable.
     entrypoint: ["python", "-m", "realtime.cli"]
-    command: ["whale-worker"]
+    command: ["${COLLECTOR_COMMAND:-whale-worker}"]
     environment:
       OPENSEARCH_URL: http://opensearch:9200
       OPENSEARCH_INDEX: realtime-pages-v3
@@ -118,6 +118,11 @@ services:
       WHALE_CLAIM_LIMIT: ${WHALE_CLAIM_LIMIT:-2}
       WHALE_HEARTBEAT_SECONDS: ${WHALE_HEARTBEAT_SECONDS:-20}
       WHALE_INGEST_BATCH_SIZE: ${WHALE_INGEST_BATCH_SIZE:-50}
+      CONTINUOUS_WHALE_ENABLED: ${CONTINUOUS_WHALE_ENABLED:-false}
+      CONTINUOUS_AI_KEYWORDS: ${CONTINUOUS_AI_KEYWORDS:-artificial intelligence,AI news,generative AI,OpenAI,AI regulation}
+      CONTINUOUS_INTERVAL_SECONDS: ${CONTINUOUS_INTERVAL_SECONDS:-600}
+      CONTINUOUS_MAX_ITEMS_PER_KEYWORD: ${CONTINUOUS_MAX_ITEMS_PER_KEYWORD:-100}
+      CONTINUOUS_PROXY_PROFILE: ${CONTINUOUS_PROXY_PROFILE:-direct}
       PROXY_API_BASE: https://proxyapi.pekpik.com
       PRIVATE_READER_API_KEY: ${PRIVATE_READER_API_KEY:-}
       SHARED_PROXY_USERNAME: ${SHARED_PROXY_USERNAME:-}

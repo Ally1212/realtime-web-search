@@ -6,7 +6,9 @@ import logging
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import requests
 
@@ -367,5 +369,96 @@ class WhaleRunner:
                 retry_seconds = min(retry_seconds * 2, 300)
 
 
+class ContinuousWhaleRunner:
+    TASK_PREFIX = "continuous"
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.store = CampaignStore(config.database_url)
+        self.runner = WhaleRunner(config)
+
+    def _task_id(self, keyword: str) -> str:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        keyword_hash = hashlib.sha256(keyword.encode()).hexdigest()[:12]
+        return f"{self.TASK_PREFIX}:{timestamp}:{keyword_hash}:{uuid4().hex[:8]}"
+
+    def _flush_pending(self) -> None:
+        for task_id in self.store.pending_whale_task_ids(f"{self.TASK_PREFIX}:"):
+            while self.store.whale_outbox_counts(task_id).get("pending", 0):
+                _, _, healthy = self.runner._flush_outbox(task_id)
+                if not healthy:
+                    return
+
+    def _run_keyword(self, keyword: str) -> None:
+        target = min(max(self.config.continuous_max_items_per_keyword, 1), 1_000_000)
+        profile = self.config.continuous_proxy_profile
+        if profile not in {"private", "public", "direct"}:
+            raise ValueError("CONTINUOUS_PROXY_PROFILE must be private, public, or direct")
+        task_id = self._task_id(keyword)
+        campaign_id = self.store.create_whale_campaign(
+            task_id=task_id,
+            dataset_id=self.config.whale_dataset_id,
+            source_platform=self.config.whale_source_platform,
+            task_type="keyword_search",
+            query=keyword,
+            aliases=[],
+            daily_target=target,
+            proxy_profile=profile,
+            task_payload={"keyword": keyword, "max_items": target, "continuous": True},
+        )
+        _diagnostic("continuous_whale_keyword_started", task_id=task_id, keyword=keyword, target=target)
+        process = subprocess.Popen([sys.executable, "-m", "realtime.scrapy_runner", campaign_id])
+        try:
+            while process.poll() is None:
+                self.runner._flush_outbox(task_id)
+                self.runner.client.heartbeat(1)
+                time.sleep(self.config.whale_heartbeat_seconds)
+            process.wait(timeout=30)
+            while self.store.whale_outbox_counts(task_id).get("pending", 0):
+                _, _, healthy = self.runner._flush_outbox(task_id)
+                if not healthy:
+                    raise RuntimeError("Whale outbox delivery failed")
+            if process.returncode:
+                raise RuntimeError(f"crawler exit={process.returncode}")
+            self.store.update_whale_task(task_id, status="succeeded")
+            self.store.set_status(campaign_id, "stopped")
+            stats = self.runner._stats(campaign_id, task_id)
+            _diagnostic(
+                "continuous_whale_keyword_finished", task_id=task_id,
+                collected=stats["collected_count"], ingested=stats["ingested_count"],
+            )
+        except Exception as exc:
+            self.store.update_whale_task(task_id, status="failed")
+            self.store.set_status(campaign_id, "failed", type(exc).__name__)
+            if process.poll() is None:
+                process.terminate()
+            _diagnostic("continuous_whale_keyword_failed", task_id=task_id, error=type(exc).__name__)
+
+    def run(self) -> None:
+        if not self.config.continuous_whale_enabled:
+            raise ValueError("CONTINUOUS_WHALE_ENABLED must be true to run continuous-whale")
+        if not self.config.continuous_ai_keywords:
+            raise ValueError("CONTINUOUS_AI_KEYWORDS must contain at least one keyword")
+        self.runner.client.register()
+        _diagnostic(
+            "continuous_whale_registered", agent_id=self.runner.client.agent_id,
+            keywords=len(self.config.continuous_ai_keywords),
+        )
+        while True:
+            started = time.monotonic()
+            self._flush_pending()
+            for keyword in self.config.continuous_ai_keywords:
+                self._run_keyword(keyword)
+                self._flush_pending()
+            elapsed = time.monotonic() - started
+            sleep_seconds = max(0, self.config.continuous_interval_seconds - elapsed)
+            _diagnostic("continuous_whale_round_sleep", seconds=round(sleep_seconds, 2))
+            time.sleep(sleep_seconds)
+
+
 def run_whale_worker() -> None:
     WhaleRunner(Config()).run()
+
+
+def run_continuous_whale() -> None:
+    ContinuousWhaleRunner(Config()).run()

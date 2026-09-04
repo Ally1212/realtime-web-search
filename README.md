@@ -47,6 +47,22 @@ Whale 运行在 pull 模式：先在 Whale 的 `/admin/datasets` 创建并启用
 
 服务会注册 `realtime-web-search-01`、认领匹配任务，并使用 `POST /v1/documents/bulk` 上报完整正文。Whale 任务 Payload：`keyword_search`/`backfill` 必须使用 `keyword`（也兼容 `keywords` 与旧的 `query`）；页面默认的 `max_items` 会作为本次目标数量；`content_detail` 需要 `urls` 数组。未设置 `proxy_profile` 时默认直连，生产使用代理时显式传入 `private`。本地 PostgreSQL 使用 Outbox 保留待投递消息，网络重试不会改变 Whale 幂等键。
 
+### 本地 AI 种子持续采集
+
+如果不希望依赖 Whale 持续派发任务，可以让本项目自己维护一组 AI 种子关键词并持续上传 Whale。在 `.env` 中设置：
+
+```bash
+WHALE_ENABLED=true
+COLLECTOR_COMMAND=continuous-whale
+CONTINUOUS_WHALE_ENABLED=true
+CONTINUOUS_AI_KEYWORDS=artificial intelligence,AI news,generative AI,OpenAI,AI regulation
+CONTINUOUS_INTERVAL_SECONDS=600
+CONTINUOUS_MAX_ITEMS_PER_KEYWORD=100
+CONTINUOUS_PROXY_PROFILE=direct
+```
+
+启动后，`collector` 会每 10 分钟按关键词创建本地采集轮次，只使用 Google 搜索和 Google News RSS 发现 URL，抓取、过滤、去重后直接调用 `POST /v1/documents/bulk` 上传 Whale。上传失败的数据会留在本地 Outbox，下一轮优先补投。
+
 ## API
 
 创建每日 5 万目标的 Campaign：

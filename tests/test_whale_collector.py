@@ -1,7 +1,8 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
 from realtime.config import Config
-from realtime.whale_collector import WhaleRunner, whale_message
+from realtime.whale_collector import ContinuousWhaleRunner, WhaleRunner, whale_message
 
 
 class WhaleCollectorTests(unittest.TestCase):
@@ -59,6 +60,40 @@ class WhaleCollectorTests(unittest.TestCase):
         self.assertEqual(aliases, [])
         self.assertEqual(target, 20)
         self.assertEqual(profile, "direct")
+
+    @patch("realtime.whale_collector.subprocess.Popen")
+    @patch("realtime.whale_collector.WhaleRunner")
+    @patch("realtime.whale_collector.CampaignStore")
+    def test_continuous_runner_creates_keyword_campaign(self, store_class, runner_class, popen):
+        store = MagicMock()
+        store.create_whale_campaign.return_value = "campaign-1"
+        store.whale_outbox_counts.return_value = {}
+        store_class.return_value = store
+        runner = MagicMock()
+        runner._stats.return_value = {"collected_count": 3, "ingested_count": 3, "duplicate_count": 0}
+        runner_class.return_value = runner
+        process = MagicMock()
+        process.poll.return_value = 0
+        process.returncode = 0
+        popen.return_value = process
+        config = Config(
+            whale_collector_api_key="key",
+            whale_dataset_id="social_media_raw",
+            whale_source_platform="google_search",
+            continuous_max_items_per_keyword=7,
+            continuous_proxy_profile="direct",
+        )
+
+        ContinuousWhaleRunner(config)._run_keyword("AI chips")
+
+        store.create_whale_campaign.assert_called_once()
+        kwargs = store.create_whale_campaign.call_args.kwargs
+        self.assertEqual(kwargs["dataset_id"], "social_media_raw")
+        self.assertEqual(kwargs["source_platform"], "google_search")
+        self.assertEqual(kwargs["query"], "AI chips")
+        self.assertEqual(kwargs["daily_target"], 7)
+        self.assertEqual(kwargs["proxy_profile"], "direct")
+        store.update_whale_task.assert_called_once_with(kwargs["task_id"], status="succeeded")
 
 
 if __name__ == "__main__":

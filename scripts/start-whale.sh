@@ -29,6 +29,18 @@ if [[ "$(awk -F= '$1 == "WHALE_ENABLED" { print $2; exit }' .env)" != "true" ]];
   exit 1
 fi
 
+collector_command="$(awk -F= '$1 == "COLLECTOR_COMMAND" { print $2; exit }' .env)"
+if [[ "$collector_command" == "continuous-whale" ]]; then
+  if [[ "$(awk -F= '$1 == "CONTINUOUS_WHALE_ENABLED" { print $2; exit }' .env)" != "true" ]]; then
+    echo "Set CONTINUOUS_WHALE_ENABLED=true in .env before starting continuous-whale." >&2
+    exit 1
+  fi
+  if [[ -z "$(awk -F= '$1 == "CONTINUOUS_AI_KEYWORDS" { sub(/^[^=]*=/, ""); print; exit }' .env)" ]]; then
+    echo "Missing CONTINUOUS_AI_KEYWORDS in .env." >&2
+    exit 1
+  fi
+fi
+
 docker compose up -d --build --wait --remove-orphans \
   postgres opensearch searxng valkey web collector
 

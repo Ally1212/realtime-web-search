@@ -220,6 +220,15 @@ class CampaignStore:
             ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
 
+    def pending_whale_task_ids(self, prefix: str = "") -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT task_id FROM whale_ingest_outbox "
+                "WHERE status='pending' AND task_id LIKE %s ORDER BY task_id",
+                (f"{prefix}%",),
+            ).fetchall()
+        return [str(row["task_id"]) for row in rows]
+
     def campaign(self, campaign_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             return connection.execute(

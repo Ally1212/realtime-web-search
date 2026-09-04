@@ -23,6 +23,16 @@ def _enabled(name: str, default: bool = True) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _csv(name: str, default: str = "") -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            value.strip()
+            for value in os.getenv(name, default).split(",")
+            if value.strip()
+        )
+    )
+
+
 def _discovery_feeds() -> tuple[tuple[str, str], ...]:
     raw = os.getenv("DISCOVERY_FEEDS_JSON", "").strip()
     if not raw:
@@ -104,3 +114,11 @@ class Config:
     whale_claim_limit: int = int(os.getenv("WHALE_CLAIM_LIMIT", "2"))
     whale_heartbeat_seconds: int = int(os.getenv("WHALE_HEARTBEAT_SECONDS", "20"))
     whale_ingest_batch_size: int = int(os.getenv("WHALE_INGEST_BATCH_SIZE", "50"))
+    continuous_whale_enabled: bool = _enabled("CONTINUOUS_WHALE_ENABLED", False)
+    continuous_ai_keywords: tuple[str, ...] = _csv(
+        "CONTINUOUS_AI_KEYWORDS",
+        "artificial intelligence,AI news,generative AI,OpenAI,AI regulation",
+    )
+    continuous_interval_seconds: int = int(os.getenv("CONTINUOUS_INTERVAL_SECONDS", "600"))
+    continuous_max_items_per_keyword: int = int(os.getenv("CONTINUOUS_MAX_ITEMS_PER_KEYWORD", "100"))
+    continuous_proxy_profile: str = os.getenv("CONTINUOUS_PROXY_PROFILE", "direct")
