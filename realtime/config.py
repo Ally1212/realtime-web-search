@@ -42,6 +42,15 @@ def _csv(name: str, default: str = "") -> tuple[str, ...]:
     )
 
 
+def _int_csv(name: str, default: str) -> tuple[int, ...]:
+    values: list[int] = []
+    for value in os.getenv(name, default).split(","):
+        value = value.strip()
+        if value:
+            values.append(int(value))
+    return tuple(dict.fromkeys(values))
+
+
 def _discovery_feeds() -> tuple[tuple[str, str], ...]:
     raw = os.getenv("DISCOVERY_FEEDS_JSON", "").strip()
     if not raw:
@@ -98,7 +107,9 @@ class Config:
     crawler_concurrency: int = int(os.getenv("CRAWLER_CONCURRENCY", "32"))
     crawler_concurrency_per_domain: int = int(os.getenv("CRAWLER_CONCURRENCY_PER_DOMAIN", "4"))
     crawler_download_delay: float = float(os.getenv("CRAWLER_DOWNLOAD_DELAY", "0.1"))
+    crawler_autothrottle_enabled: bool = _enabled("CRAWLER_AUTOTHROTTLE_ENABLED", True)
     crawler_autothrottle_target: float = float(os.getenv("CRAWLER_AUTOTHROTTLE_TARGET", "3"))
+    crawler_retry_http_codes: tuple[int, ...] = _int_csv("CRAWLER_RETRY_HTTP_CODES", "408,425,429,500,502,503,504")
     crawler_depth_limit: int = int(os.getenv("CRAWLER_DEPTH_LIMIT", "12"))
     discovery_pages: int = int(os.getenv("DISCOVERY_PAGES", "20"))
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
@@ -109,6 +120,7 @@ class Config:
         for value in os.getenv("ROBOTS_BYPASS_DOMAINS", "").split(",")
         if value.strip()
     )
+    crawler_obey_robots: bool = _enabled("CRAWLER_OBEY_ROBOTS", True)
     whale_enabled: bool = _enabled("WHALE_ENABLED", False)
     whale_base_url: str = os.getenv("WHALE_BASE_URL", "http://20.169.21.11")
     whale_collector_api_key: str = os.getenv("WHALE_COLLECTOR_API_KEY", "")

@@ -43,10 +43,13 @@ def main() -> None:
         priority="cmdline",
     )
     settings.set("DOWNLOAD_DELAY", config.crawler_download_delay, priority="cmdline")
+    settings.set("AUTOTHROTTLE_ENABLED", config.crawler_autothrottle_enabled, priority="cmdline")
     settings.set(
         "AUTOTHROTTLE_TARGET_CONCURRENCY", config.crawler_autothrottle_target,
         priority="cmdline",
     )
+    settings.set("RETRY_HTTP_CODES", list(config.crawler_retry_http_codes), priority="cmdline")
+    settings.set("ROBOTSTXT_OBEY", config.crawler_obey_robots, priority="cmdline")
     settings.set("DEPTH_LIMIT", config.crawler_depth_limit, priority="cmdline")
     settings.set("USER_AGENT", config.user_agent)
     settings.set("JOBDIR", str(job_dir))
