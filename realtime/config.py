@@ -15,6 +15,15 @@ DEFAULT_DISCOVERY_FEEDS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+DEFAULT_CONTINUOUS_AI_KEYWORDS = (
+    "artificial intelligence,AI news,generative AI,OpenAI,AI regulation"
+)
+
+DEFAULT_CONTINUOUS_AI_EXPANSIONS = (
+    "AI agents,AI chips,AI safety,enterprise AI,AI startups,machine learning,"
+    "large language models,AI search,AI infrastructure,AI policy"
+)
+
 
 def _enabled(name: str, default: bool = True) -> bool:
     value = os.getenv(name)
@@ -91,7 +100,7 @@ class Config:
     crawler_download_delay: float = float(os.getenv("CRAWLER_DOWNLOAD_DELAY", "0.1"))
     crawler_autothrottle_target: float = float(os.getenv("CRAWLER_AUTOTHROTTLE_TARGET", "3"))
     crawler_depth_limit: int = int(os.getenv("CRAWLER_DEPTH_LIMIT", "12"))
-    discovery_pages: int = int(os.getenv("DISCOVERY_PAGES", "10"))
+    discovery_pages: int = int(os.getenv("DISCOVERY_PAGES", "20"))
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
     discovery_feeds: tuple[tuple[str, str], ...] = _discovery_feeds()
     trafilatura_enabled: bool = _enabled("TRAFILATURA_ENABLED")
@@ -117,8 +126,13 @@ class Config:
     continuous_whale_enabled: bool = _enabled("CONTINUOUS_WHALE_ENABLED", False)
     continuous_ai_keywords: tuple[str, ...] = _csv(
         "CONTINUOUS_AI_KEYWORDS",
-        "artificial intelligence,AI news,generative AI,OpenAI,AI regulation",
+        DEFAULT_CONTINUOUS_AI_KEYWORDS,
     )
+    continuous_keyword_expansions: tuple[str, ...] = _csv(
+        "CONTINUOUS_KEYWORD_EXPANSIONS",
+        DEFAULT_CONTINUOUS_AI_EXPANSIONS,
+    )
+    continuous_expand_keywords: bool = _enabled("CONTINUOUS_EXPAND_KEYWORDS", True)
     continuous_interval_seconds: int = int(os.getenv("CONTINUOUS_INTERVAL_SECONDS", "60"))
     continuous_max_items_per_keyword: int = int(os.getenv("CONTINUOUS_MAX_ITEMS_PER_KEYWORD", "1000000"))
     continuous_keyword_concurrency: int = int(os.getenv("CONTINUOUS_KEYWORD_CONCURRENCY", "3"))

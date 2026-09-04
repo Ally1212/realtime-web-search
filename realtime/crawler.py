@@ -262,13 +262,20 @@ class FocusedSpider(scrapy.Spider):
             except Exception:
                 continue
             candidates.append((url, tuple(result.engines)))
+        candidate_urls = list(dict.fromkeys(url for url, _ in candidates))
+        processed = self.store.processed_urls(self.campaign_id, candidate_urls)
+        if processed:
+            self._increment(duplicates=len(processed))
+            self.store.record_event(
+                self.campaign_id, "", "skipped", error_code=f"already_processed:{len(processed)}"
+            )
         for offset in range(0, len(candidates), 64):
             batch = candidates[offset:offset + 64]
             public = await asyncio.gather(*(
                 asyncio.to_thread(is_public_url, url) for url, _ in batch
             ))
             for (url, engines), allowed in zip(batch, public):
-                if not allowed:
+                if not allowed or url in processed:
                     continue
                 yield self._page_request(url, engines)
                 # Keep Whale google_search tasks restricted to Google-discovered URLs.

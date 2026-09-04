@@ -296,6 +296,17 @@ class CampaignStore:
                 (campaign_id, url[:4096], status, http_status, (error_code or "")[:120]),
             )
 
+    def processed_urls(self, campaign_id: str, urls: list[str]) -> set[str]:
+        if not urls:
+            return set()
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT url FROM pages WHERE url=ANY(%s) "
+                "UNION SELECT url FROM crawl_events WHERE campaign_id=%s AND url=ANY(%s)",
+                (urls, campaign_id, urls),
+            ).fetchall()
+        return {str(row["url"]) for row in rows}
+
     def record_page(self, campaign_id: str, page: PageRecord) -> tuple[int, bool, bool, bool]:
         """Returns (page_id, new association, duplicate content, needs indexing)."""
         with self.connect() as connection:
@@ -408,10 +419,15 @@ class CampaignStore:
                 "COALESCE(sum(irrelevant),0) AS irrelevant,NULL AS last_error,"
                 "min(created_at) AS created_at,max(updated_at) AS updated_at,"
                 "(SELECT count(DISTINCT cp.page_id) FROM campaign_pages cp JOIN continuous_campaigns cc "
-                "ON cc.id=cp.campaign_id WHERE cp.first_seen >= "
-                "date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS today,"
+                "ON cc.id=cp.campaign_id JOIN pages p ON p.id=cp.page_id "
+                "WHERE cp.first_seen >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' "
+                "AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.source_engines) AS src(value) "
+                "WHERE src.value LIKE 'google%')) AS today,"
                 "(SELECT count(DISTINCT cp.page_id) FROM campaign_pages cp JOIN continuous_campaigns cc "
-                "ON cc.id=cp.campaign_id WHERE cp.first_seen >= now()-interval '60 seconds') AS recent_count,"
+                "ON cc.id=cp.campaign_id JOIN pages p ON p.id=cp.page_id "
+                "WHERE cp.first_seen >= now()-interval '60 seconds' "
+                "AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.source_engines) AS src(value) "
+                "WHERE src.value LIKE 'google%')) AS recent_count,"
                 "EXTRACT(EPOCH FROM (now()-GREATEST(COALESCE(min(created_at),now()), "
                 "date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))) AS elapsed_seconds,"
                 "count(*) AS keyword_count FROM continuous_campaigns"
@@ -420,14 +436,33 @@ class CampaignStore:
                 "WITH continuous_campaigns AS ("
                 "SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
                 "WHERE w.task_id ~ '^continuous:[0-9a-f]{12}$'"
-                ") SELECT 'continuous' AS campaign_id, source.value AS source, "
+                ") SELECT 'continuous' AS campaign_id, 'google' AS source, "
                 "count(DISTINCT cp.page_id) AS today "
                 "FROM campaign_pages cp JOIN continuous_campaigns cc ON cc.id=cp.campaign_id "
                 "JOIN pages p ON p.id=cp.page_id "
                 "CROSS JOIN LATERAL jsonb_array_elements_text(p.source_engines) AS source(value) "
                 "WHERE cp.first_seen >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' "
-                "AND source.value='google' "
-                "GROUP BY source.value ORDER BY today DESC,source.value"
+                "AND source.value LIKE 'google%'"
+            ).fetchall()
+            continuous_whale_counts = connection.execute(
+                "SELECT o.status,count(*) AS count FROM whale_ingest_outbox o "
+                "JOIN whale_task_runs w ON w.task_id=o.task_id "
+                "WHERE w.task_id LIKE 'continuous:%' "
+                "GROUP BY o.status"
+            ).fetchall()
+            continuous_bottlenecks = connection.execute(
+                "WITH continuous_campaigns AS ("
+                "SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
+                "WHERE w.task_id ~ '^continuous:[0-9a-f]{12}$'"
+                ") SELECT CASE "
+                "WHEN ce.status='skipped' THEN 'already_processed' "
+                "WHEN ce.error_code='IgnoreRequest' THEN 'blocked_by_site_rules' "
+                "WHEN ce.error_code='short_content' THEN 'short_content' "
+                "WHEN ce.status='discovery_failed' THEN 'google_discovery_error' "
+                "ELSE 'fetch_failed' END AS reason,count(*) AS count "
+                "FROM crawl_events ce JOIN continuous_campaigns cc ON cc.id=ce.campaign_id "
+                "WHERE ce.created_at >= now()-interval '30 minutes' "
+                "GROUP BY reason ORDER BY count DESC"
             ).fetchall()
         for campaign in campaigns:
             elapsed = max(float(campaign.pop("elapsed_seconds") or 0), 1)
@@ -435,6 +470,8 @@ class CampaignStore:
             recent_window = min(elapsed, 60)
             campaign["rate_per_second"] = round(recent / recent_window, 3)
             campaign["projected_daily"] = round(campaign["rate_per_second"] * 86400)
+        whale_counts = {str(row["status"]): int(row["count"]) for row in continuous_whale_counts}
+        bottlenecks = {str(row["reason"]): int(row["count"]) for row in continuous_bottlenecks}
         if continuous and int(continuous.get("keyword_count") or 0):
             elapsed = max(float(continuous.pop("elapsed_seconds") or 0), 1)
             recent = int(continuous.pop("recent_count") or 0)
@@ -442,6 +479,10 @@ class CampaignStore:
             continuous["rate_per_second"] = round(recent / recent_window, 3)
             continuous["projected_daily"] = round(continuous["rate_per_second"] * 86400)
             continuous["continuous"] = True
+            continuous["whale_delivered"] = whale_counts.get("delivered", 0)
+            continuous["whale_pending"] = whale_counts.get("pending", 0)
+            continuous["whale_rejected"] = whale_counts.get("rejected", 0)
+            continuous["bottlenecks"] = bottlenecks
         else:
             continuous = None
         return {

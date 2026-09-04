@@ -380,6 +380,12 @@ class ContinuousWhaleRunner:
         keyword_hash = hashlib.sha256(keyword.encode()).hexdigest()[:12]
         return f"{self.TASK_PREFIX}:{keyword_hash}"
 
+    def _keywords(self) -> tuple[str, ...]:
+        keywords = self.config.continuous_ai_keywords
+        if self.config.continuous_expand_keywords:
+            keywords = (*keywords, *self.config.continuous_keyword_expansions)
+        return tuple(dict.fromkeys(keyword.strip() for keyword in keywords if keyword.strip()))
+
     def _flush_pending(self) -> None:
         for task_id in self.store.pending_whale_task_ids(f"{self.TASK_PREFIX}:"):
             while self.store.whale_outbox_counts(task_id).get("pending", 0):
@@ -442,24 +448,25 @@ class ContinuousWhaleRunner:
     def run(self) -> None:
         if not self.config.continuous_whale_enabled:
             raise ValueError("CONTINUOUS_WHALE_ENABLED must be true to run continuous-whale")
-        if not self.config.continuous_ai_keywords:
+        keywords = self._keywords()
+        if not keywords:
             raise ValueError("CONTINUOUS_AI_KEYWORDS must contain at least one keyword")
         self.runner.client.register()
         _diagnostic(
             "continuous_whale_registered", agent_id=self.runner.client.agent_id,
-            keywords=len(self.config.continuous_ai_keywords),
+            keywords=len(keywords),
         )
         while True:
             started = time.monotonic()
             self._flush_pending()
             workers = min(
                 max(self.config.continuous_keyword_concurrency, 1),
-                len(self.config.continuous_ai_keywords),
+                len(keywords),
             )
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
                     pool.submit(self._run_keyword_with_agent, keyword, self.runner.client.agent_id)
-                    for keyword in self.config.continuous_ai_keywords
+                    for keyword in keywords
                 ]
                 for future in concurrent.futures.as_completed(futures):
                     future.result()
