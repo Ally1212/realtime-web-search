@@ -393,17 +393,63 @@ class CampaignStore:
                 "WHERE cp.first_seen >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' "
                 "GROUP BY cp.campaign_id,source.value ORDER BY today DESC,source.value"
             ).fetchall()
+            continuous = connection.execute(
+                "WITH continuous_campaigns AS ("
+                "SELECT c.* FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
+                "WHERE w.task_id ~ '^continuous:[0-9a-f]{12}$'"
+                ") SELECT 'continuous' AS id,'AI 持续采集总览' AS query,"
+                "COALESCE(sum(daily_target),0) AS daily_target,"
+                "'direct' AS proxy_profile,"
+                "CASE WHEN COALESCE(bool_or(status='failed'),false) THEN 'failed' "
+                "WHEN COALESCE(bool_or(status='active'),false) THEN 'active' "
+                "WHEN COALESCE(bool_or(status='paused'),false) THEN 'paused' ELSE 'stopped' END AS status,"
+                "COALESCE(sum(discovered),0) AS discovered,COALESCE(sum(fetched),0) AS fetched,"
+                "COALESCE(sum(failed),0) AS failed,COALESCE(sum(duplicates),0) AS duplicates,"
+                "COALESCE(sum(irrelevant),0) AS irrelevant,NULL AS last_error,"
+                "min(created_at) AS created_at,max(updated_at) AS updated_at,"
+                "(SELECT count(DISTINCT cp.page_id) FROM campaign_pages cp JOIN continuous_campaigns cc "
+                "ON cc.id=cp.campaign_id WHERE cp.first_seen >= "
+                "date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS today,"
+                "(SELECT count(DISTINCT cp.page_id) FROM campaign_pages cp JOIN continuous_campaigns cc "
+                "ON cc.id=cp.campaign_id WHERE cp.first_seen >= now()-interval '60 seconds') AS recent_count,"
+                "EXTRACT(EPOCH FROM (now()-GREATEST(COALESCE(min(created_at),now()), "
+                "date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))) AS elapsed_seconds,"
+                "count(*) AS keyword_count FROM continuous_campaigns"
+            ).fetchone()
+            continuous_source_stats = connection.execute(
+                "WITH continuous_campaigns AS ("
+                "SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
+                "WHERE w.task_id ~ '^continuous:[0-9a-f]{12}$'"
+                ") SELECT 'continuous' AS campaign_id, source.value AS source, "
+                "count(DISTINCT cp.page_id) AS today "
+                "FROM campaign_pages cp JOIN continuous_campaigns cc ON cc.id=cp.campaign_id "
+                "JOIN pages p ON p.id=cp.page_id "
+                "CROSS JOIN LATERAL jsonb_array_elements_text(p.source_engines) AS source(value) "
+                "WHERE cp.first_seen >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' "
+                "GROUP BY source.value ORDER BY today DESC,source.value"
+            ).fetchall()
         for campaign in campaigns:
             elapsed = max(float(campaign.pop("elapsed_seconds") or 0), 1)
             recent = int(campaign.pop("recent_count") or 0)
             recent_window = min(elapsed, 60)
             campaign["rate_per_second"] = round(recent / recent_window, 3)
             campaign["projected_daily"] = round(campaign["rate_per_second"] * 86400)
+        if continuous and int(continuous.get("keyword_count") or 0):
+            elapsed = max(float(continuous.pop("elapsed_seconds") or 0), 1)
+            recent = int(continuous.pop("recent_count") or 0)
+            recent_window = min(elapsed, 60)
+            continuous["rate_per_second"] = round(recent / recent_window, 3)
+            continuous["projected_daily"] = round(continuous["rate_per_second"] * 86400)
+            continuous["continuous"] = True
+        else:
+            continuous = None
         return {
             "totals": totals,
             "campaigns": campaigns,
+            "continuous_job": continuous,
             "events": events,
             "source_stats": source_stats,
+            "continuous_source_stats": continuous_source_stats,
         }
 
     def purge_old_events(self, days: int = 30) -> int:
