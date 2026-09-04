@@ -412,7 +412,10 @@ class ContinuousWhaleRunner:
         try:
             while process.poll() is None:
                 self.runner._flush_outbox(task_id)
-                self.runner.client.heartbeat(1)
+                try:
+                    self.runner.client.heartbeat(1)
+                except requests.RequestException as exc:
+                    _diagnostic("continuous_whale_heartbeat_failed", error=type(exc).__name__)
                 time.sleep(self.config.whale_heartbeat_seconds)
             process.wait(timeout=30)
             while self.store.whale_outbox_counts(task_id).get("pending", 0):
@@ -435,6 +438,11 @@ class ContinuousWhaleRunner:
                 process.terminate()
             _diagnostic("continuous_whale_keyword_failed", task_id=task_id, error=type(exc).__name__)
 
+    def _run_keyword_with_agent(self, keyword: str, agent_id: str) -> None:
+        child = ContinuousWhaleRunner(self.config)
+        child.runner.client.agent_id = agent_id
+        child._run_keyword(keyword)
+
     def run(self) -> None:
         if not self.config.continuous_whale_enabled:
             raise ValueError("CONTINUOUS_WHALE_ENABLED must be true to run continuous-whale")
@@ -454,7 +462,7 @@ class ContinuousWhaleRunner:
             )
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
-                    pool.submit(ContinuousWhaleRunner(self.config)._run_keyword, keyword)
+                    pool.submit(self._run_keyword_with_agent, keyword, self.runner.client.agent_id)
                     for keyword in self.config.continuous_ai_keywords
                 ]
                 for future in concurrent.futures.as_completed(futures):
