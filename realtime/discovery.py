@@ -73,17 +73,20 @@ class SearchDiscovery:
         host = (urlsplit(result.url).hostname or "").lower()
         if host != "news.google.com":
             return result
-        response = self.session.get(
-            result.url, timeout=self.timeout, allow_redirects=True, stream=True
-        )
         try:
-            response.raise_for_status()
-            resolved = str(response.url or "").strip()
-            if resolved and resolved != result.url:
-                return SearchResult(resolved, result.title, result.engines)
+            response = self.session.get(
+                result.url, timeout=min(self.timeout, 5), allow_redirects=True, stream=True
+            )
+            try:
+                response.raise_for_status()
+                resolved = str(response.url or "").strip()
+                if resolved and resolved != result.url:
+                    return SearchResult(resolved, result.title, result.engines)
+            finally:
+                response.close()
+        except Exception:
             return result
-        finally:
-            response.close()
+        return result
 
     def discover_feeds(
         self, queries: tuple[str, ...]
@@ -103,7 +106,8 @@ class SearchDiscovery:
                 response.raise_for_status()
                 results = self._parse_feed(self._read_limited(response), name)
                 if "google-news" in name:
-                    resolved = [self._resolve_google_news(result) for result in results]
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(results) or 1)) as executor:
+                        resolved = list(executor.map(self._resolve_google_news, results))
                     return resolved, None
                 return results, None
             except Exception as exc:
@@ -130,7 +134,7 @@ class SearchDiscovery:
     ) -> tuple[list[SearchResult], list[str]]:
         found: dict[str, SearchResult] = {}
         errors: list[str] = []
-        for page in range(1, pages + 1):
+        def fetch_page(page: int) -> tuple[list[SearchResult], list[str]]:
             try:
                 response = self.session.get(
                     f"{self.base_url}/search",
@@ -145,16 +149,25 @@ class SearchDiscovery:
                 )
                 response.raise_for_status()
                 payload: dict[str, Any] = response.json()
+                page_results: list[SearchResult] = []
+                page_errors: list[str] = []
                 for item in payload.get("results", []):
                     url = str(item.get("url", "")).strip()
                     if not url:
                         continue
-                    engines = tuple(str(value) for value in (item.get("engines") or [item.get("engine", "unknown")]))
-                    found.setdefault(url, SearchResult(url, str(item.get("title") or url), engines))
+                    item_engines = tuple(str(value) for value in (item.get("engines") or [item.get("engine", "unknown")]))
+                    page_results.append(SearchResult(url, str(item.get("title") or url), item_engines))
                 for item in payload.get("unresponsive_engines", []):
-                    errors.append(": ".join(str(value) for value in item))
+                    page_errors.append(": ".join(str(value) for value in item))
+                return page_results, page_errors
             except Exception as exc:
-                errors.append(f"page {page}: {exc}")
+                return [], [f"page {page}: {exc}"]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(pages, 1))) as executor:
+            for results, page_errors in executor.map(fetch_page, range(1, pages + 1)):
+                for result in results:
+                    found.setdefault(result.url, result)
+                errors.extend(page_errors)
         return list(found.values()), list(dict.fromkeys(errors))
 
     def discover_many(
