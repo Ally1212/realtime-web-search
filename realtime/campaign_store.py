@@ -189,6 +189,77 @@ CREATE TABLE IF NOT EXISTS crawl_stage_totals (
   last_seconds double precision NOT NULL DEFAULT 0,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS continuous_runtime (
+  id smallint PRIMARY KEY DEFAULT 1 CHECK (id=1),
+  enabled boolean NOT NULL DEFAULT true,
+  current_concurrency integer NOT NULL DEFAULT 8,
+  min_concurrency integer NOT NULL DEFAULT 4,
+  max_concurrency integer NOT NULL DEFAULT 12,
+  state text NOT NULL DEFAULT 'warming_up',
+  reason text NOT NULL DEFAULT 'startup',
+  limited_ratio double precision NOT NULL DEFAULT 0,
+  success_rate double precision NOT NULL DEFAULT 0,
+  outbox_pending integer NOT NULL DEFAULT 0,
+  upload_errors integer NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS crawl_proxy_usage (
+  proxy_key_hash char(64) NOT NULL,
+  profile text NOT NULL,
+  requests bigint NOT NULL DEFAULT 0,
+  last_used_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(proxy_key_hash,profile)
+);
+CREATE TABLE IF NOT EXISTS discovery_source_runtime (
+  source text PRIMARY KEY,
+  state text NOT NULL DEFAULT 'warming_up',
+  current_rps double precision NOT NULL DEFAULT 0.5,
+  next_request_at timestamptz NOT NULL DEFAULT now(),
+  circuit_until timestamptz,
+  window_started_at timestamptz NOT NULL DEFAULT now(),
+  evaluated_at timestamptz NOT NULL DEFAULT now(),
+  requests_window bigint NOT NULL DEFAULT 0,
+  successes_window bigint NOT NULL DEFAULT 0,
+  errors_window bigint NOT NULL DEFAULT 0,
+  limited_window bigint NOT NULL DEFAULT 0,
+  captcha_window bigint NOT NULL DEFAULT 0,
+  requests_total bigint NOT NULL DEFAULT 0,
+  successes_total bigint NOT NULL DEFAULT 0,
+  errors_total bigint NOT NULL DEFAULT 0,
+  limited_total bigint NOT NULL DEFAULT 0,
+  captcha_total bigint NOT NULL DEFAULT 0,
+  result_count bigint NOT NULL DEFAULT 0,
+  novel_count bigint NOT NULL DEFAULT 0,
+  cache_hits bigint NOT NULL DEFAULT 0,
+  cache_misses bigint NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS discovery_query_cache (
+  cache_key char(64) PRIMARY KEY,
+  source text NOT NULL,
+  query_hash char(64) NOT NULL,
+  locale text NOT NULL,
+  page integer NOT NULL DEFAULT 1,
+  payload jsonb NOT NULL,
+  etag text,
+  last_modified text,
+  result_count integer NOT NULL DEFAULT 0,
+  novel_count integer NOT NULL DEFAULT 0,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS discovery_query_cache_expiry
+  ON discovery_query_cache(expires_at);
+CREATE TABLE IF NOT EXISTS google_proxy_sessions (
+  proxy_key_hash char(64) PRIMARY KEY,
+  locale text NOT NULL DEFAULT '',
+  successes bigint NOT NULL DEFAULT 0,
+  failures bigint NOT NULL DEFAULT 0,
+  last_used_at timestamptz,
+  cooldown_until timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 """
 
 
@@ -267,6 +338,268 @@ class CampaignStore:
                 "last_seconds=EXCLUDED.last_seconds,updated_at=now()",
                 (stage[:80], observations, max(seconds, 0), max(seconds / observations, 0)),
             )
+
+    def continuous_runtime_health(self, minutes: int = 5) -> dict[str, float | int]:
+        window = max(1, minutes)
+        with self.connect() as connection:
+            row = connection.execute(
+                "WITH cc AS (SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
+                "WHERE w.task_id LIKE 'continuous:%%'), ev AS (SELECT ce.* FROM crawl_events ce "
+                "JOIN cc ON cc.id=ce.campaign_id WHERE ce.created_at>=now()-(%s*interval '1 minute')) "
+                "SELECT (SELECT count(*) FROM whale_ingest_outbox WHERE task_id LIKE 'continuous:%%' "
+                "AND status='delivered' AND delivered_at>=now()-(%s*interval '1 minute')) AS delivered,"
+                "(SELECT count(*) FROM ev WHERE status IN ('retryable_failed','permanent_failed')) AS failed,"
+                "(SELECT count(*) FROM ev WHERE http_status IN (403,429) OR "
+                "(status='discovery_failed' AND error_code ILIKE '%%captcha%%')) AS limited,"
+                "(SELECT count(*) FROM whale_ingest_outbox WHERE task_id LIKE 'continuous:%%' "
+                "AND status='pending') AS pending,"
+                "(SELECT count(*) FROM whale_ingest_outbox WHERE task_id LIKE 'continuous:%%' "
+                "AND updated_at>=now()-(%s*interval '1 minute') AND "
+                "(status='rejected' OR (status='pending' AND attempts>0))) AS upload_errors",
+                (window, window, window),
+            ).fetchone()
+        delivered, failed = int(row["delivered"]), int(row["failed"])
+        attempts = max(delivered + failed, 1)
+        return {
+            "delivered": delivered,
+            "failed": failed,
+            "limited": int(row["limited"]),
+            "limited_ratio": round(int(row["limited"]) / attempts, 4),
+            "success_rate": round(delivered / attempts, 4),
+            "outbox_pending": int(row["pending"]),
+            "upload_errors": int(row["upload_errors"]),
+        }
+
+    def update_continuous_runtime(
+        self, *, enabled: bool, current: int, minimum: int, maximum: int,
+        state: str, reason: str, health: dict[str, float | int] | None = None,
+    ) -> None:
+        values = health or {}
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO continuous_runtime(id,enabled,current_concurrency,min_concurrency,"
+                "max_concurrency,state,reason,limited_ratio,success_rate,outbox_pending,upload_errors) "
+                "VALUES(1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET "
+                "enabled=excluded.enabled,current_concurrency=excluded.current_concurrency,"
+                "min_concurrency=excluded.min_concurrency,max_concurrency=excluded.max_concurrency,"
+                "state=excluded.state,reason=excluded.reason,limited_ratio=excluded.limited_ratio,"
+                "success_rate=excluded.success_rate,outbox_pending=excluded.outbox_pending,"
+                "upload_errors=excluded.upload_errors,updated_at=now()",
+                (
+                    enabled, current, minimum, maximum, state, reason,
+                    float(values.get("limited_ratio", 0)), float(values.get("success_rate", 0)),
+                    int(values.get("outbox_pending", 0)), int(values.get("upload_errors", 0)),
+                ),
+            )
+
+    def record_proxy_usage(self, rows: list[tuple[str, str, int]]) -> None:
+        if not rows:
+            return
+        with self.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO crawl_proxy_usage(proxy_key_hash,profile,requests) VALUES(%s,%s,%s) "
+                    "ON CONFLICT(proxy_key_hash,profile) DO UPDATE SET "
+                    "requests=crawl_proxy_usage.requests+EXCLUDED.requests,last_used_at=now()",
+                    rows,
+                )
+
+    def get_discovery_cache(self, cache_key: str, source: str = "cache") -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT payload,etag,last_modified,result_count,novel_count "
+                "FROM discovery_query_cache WHERE cache_key=%s AND expires_at>now()",
+                (cache_key,),
+            ).fetchone()
+            connection.execute(
+                "INSERT INTO discovery_source_runtime(source,cache_hits,cache_misses) "
+                "VALUES(%s,%s,%s) ON CONFLICT(source) DO UPDATE SET "
+                "cache_hits=discovery_source_runtime.cache_hits+EXCLUDED.cache_hits,"
+                "cache_misses=discovery_source_runtime.cache_misses+EXCLUDED.cache_misses,updated_at=now()",
+                (source, int(bool(row)), int(not row)),
+            )
+        return dict(row) if row else None
+
+    def get_discovery_cache_metadata(self, cache_key: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT payload,etag,last_modified,result_count,novel_count "
+                "FROM discovery_query_cache WHERE cache_key=%s", (cache_key,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def put_discovery_cache(
+        self, cache_key: str, source: str, query_hash: str, locale: str, page: int,
+        payload: list[dict[str, Any]], ttl_seconds: int, *, novel_count: int = 0,
+        etag: str | None = None, last_modified: str | None = None,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO discovery_query_cache(cache_key,source,query_hash,locale,page,payload,"
+                "etag,last_modified,result_count,novel_count,expires_at) "
+                "VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,now()+(%s*interval '1 second')) "
+                "ON CONFLICT(cache_key) DO UPDATE SET payload=EXCLUDED.payload,etag=EXCLUDED.etag,"
+                "last_modified=EXCLUDED.last_modified,result_count=EXCLUDED.result_count,"
+                "novel_count=EXCLUDED.novel_count,expires_at=EXCLUDED.expires_at,updated_at=now()",
+                (
+                    cache_key, source, query_hash, locale, page,
+                    json.dumps(payload, ensure_ascii=False), etag, last_modified,
+                    len(payload), novel_count, max(1, ttl_seconds),
+                ),
+            )
+
+    def acquire_discovery_slot(self, source: str, initial_rps: float) -> dict[str, Any]:
+        """Reserve one global request slot shared by every crawler process."""
+        now = datetime.now(timezone.utc)
+        with self.connect() as connection:
+            with connection.transaction():
+                connection.execute(
+                    "INSERT INTO discovery_source_runtime(source,current_rps) VALUES(%s,%s) "
+                    "ON CONFLICT(source) DO NOTHING", (source, max(initial_rps, 0.01)),
+                )
+                row = connection.execute(
+                    "SELECT * FROM discovery_source_runtime WHERE source=%s FOR UPDATE", (source,)
+                ).fetchone()
+                circuit_until = row["circuit_until"]
+                if circuit_until and circuit_until > now:
+                    return {
+                        "allowed": False, "wait": (circuit_until - now).total_seconds(),
+                        "state": "circuit_open", "current_rps": float(row["current_rps"]),
+                        "circuit_until": circuit_until,
+                    }
+                rps = max(float(row["current_rps"]), 0.01)
+                state = str(row["state"])
+                if circuit_until and circuit_until <= now:
+                    rps, state = min(0.25, rps), "warming_up"
+                    connection.execute(
+                        "UPDATE discovery_source_runtime SET circuit_until=NULL,current_rps=%s,state=%s,"
+                        "window_started_at=now(),requests_window=0,successes_window=0,errors_window=0,"
+                        "limited_window=0,captcha_window=0 WHERE source=%s", (rps, state, source),
+                    )
+                next_at = max(row["next_request_at"], now)
+                wait = max(0.0, (next_at - now).total_seconds())
+                connection.execute(
+                    "UPDATE discovery_source_runtime SET next_request_at=%s,updated_at=now() WHERE source=%s",
+                    (next_at + timedelta(seconds=1.0 / rps), source),
+                )
+        return {"allowed": True, "wait": wait, "state": state, "current_rps": rps}
+
+    def record_discovery_result(
+        self, source: str, *, success: bool, limited: bool = False,
+        captcha: bool = False, result_count: int = 0, novel_count: int = 0,
+        maximum_rps: float = 2.0, captcha_threshold: float = 0.02,
+        source_cooldown_seconds: int = 1800,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        with self.connect() as connection:
+            with connection.transaction():
+                connection.execute(
+                    "INSERT INTO discovery_source_runtime(source) VALUES(%s) ON CONFLICT DO NOTHING",
+                    (source,),
+                )
+                row = connection.execute(
+                    "SELECT * FROM discovery_source_runtime WHERE source=%s FOR UPDATE", (source,)
+                ).fetchone()
+                reset = (now - row["window_started_at"]).total_seconds() >= 300
+                requests = 1 if reset else int(row["requests_window"]) + 1
+                successes = int(success) if reset else int(row["successes_window"]) + int(success)
+                errors = int(not success) if reset else int(row["errors_window"]) + int(not success)
+                limited_count = int(limited) if reset else int(row["limited_window"]) + int(limited)
+                captcha_count = int(captcha) if reset else int(row["captcha_window"]) + int(captcha)
+                rps = float(row["current_rps"])
+                state = "healthy" if success else "degraded"
+                circuit_until = row["circuit_until"]
+                if captcha_count / max(requests, 1) > max(captcha_threshold, 0):
+                    rps = max(0.25, rps / 2)
+                    state = "circuit_open"
+                    circuit_until = now + timedelta(seconds=max(1, source_cooldown_seconds))
+                evaluated_at = row["evaluated_at"]
+                if (now - evaluated_at).total_seconds() >= 1800 and not circuit_until:
+                    ratio = captcha_count / max(requests, 1)
+                    if ratio < 0.01:
+                        rps = min(maximum_rps, rps * 1.25)
+                        state = "healthy"
+                    elif ratio > captcha_threshold:
+                        rps = max(0.25, rps / 2)
+                    evaluated_at = now
+                connection.execute(
+                    "UPDATE discovery_source_runtime SET state=%s,current_rps=%s,circuit_until=%s,"
+                    "window_started_at=%s,evaluated_at=%s,requests_window=%s,successes_window=%s,"
+                    "errors_window=%s,limited_window=%s,captcha_window=%s,"
+                    "requests_total=requests_total+1,successes_total=successes_total+%s,"
+                    "errors_total=errors_total+%s,limited_total=limited_total+%s,"
+                    "captcha_total=captcha_total+%s,result_count=result_count+%s,"
+                    "novel_count=novel_count+%s,updated_at=now() WHERE source=%s",
+                    (
+                        state, rps, circuit_until, now if reset else row["window_started_at"],
+                        evaluated_at, requests, successes, errors, limited_count, captcha_count,
+                        int(success), int(not success), int(limited), int(captcha),
+                        max(0, result_count), max(0, novel_count), source,
+                    ),
+                )
+
+    def reserve_google_proxy(
+        self, proxy_hash: str, locale: str, minimum_interval_seconds: int,
+    ) -> tuple[bool, float]:
+        now = datetime.now(timezone.utc)
+        with self.connect() as connection:
+            with connection.transaction():
+                connection.execute(
+                    "INSERT INTO google_proxy_sessions(proxy_key_hash,locale) VALUES(%s,%s) "
+                    "ON CONFLICT(proxy_key_hash) DO NOTHING", (proxy_hash, locale),
+                )
+                row = connection.execute(
+                    "SELECT * FROM google_proxy_sessions WHERE proxy_key_hash=%s FOR UPDATE",
+                    (proxy_hash,),
+                ).fetchone()
+                available_at = row["cooldown_until"] or now
+                if row["last_used_at"]:
+                    available_at = max(
+                        available_at,
+                        row["last_used_at"] + timedelta(seconds=max(0, minimum_interval_seconds)),
+                    )
+                if available_at > now:
+                    return False, (available_at - now).total_seconds()
+                connection.execute(
+                    "UPDATE google_proxy_sessions SET locale=%s,last_used_at=now(),updated_at=now() "
+                    "WHERE proxy_key_hash=%s", (locale, proxy_hash),
+                )
+        return True, 0.0
+
+    def record_google_proxy_result(
+        self, proxy_hash: str, *, success: bool, cooldown_seconds: int = 0,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO google_proxy_sessions(proxy_key_hash,successes,failures,cooldown_until) "
+                "VALUES(%s,%s,%s,CASE WHEN %s>0 THEN now()+(%s*interval '1 second') END) "
+                "ON CONFLICT(proxy_key_hash) DO UPDATE SET successes=google_proxy_sessions.successes+%s,"
+                "failures=google_proxy_sessions.failures+%s,cooldown_until=CASE WHEN %s>0 "
+                "THEN now()+(%s*interval '1 second') ELSE google_proxy_sessions.cooldown_until END,"
+                "updated_at=now()",
+                (
+                    proxy_hash, int(success), int(not success), cooldown_seconds, cooldown_seconds,
+                    int(success), int(not success), cooldown_seconds, cooldown_seconds,
+                ),
+            )
+
+    def recent_google_trend_titles(self, hours: int = 24) -> list[dict[str, str]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT item->>'title' AS title,item->>'url' AS url "
+                "FROM discovery_query_cache cache "
+                "CROSS JOIN LATERAL jsonb_array_elements(cache.payload) item "
+                "WHERE cache.source='google_trends' AND cache.updated_at>=now()-(%s*interval '1 hour') "
+                "AND length(item->>'title') BETWEEN 3 AND 300",
+                (max(1, hours),),
+            ).fetchall()
+        unique: dict[tuple[str, str], dict[str, str]] = {}
+        for row in rows:
+            title = str(row["title"] or "")
+            url = str(row["url"] or "")
+            if title:
+                unique[(title, url)] = {"title": title, "url": url}
+        return list(unique.values())
 
     def initialize(self) -> None:
         with self.connect() as connection:
@@ -560,7 +893,19 @@ class CampaignStore:
             )
             return cursor.rowcount
 
-    def due_continuous_keywords(self, limit: int) -> list[dict[str, Any]]:
+    def retire_all_trends(self) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE continuous_keywords SET state='retired',updated_at=now() "
+                "WHERE kind='trend' AND state<>'retired'"
+            )
+            return cursor.rowcount
+
+    def due_continuous_keywords(
+        self, limit: int, trend_share: float = 0.25
+    ) -> list[dict[str, Any]]:
+        bounded_limit = max(1, limit)
+        trend_limit = max(0, min(bounded_limit, int(bounded_limit * max(0, min(trend_share, 1)))))
         with self.connect() as connection:
             with connection.transaction():
                 connection.execute(
@@ -568,11 +913,15 @@ class CampaignStore:
                     "WHERE kind='trend' AND expires_at IS NOT NULL AND expires_at<now()"
                 )
                 return connection.execute(
-                    "SELECT * FROM continuous_keywords WHERE state IN ('active','probation','cooldown') "
-                    "AND next_run_at<=now() ORDER BY (last_run_at IS NULL) DESC,"
+                    "WITH due AS (SELECT *,row_number() OVER (PARTITION BY kind ORDER BY "
+                    "(last_run_at IS NULL) DESC,CASE state WHEN 'probation' THEN 0 "
+                    "WHEN 'active' THEN 1 ELSE 2 END,priority DESC,score DESC,last_run_at NULLS FIRST) AS kind_rank "
+                    "FROM continuous_keywords WHERE state IN ('active','probation','cooldown') "
+                    "AND next_run_at<=now()) SELECT * FROM due WHERE kind<>'trend' OR kind_rank<=%s "
+                    "ORDER BY (kind='trend'),(last_run_at IS NULL) DESC,"
                     "CASE state WHEN 'probation' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,"
                     "priority DESC,score DESC,last_run_at NULLS FIRST LIMIT %s",
-                    (max(1, limit),),
+                    (trend_limit, bounded_limit),
                 ).fetchall()
 
     def continuous_keyword_snapshot(self, campaign_id: str, task_id: str) -> dict[str, int]:
@@ -626,13 +975,14 @@ class CampaignStore:
                 interval_seconds = 1800 if score >= 60 else 10800 if score >= 30 else 43200
                 if state == "retired":
                     interval_seconds = 86400
-                elif str(row["kind"]) == "trend" and runs < 3:
-                    state = "probation"
-                elif str(row["kind"]) == "trend" and (
-                    unique_yield < 0.10 or novelty < 0.15
-                ):
-                    state = "cooldown"
-                    interval_seconds = 86400
+                elif str(row["kind"]) == "trend":
+                    if runs < 3 and delivered < 10:
+                        state = "probation"
+                    elif delivered < 10 or unique_yield < 0.10 or novelty < 0.15:
+                        state = "cooldown"
+                        interval_seconds = 86400
+                    else:
+                        state = "active"
                 elif low_runs >= 3:
                     state = "cooldown"
                     interval_seconds = 86400
@@ -863,8 +1213,8 @@ class CampaignStore:
                 "COALESCE(max(daily_target),0) AS daily_target,"
                 "COALESCE(min(proxy_profile),'private') AS proxy_profile,"
                 "CASE WHEN COALESCE(bool_or(status='active'),false) THEN 'active' "
-                "WHEN COALESCE(bool_or(status='failed'),false) THEN 'failed' "
-                "WHEN COALESCE(bool_or(status='paused'),false) THEN 'paused' ELSE 'stopped' END AS status,"
+                "WHEN COALESCE(bool_or(status='paused'),false) THEN 'paused' "
+                "WHEN COALESCE(bool_or(status='failed'),false) THEN 'failed' ELSE 'stopped' END AS status,"
                 "COALESCE(sum(discovered),0) AS discovered,COALESCE(sum(fetched),0) AS fetched,"
                 "COALESCE(sum(failed),0) AS failed,COALESCE(sum(duplicates),0) AS duplicates,"
                 "COALESCE(sum(irrelevant),0) AS irrelevant,NULL AS last_error,"
@@ -924,6 +1274,44 @@ class CampaignStore:
             stage_stats = connection.execute(
                 "SELECT stage,observations,total_seconds,last_seconds,updated_at FROM crawl_stage_totals"
             ).fetchall()
+            adaptive = connection.execute(
+                "SELECT enabled,current_concurrency,min_concurrency,max_concurrency,state,reason,"
+                "limited_ratio,success_rate,outbox_pending,upload_errors,updated_at "
+                "FROM continuous_runtime WHERE id=1"
+            ).fetchone()
+            discovery_errors = connection.execute(
+                "WITH cc AS (SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
+                "WHERE w.task_id LIKE 'continuous:%') SELECT "
+                "CASE WHEN ce.error_code ILIKE '%%google-news%%' THEN 'google_news' ELSE 'google_search' END AS source,"
+                "count(*) AS errors,count(*) FILTER (WHERE ce.http_status IN (403,429) OR "
+                "ce.error_code ILIKE '%%captcha%%') AS limited FROM crawl_events ce JOIN cc ON cc.id=ce.campaign_id "
+                "WHERE ce.status='discovery_failed' AND ce.created_at>=now()-interval '5 minutes' GROUP BY source"
+            ).fetchall()
+            discovery_success = connection.execute(
+                "WITH cc AS (SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
+                "WHERE w.task_id LIKE 'continuous:%') SELECT CASE WHEN source.value ILIKE '%%google-news%%' "
+                "THEN 'google_news' ELSE 'google_search' END AS source,count(DISTINCT cp.page_id) AS accepted "
+                "FROM campaign_pages cp JOIN cc ON cc.id=cp.campaign_id JOIN pages p ON p.id=cp.page_id "
+                "CROSS JOIN LATERAL jsonb_array_elements_text(p.source_engines) source(value) "
+                "WHERE cp.first_seen>=now()-interval '5 minutes' AND source.value ILIKE 'google%%' GROUP BY 1"
+            ).fetchall()
+            proxy_utilization = connection.execute(
+                "SELECT profile,count(*) FILTER (WHERE last_used_at>=now()-interval '5 minutes') AS active,"
+                "COALESCE(sum(requests) FILTER (WHERE last_used_at>=now()-interval '5 minutes'),0) AS requests "
+                "FROM crawl_proxy_usage GROUP BY profile"
+            ).fetchall()
+            google_sources = connection.execute(
+                "SELECT source,state,current_rps,circuit_until,requests_window,successes_window,"
+                "errors_window,limited_window,captcha_window,requests_total,successes_total,"
+                "errors_total,limited_total,captcha_total,result_count,novel_count,cache_hits,"
+                "cache_misses,updated_at FROM discovery_source_runtime WHERE source<>'cache' ORDER BY source"
+            ).fetchall()
+            google_proxy_health = connection.execute(
+                "SELECT count(*) AS total,count(*) FILTER (WHERE cooldown_until>now()) AS cooling,"
+                "count(*) FILTER (WHERE cooldown_until IS NULL OR cooldown_until<=now()) AS healthy,"
+                "count(*) FILTER (WHERE last_used_at>=now()-interval '5 minutes') AS active "
+                "FROM google_proxy_sessions"
+            ).fetchone()
         for campaign in campaigns:
             elapsed = max(float(campaign.pop("elapsed_seconds") or 0), 1)
             recent = int(campaign.pop("recent_count") or 0)
@@ -969,9 +1357,20 @@ class CampaignStore:
             continuous["queue_depth"] = continuous["whale_pending"]
             continuous["whale_rejected"] = whale_counts.get("rejected", 0)
             continuous["bottlenecks"] = bottlenecks
+            continuous["collector_state"] = str(adaptive["state"]) if adaptive else "unknown"
+            continuous["collector_reason"] = str(adaptive["reason"]) if adaptive else "unknown"
         else:
             continuous = None
         keyword_pool = self.continuous_keyword_stats()
+        discovery_map: dict[str, dict[str, Any]] = {
+            name: {"source": name, "accepted": 0, "errors": 0, "limited": 0}
+            for name in ("google_search", "google_news")
+        }
+        for row in discovery_success:
+            discovery_map[str(row["source"])]["accepted"] += int(row["accepted"])
+        for row in discovery_errors:
+            discovery_map[str(row["source"])]["errors"] += int(row["errors"])
+            discovery_map[str(row["source"])]["limited"] += int(row["limited"])
         if continuous:
             summary = keyword_pool["summary"]
             continuous["keyword_count"] = int(summary["base"]) + int(summary["trend"])
@@ -985,6 +1384,11 @@ class CampaignStore:
             "keyword_pool": keyword_pool,
             "browser_fallback": browser_stats,
             "stage_metrics": stage_stats,
+            "adaptive_concurrency": adaptive,
+            "discovery_health": list(discovery_map.values()),
+            "proxy_utilization": proxy_utilization,
+            "google_sources": google_sources,
+            "google_proxy_health": google_proxy_health,
         }
 
     def purge_old_events(self, days: int = 30) -> int:

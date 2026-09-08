@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 import scrapy
+from scrapy import signals
 from scrapy.downloadermiddlewares.robotstxt import RobotsTxtMiddleware
 from scrapy.exceptions import IgnoreRequest
 from twisted.internet.task import LoopingCall
@@ -15,6 +16,7 @@ from .campaign_store import CampaignStore, PageRecord
 from .config import Config
 from .discovery import SearchDiscovery
 from .fetcher import detect_language, extract_text, is_public_url, normalize_url, relevant_to
+from .keyword_catalog import AI_ANCHORS
 from .proxy_pool import ProxyPool
 from .whale_collector import whale_message
 
@@ -51,10 +53,26 @@ class ProxyDownloaderMiddleware:
     def __init__(self, config: Config):
         self.config = config
         self.pool = ProxyPool(config)
+        self.store = CampaignStore(config.database_url)
+        self._usage: dict[tuple[str, str], int] = {}
+        self._last_usage_flush = time.monotonic()
 
     @classmethod
     def from_crawler(cls, crawler: scrapy.crawler.Crawler) -> "ProxyDownloaderMiddleware":
-        return cls(Config())
+        middleware = cls(Config())
+        crawler.signals.connect(middleware.spider_closed, signal=signals.spider_closed)
+        return middleware
+
+    def _flush_usage(self) -> None:
+        if not self._usage:
+            return
+        rows = [(key, profile, count) for (profile, key), count in self._usage.items()]
+        self.store.record_proxy_usage(rows)
+        self._usage = {}
+        self._last_usage_flush = time.monotonic()
+
+    def spider_closed(self, spider: scrapy.Spider, reason: str) -> None:
+        self._flush_usage()
 
     def process_request(self, request: scrapy.Request, spider: scrapy.Spider) -> None:
         profile = str(request.meta.get("proxy_profile") or getattr(spider, "proxy_profile", "direct"))
@@ -65,6 +83,10 @@ class ProxyDownloaderMiddleware:
         if selected is None:
             raise IgnoreRequest(f"{profile} proxy pool unavailable")
         proxy_url, proxy_key = selected
+        usage_key = (profile, hashlib.sha256(proxy_key.encode()).hexdigest())
+        self._usage[usage_key] = self._usage.get(usage_key, 0) + 1
+        if sum(self._usage.values()) >= 500 or time.monotonic() - self._last_usage_flush >= 30:
+            self._flush_usage()
         request.meta["proxy"] = proxy_url
         request.meta["proxy_key"] = proxy_key
 
@@ -204,6 +226,7 @@ class FocusedSpider(scrapy.Spider):
             aliases if task_payload.get("continuous") and aliases else (self.query, *aliases)
         ))
         self.search_language = str(task_payload.get("language") or "en")
+        self.keyword_kind = str(task_payload.get("kind") or "base")
         self.daily_target = int(campaign["daily_target"])
         self.proxy_profile = str(campaign["proxy_profile"])
         self.robots_bypass_domains = self.config.robots_bypass_domains
@@ -267,6 +290,17 @@ class FocusedSpider(scrapy.Spider):
                 if is_public_url(url):
                     yield self._page_request(url, ("whale-content-detail",))
             return
+        web_bucket = (
+            int(hashlib.sha256(
+                f"{self.query}|{datetime.now(timezone.utc):%Y%m%d%H}".encode()
+            ).hexdigest()[:8], 16) % 10_000
+        ) / 10_000
+        task_payload = dict(whale_task.get("payload") or {}) if whale_task else {}
+        news_interval = (
+            self.config.google_news_trend_interval_seconds
+            if task_payload.get("kind") == "trend"
+            else self.config.google_news_base_interval_seconds
+        )
         discovery = SearchDiscovery(
             self.config.searxng_url,
             self.config.request_timeout,
@@ -274,6 +308,35 @@ class FocusedSpider(scrapy.Spider):
             proxy_pool=ProxyPool(self.config),
             proxy_profile=self.proxy_profile,
             language=self.search_language,
+            global_concurrency=self.config.discovery_global_concurrency,
+            query_concurrency=self.config.discovery_query_concurrency,
+            proxy_usage_recorder=self.store.record_proxy_usage,
+            google_web_enabled=self.config.google_web_enabled,
+            searxng_enabled=self.config.searxng_discovery_enabled,
+            google_web_initial_rps=self.config.google_web_initial_rps,
+            google_web_max_rps=self.config.google_web_max_rps,
+            google_web_max_pages=self.config.google_web_max_pages,
+            second_page_min_novelty=self.config.google_web_second_page_min_novelty,
+            query_cache_seconds=self.config.google_web_query_cache_seconds,
+            proxy_min_interval_seconds=self.config.google_web_proxy_min_interval_seconds,
+            proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
+            source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
+            captcha_threshold=self.config.google_web_captcha_threshold,
+            news_locales=self.config.google_news_locales,
+            news_base_interval_seconds=news_interval,
+            news_trend_interval_seconds=self.config.google_news_trend_interval_seconds,
+            trends_interval_seconds=self.config.google_trends_interval_seconds,
+            web_query_eligible=web_bucket < self.config.google_web_share,
+            cache_get=self.store.get_discovery_cache,
+            cache_metadata_get=self.store.get_discovery_cache_metadata,
+            cache_put=self.store.put_discovery_cache,
+            source_slot_acquirer=self.store.acquire_discovery_slot,
+            source_result_recorder=self.store.record_discovery_result,
+            proxy_reserver=self.store.reserve_google_proxy,
+            proxy_result_recorder=self.store.record_google_proxy_result,
+            novelty_counter=lambda urls: len(urls) - len(
+                self.store.processed_urls(self.campaign_id, urls)
+            ),
         )
         queries = self.terms
         if whale_task and dict(whale_task.get("payload") or {}).get("continuous"):
@@ -292,7 +355,11 @@ class FocusedSpider(scrapy.Spider):
                     f"{term} after:{after.date().isoformat()} before:{before.date().isoformat()}",
                 )
             ))
-        pages = min(self.config.discovery_pages, self.config.discovery_pages_per_shard)
+        pages = min(
+            self.config.discovery_pages,
+            self.config.discovery_pages_per_shard,
+            self.config.google_web_max_pages,
+        )
         # Discovery uses requests and its own bounded thread pools. Never let
         # those blocking calls stall the shared long-lived Scrapy reactor.
         discovery_started = time.monotonic()
@@ -447,6 +514,13 @@ class FocusedSpider(scrapy.Spider):
             )
         self.store.record_domain_result(response.url, True)
         relevant = relevant_to(content, title, self.terms)
+        if relevant and self.keyword_kind == "trend":
+            searchable_text = f"{title} {content}"
+            searchable_folded = searchable_text.casefold()
+            relevant = bool(AI_ANCHORS.search(searchable_text)) and any(
+                alias.casefold() in searchable_folded
+                for alias in self.terms if alias.strip()
+            )
         if relevant and language in {"zh", "en"}:
             if self.starting_daily_count + self.pending_accepts >= self.daily_target:
                 return

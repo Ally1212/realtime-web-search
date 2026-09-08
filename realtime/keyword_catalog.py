@@ -153,6 +153,14 @@ TREND_BLACKLIST = {
     "europe", "asia", "africa", "america", "germany", "france", "japan", "india",
     "中文", "英文", "今日", "最新", "新闻", "报告", "研究", "更新", "中国", "全球",
     "文章", "首页", "页面", "图片", "视频", "阅读全文",
+    "a", "an", "and", "are", "as", "at", "be", "billion", "but", "by",
+    "can", "could", "education", "everything", "for", "from", "future", "in",
+    "is", "it", "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december", "more",
+    "no", "of", "on", "one", "or", "should", "that", "this", "to", "top",
+    "was", "we", "were", "when", "where", "which", "who", "will", "with", "you",
+    "big tech", "cloud", "business", "nasdaq", "london", "brazil", "israel",
+    "hyderabad", "assam", "u.s", "u.s.",
 }
 
 
@@ -160,16 +168,38 @@ def _normalized_candidate(value: str) -> str:
     return " ".join(value.strip(" -–—:：,，.。'\"()（）").split())
 
 
+def trend_candidate_allowed(value: str, excluded: set[str] | None = None) -> bool:
+    normalized = _normalized_candidate(value)
+    folded = normalized.casefold()
+    without_anchor = _normalized_candidate(AI_ANCHORS.sub("", normalized)).casefold()
+    excluded_values = {item.casefold() for item in (excluded or set())}
+    if (
+        len(normalized) < 2 or folded in TREND_BLACKLIST or folded in excluded_values
+        or without_anchor in TREND_BLACKLIST or without_anchor in excluded_values
+        or AI_ANCHORS.fullmatch(normalized)
+    ):
+        return False
+    if re.fullmatch(r"[A-Za-z0-9. -]+", normalized):
+        tokens = normalized.split()
+        if not 1 <= len(tokens) <= 4 or all(token.casefold() in TREND_BLACKLIST for token in tokens):
+            return False
+        if len(tokens) == 1 and len(tokens[0].strip(".")) < 3:
+            return False
+    return True
+
+
 def trend_keyword_specs(
     rows: list[dict[str, str]], *, now: datetime | None = None, limit: int = 50,
     excluded: set[str] | None = None,
 ) -> tuple[KeywordSpec, ...]:
-    """Extract auditable trends: >=3 domains or >=5 distinct titles."""
+    """Extract auditable trends backed by >=3 domains and >=5 distinct titles."""
     domains: dict[tuple[str, str], set[str]] = defaultdict(set)
     titles: dict[tuple[str, str], set[str]] = defaultdict(set)
     display: dict[tuple[str, str], str] = {}
     excluded_values = {value.casefold() for value in (excluded or set())}
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         title = str(row.get("title") or "")
         if not AI_ANCHORS.search(title):
             continue
@@ -187,12 +217,7 @@ def trend_keyword_specs(
         for language, raw in candidates:
             value = _normalized_candidate(raw)
             folded = value.casefold()
-            without_anchor = _normalized_candidate(AI_ANCHORS.sub("", value)).casefold()
-            if (
-                len(value) < 2 or folded in TREND_BLACKLIST or folded in excluded_values
-                or without_anchor in TREND_BLACKLIST or without_anchor in excluded_values
-                or AI_ANCHORS.fullmatch(value)
-            ):
+            if not trend_candidate_allowed(value, excluded_values):
                 continue
             key = (language, folded)
             display.setdefault(key, value)
@@ -200,7 +225,7 @@ def trend_keyword_specs(
                 domains[key].add(domain)
             titles[key].add(title)
     ranked = sorted(
-        (key for key in titles if len(domains[key]) >= 3 or len(titles[key]) >= 5),
+        (key for key in titles if len(domains[key]) >= 3 and len(titles[key]) >= 5),
         key=lambda key: (-len(domains[key]), -len(titles[key]), key[1]),
     )[:max(0, limit)]
     current = now or datetime.now(timezone.utc)

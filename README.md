@@ -1,12 +1,13 @@
 # Realtime Web Search
 
-面向关键词的持续网页采集系统。使用 Google、SearXNG 和 Google News RSS 发现 URL，Scrapy 并发抓取，按正文指纹去重后通过 Outbox 写入 Whale。持续模式默认不限每日数量。
+面向关键词的持续网页采集系统。只使用 Google Web、Google News RSS 和 Google Trends RSS 发现 URL，Scrapy 并发抓取，按正文指纹去重后通过 Outbox 写入 Whale。持续模式默认不限每日数量。
 
 ## 组件
 
 - Scrapy：异步抓取、重试、限速和持久队列。
-- SearXNG：仅启用 Google 引擎发现。
-- Google News RSS：按关键词持续补充 Google News URL；单个来源故障不会中断采集。
+- Google Web：网页优先；跨进程全局限速、查询缓存、代理会话隔离和 CAPTCHA 熔断。
+- Google News / Trends RSS：六个中英文地区版本持续补充 URL 和趋势证据。
+- SearXNG：仅保留为开发服务，生产发现默认关闭。
 - Trafilatura：提取主要正文；提取失败时自动回退 BeautifulSoup。
 - PostgreSQL：Campaign、正文指纹、关键词关联和 30 天事件记录。
 - Valkey：Campaign 调度队列。
@@ -58,8 +59,12 @@ CONTINUOUS_WHALE_ENABLED=true
 CONTINUOUS_AI_KEYWORDS=artificial intelligence,AI news,generative AI,OpenAI,AI regulation
 CONTINUOUS_INTERVAL_SECONDS=60
 CONTINUOUS_DAILY_TARGET=0
-CONTINUOUS_KEYWORD_CONCURRENCY=3
-CONTINUOUS_KEYWORDS_PER_ROUND=12
+CONTINUOUS_KEYWORD_CONCURRENCY=8
+CONTINUOUS_KEYWORD_CONCURRENCY_MAX=12
+CONTINUOUS_KEYWORDS_PER_ROUND=24
+CONTINUOUS_TREND_SHARE=0.25
+ADAPTIVE_CONCURRENCY_ENABLED=true
+ADAPTIVE_EVALUATION_SECONDS=300
 CONTINUOUS_TREND_ENABLED=true
 CONTINUOUS_TREND_LIMIT=50
 CONTINUOUS_PROXY_PROFILE=private
@@ -67,6 +72,8 @@ CRAWLER_OBEY_ROBOTS=false
 ```
 
 启动后，`collector` 会按日期切片持续扩展 Google 搜索和 Google News RSS 结果。基础查询覆盖模型、研究、开发、算力、治理、商业和行业应用；趋势词从最近 24 小时合格标题中提取，经过试采后自动启用或冷却。调度器每轮选择到期且产出较高的查询，抓取、过滤、去重后调用 `POST /v1/documents/bulk` 上传 Whale。`CONTINUOUS_DAILY_TARGET=0` 表示不限量持续采集；设置正整数才启用每日停止线。完整正文只在待上传 Outbox 中临时保存，Whale 确认后立即清除；本地长期保留 URL、哈希、标题和摘要。
+
+自适应放量默认从 8 路关键词并发启动，每 5 分钟评估一次，连续两个健康窗口后逐级升至 12 路。Outbox 达到 2,000 或出现上传错误时才降低整体并发；Google Web 的限流由独立控制器处理，不影响 News、正文抓取和上传。Google Web 初始 0.5 RPS、最高 2 RPS，同一查询缓存 6 小时；CAPTCHA 超过 2% 时暂停 Web 30 分钟，相关代理会话冷却 6 小时，恢复后从 0.25 RPS 预热。趋势查询每轮最多占 25%。
 
 ## API
 
@@ -87,7 +94,7 @@ POST /api/campaigns/{id}/resume
 POST /api/campaigns/{id}/stop
 ```
 
-统计页会显示各搜索引擎和 Feed 当天贡献的有效唯一页面数。`/metrics` 同时暴露发现、抓取、失败、重复、无关、Outbox、浏览器回退和预计日量指标。持续采集默认使用单进程常驻 Scrapy Reactor；设置 `CONTINUOUS_EXECUTOR=subprocess` 可临时回退旧执行方式。
+统计页会区分“采集器运行”和“Google Web 熔断”，显示 Web 当前 RPS、恢复时间、CAPTCHA、News 状态和健康/冷却代理数。`/metrics` 同时暴露每来源请求、结果、唯一产出、熔断和代理会话指标。持续采集默认使用单进程常驻 Scrapy Reactor；设置 `CONTINUOUS_EXECUTOR=subprocess` 可临时回退旧执行方式。
 
 ## 代理同步
 

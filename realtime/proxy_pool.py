@@ -240,6 +240,7 @@ class ProxyPool:
         self._sticky: dict[tuple[str, str], tuple[str, float]] = {}
         self._records: dict[str, dict[str, ProxyRecord]] = {}
         self._mtime: dict[str, float] = {}
+        self._last_used: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def _reload(self, profile: str) -> list[ProxyRecord]:
@@ -259,14 +260,16 @@ class ProxyPool:
         return list(self._records.get(profile, {}).values())
 
     def choose(
-        self, profile: str, domain: str, *, sticky_seconds: int | None = None
+        self, profile: str, domain: str, *, sticky_seconds: int | None = None,
+        sticky_key: str | None = None, full_pool: bool = False,
     ) -> tuple[str, str] | None:
         if profile == "direct":
             return None
         now = time.monotonic()
         with self._lock:
             records = self._reload(profile)
-            sticky = self._sticky.get((profile, domain))
+            affinity = sticky_key or domain
+            sticky = self._sticky.get((profile, affinity))
             if sticky and sticky[1] > now:
                 record = self._records.get(profile, {}).get(sticky[0])
                 if record and max(
@@ -296,14 +299,30 @@ class ProxyPool:
                         item.protocol != "http", -item.quality, item.latency_ms or 999999
                     )
                 )
-            top = eligible[: max(1, min(self.config.proxy_selection_window, len(eligible)))]
+            if full_pool:
+                # Cycle through the complete healthy pool; randomize only ties
+                # so concurrent crawler processes do not all start on one IP.
+                oldest = min(self._last_used.get(item.key, 0) for item in eligible)
+                top = [item for item in eligible if self._last_used.get(item.key, 0) == oldest]
+            else:
+                top = eligible[: max(1, min(self.config.proxy_selection_window, len(eligible)))]
             record = random.choice(top)
+            self._last_used[record.key] = now
             duration = self.config.proxy_sticky_seconds if sticky_seconds is None else sticky_seconds
             if duration > 0:
-                self._sticky[(profile, domain)] = (
+                self._sticky[(profile, affinity)] = (
                     record.key, now + duration
                 )
             return self._url(profile, record), record.key
+
+    def defer(self, key: str, domain: str, seconds: float) -> None:
+        """Temporarily remove one endpoint without treating it as a transport failure."""
+        with self._lock:
+            self._cooldown[(key, domain)] = time.monotonic() + max(0.0, seconds)
+            for profile in ("private", "public"):
+                for affinity, sticky in list(self._sticky.items()):
+                    if affinity[0] == profile and sticky[0] == key:
+                        self._sticky.pop(affinity, None)
 
     def _url(self, profile: str, record: ProxyRecord) -> str:
         scheme = "socks5h" if record.protocol == "socks5" else "http"
@@ -312,19 +331,31 @@ class ProxyPool:
             auth = f"{quote(self.config.proxy_username, safe='')}:{quote(self.config.proxy_password, safe='')}@"
         return f"{scheme}://{auth}{record.host}:{record.port}"
 
-    def report(self, key: str, domain: str, status: int | None = None, failed: bool = False) -> None:
+    def report(
+        self, key: str, domain: str, status: int | None = None,
+        failed: bool = False, *, sticky_key: str | None = None,
+    ) -> None:
         seconds = 0
         if failed:
             seconds = 300
         elif status == 407:
             seconds = 7200
         elif status == 429:
-            seconds = 600
+            seconds = (
+                self.config.google_web_proxy_cooldown_seconds
+                if domain.endswith("google.com") else 600
+            )
         elif status == 403:
-            seconds = 600 if domain.endswith("google.com") else 300
+            seconds = (
+                self.config.google_web_proxy_cooldown_seconds
+                if domain.endswith("google.com") else 300
+            )
         if seconds:
             scope = "*" if failed or status == 407 else domain
             with self._lock:
                 self._cooldown[(key, scope)] = time.monotonic() + seconds
                 self._sticky.pop(("private", domain), None)
                 self._sticky.pop(("public", domain), None)
+                if sticky_key:
+                    self._sticky.pop(("private", sticky_key), None)
+                    self._sticky.pop(("public", sticky_key), None)

@@ -5,6 +5,9 @@ from realtime.keyword_catalog import base_keyword_specs, trend_keyword_specs
 
 
 class KeywordCatalogTests(unittest.TestCase):
+    def test_trend_extractor_ignores_invalid_row_types(self):
+        self.assertEqual(trend_keyword_specs(["OpenAI news"]), ())  # type: ignore[list-item]
+
     def test_base_catalog_has_two_languages_and_bounded_size(self):
         specs = base_keyword_specs()
         self.assertEqual(len(specs), 260)
@@ -14,8 +17,8 @@ class KeywordCatalogTests(unittest.TestCase):
 
     def test_trend_requires_repeated_independent_evidence(self):
         rows = [
-            {"title": "NovaModel AI launches today", "url": f"https://site{i}.example/a"}
-            for i in range(3)
+            {"title": f"NovaModel AI launch update {i}", "url": f"https://site{i % 3}.example/a{i}"}
+            for i in range(5)
         ]
         specs = trend_keyword_specs(rows, now=datetime(2026, 9, 7, tzinfo=timezone.utc))
         self.assertTrue(any("NovaModel" in spec.query for spec in specs))
@@ -37,6 +40,14 @@ class KeywordCatalogTests(unittest.TestCase):
             for i in range(3)
         ]
         self.assertFalse(any("English" in spec.query for spec in trend_keyword_specs(rows)))
+
+    def test_trend_rejects_pronouns_months_and_locations(self):
+        rows = [
+            {"title": f"Who September London AI update {i}", "url": f"https://site{i % 3}.example/a{i}"}
+            for i in range(5)
+        ]
+        queries = [spec.query for spec in trend_keyword_specs(rows)]
+        self.assertFalse(any(value in query for query in queries for value in ("Who", "September", "London")))
 
     def test_trend_excludes_catalog_terms(self):
         rows = [

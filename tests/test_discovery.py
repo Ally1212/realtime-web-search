@@ -1,7 +1,7 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from realtime.discovery import SearchDiscovery, SearchResult
+from realtime.discovery import GoogleBlocked, SearchDiscovery, SearchResult
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -15,7 +15,7 @@ class DiscoveryTests(unittest.TestCase):
         results = SearchDiscovery._parse_google_html(content)
 
         self.assertEqual([row.url for row in results], ["https://example.com/ai"])
-        self.assertEqual(results[0].engines, ("google",))
+        self.assertEqual(results[0].engines, ("google_web",))
 
     def test_chinese_google_locale(self):
         response = Mock(content=b"")
@@ -39,7 +39,10 @@ class DiscoveryTests(unittest.TestCase):
         }
         session = Mock()
         session.get.return_value = response
-        results, errors = SearchDiscovery("http://search", session=session).discover("test", 2)
+        results, errors = SearchDiscovery(
+            "http://search", session=session, google_web_enabled=False,
+            searxng_enabled=True,
+        ).discover("test", 2)
         self.assertEqual(len(results), 1)
         self.assertEqual(errors, [])
 
@@ -54,8 +57,7 @@ class DiscoveryTests(unittest.TestCase):
         session = Mock()
         session.get.return_value = response
         discovery = SearchDiscovery(
-            "http://search",
-            session=session,
+            "http://search", session=session, google_web_enabled=False,
             feeds=(("policy-feed", "https://feeds.example/search?q={query}"),),
         )
 
@@ -76,7 +78,10 @@ class DiscoveryTests(unittest.TestCase):
         session = Mock()
         session.get.return_value = response
 
-        SearchDiscovery("http://search", session=session).discover("test", 1)
+        SearchDiscovery(
+            "http://search", session=session, google_web_enabled=False,
+            searxng_enabled=True,
+        ).discover("test", 1)
 
         self.assertEqual(session.get.call_args.kwargs["params"]["engines"], "google")
 
@@ -96,7 +101,10 @@ class DiscoveryTests(unittest.TestCase):
         session = Mock()
         session.get.return_value = response
 
-        results, errors = SearchDiscovery("http://search", session=session).discover("test", 1)
+        results, errors = SearchDiscovery(
+            "http://search", session=session, google_web_enabled=False,
+            searxng_enabled=True,
+        ).discover("test", 1)
 
         self.assertEqual([result.url for result in results], ["https://google.example/a"])
         self.assertEqual(errors, ["google: timeout"])
@@ -122,8 +130,7 @@ class DiscoveryTests(unittest.TestCase):
         session = Mock()
         session.get.side_effect = lambda url, **kwargs: bad if "bad" in url else good
         discovery = SearchDiscovery(
-            "http://search",
-            session=session,
+            "http://search", session=session, google_web_enabled=False,
             feeds=(
                 ("good-feed", "https://good.example/{query}"),
                 ("bad-feed", "https://bad.example/{query}"),
@@ -142,8 +149,7 @@ class DiscoveryTests(unittest.TestCase):
         session = Mock()
         session.get.return_value = response
         discovery = SearchDiscovery(
-            "http://search",
-            session=session,
+            "http://search", session=session, google_web_enabled=False,
             feeds=(("large-feed", "https://large.example/{query}"),),
         )
 
@@ -152,7 +158,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(results, [])
         self.assertEqual(errors, ["large-feed: ValueError"])
 
-    def test_resolves_google_news_feed_urls(self):
+    def test_google_news_feed_does_not_wait_for_network_resolution(self):
         feed = Mock()
         feed.headers = {}
         feed.raise_for_status.return_value = None
@@ -167,15 +173,14 @@ class DiscoveryTests(unittest.TestCase):
         session = Mock()
         session.get.side_effect = [feed, article]
         discovery = SearchDiscovery(
-            "http://search",
-            session=session,
+            "http://search", session=session, google_web_enabled=False,
             feeds=(("google-news-rss", "https://news.google.com/rss/search?q={query}"),),
         )
 
         results, errors = discovery.discover_feeds(("AI",))
 
         self.assertEqual(errors, [])
-        self.assertEqual(results[0].url, "https://publisher.example/ai")
+        self.assertEqual(results[0].url, "https://news.google.com/rss/articles/abc")
 
     def test_decodes_modern_google_news_article_urls(self):
         article = Mock()
@@ -230,9 +235,97 @@ class DiscoveryTests(unittest.TestCase):
         )
         discovery.discover = Mock(return_value=([source], []))
         discovery.discover_feeds = Mock(return_value=([], []))
-        discovery._resolve_google_news = Mock(return_value=resolved)
+        discovery.discover_trends = Mock(return_value=([], []))
+        discovery._prepare_google_news = Mock(return_value=resolved)
 
         results, errors = discovery.discover_many(("AI",), 1)
 
         self.assertEqual(errors, [])
         self.assertEqual([item.url for item in results], [resolved.url])
+
+    def test_http_200_captcha_opens_block_path(self):
+        response = Mock(status_code=200, content=b"Our systems have detected unusual traffic")
+        response.url = "https://www.google.com/search?q=AI"
+        blocked = SearchDiscovery._google_block(response)
+        self.assertIsInstance(blocked, GoogleBlocked)
+        self.assertTrue(blocked.captcha)
+
+    def test_cache_hit_avoids_network(self):
+        session = Mock()
+        cached = [{"url": "https://example.com/a", "title": "A", "engines": ["google_web"]}]
+        discovery = SearchDiscovery(
+            "http://search", session=session,
+            cache_get=Mock(return_value={"payload": cached}),
+        )
+        results = discovery._discover_google_page("AI", 1)
+        self.assertEqual([row.url for row in results], ["https://example.com/a"])
+        session.get.assert_not_called()
+
+    def test_low_first_page_novelty_skips_second_page(self):
+        discovery = SearchDiscovery(
+            "http://search", second_page_min_novelty=0.15,
+            novelty_counter=Mock(return_value=0),
+        )
+        discovery._discover_google_page = Mock(return_value=[
+            SearchResult("https://example.com/old", "Old", ("google_web",))
+        ])
+        discovery.discover("AI", 2)
+        discovery._discover_google_page.assert_called_once_with("AI", 1)
+
+    def test_six_google_news_locales_are_rendered(self):
+        locales = ("US:en", "GB:en", "SG:en", "SG:zh-Hans", "HK:zh-Hant", "TW:zh-Hant")
+        targets = SearchDiscovery("http://search", news_locales=locales)._feed_targets(("AI",))
+        self.assertEqual(len(targets), 6)
+
+    def test_web_circuit_does_not_stop_news(self):
+        feed = Mock(headers={}, status_code=200)
+        feed.raise_for_status.return_value = None
+        feed.iter_content.return_value = [
+            b"<rss><channel><item><title>AI</title><link>https://example.com/a</link></item></channel></rss>"
+        ]
+        session = Mock()
+        session.get.return_value = feed
+        discovery = SearchDiscovery(
+            "http://search", session=session, news_locales=("SG:en",),
+            source_slot_acquirer=Mock(return_value={"allowed": False, "wait": 1800}),
+        )
+        results, errors = discovery.discover_many(("AI",), 1)
+        self.assertIn("circuit_open", " ".join(errors))
+        self.assertIn("https://example.com/a", [row.url for row in results])
+
+    def test_news_uses_conditional_request_after_cache_expiry(self):
+        response = Mock(status_code=304, headers={})
+        session = Mock()
+        session.get.return_value = response
+        cache_put = Mock()
+        stale = {
+            "payload": [{"url": "https://example.com/a", "title": "A", "engines": ["google_news"]}],
+            "etag": '"abc"', "last_modified": "Mon, 07 Sep 2026 00:00:00 GMT",
+        }
+        discovery = SearchDiscovery(
+            "http://search", session=session, google_web_enabled=False,
+            news_locales=("SG:en",), cache_get=Mock(return_value=None),
+            cache_metadata_get=Mock(return_value=stale), cache_put=cache_put,
+        )
+        results, errors = discovery.discover_feeds(("OpenAI",))
+        self.assertEqual(errors, [])
+        self.assertEqual([row.url for row in results], ["https://example.com/a"])
+        self.assertEqual(session.get.call_args.kwargs["headers"]["If-None-Match"], '"abc"')
+
+    def test_one_session_is_bound_to_each_google_proxy(self):
+        response = Mock(status_code=200, content=b"")
+        response.url = "https://www.google.com/search"
+        response.raise_for_status.return_value = None
+        proxy_session = Mock()
+        proxy_session.get.return_value = response
+        pool = Mock()
+        pool.choose.return_value = ("http://proxy.example:8080", "proxy-key")
+        with patch("realtime.discovery.requests.Session", return_value=proxy_session):
+            discovery = SearchDiscovery(
+                "http://search", session=Mock(), proxy_pool=pool,
+                proxy_profile="private", proxy_reserver=Mock(return_value=(True, 0)),
+            )
+            discovery._discover_google_page("AI one", 1)
+            discovery._discover_google_page("AI two", 1)
+        self.assertEqual(proxy_session.get.call_count, 2)
+        self.assertEqual(len(discovery._proxy_sessions), 1)

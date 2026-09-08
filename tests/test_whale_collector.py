@@ -2,10 +2,28 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from realtime.config import Config
-from realtime.whale_collector import ContinuousWhaleRunner, WhaleRunner, whale_message
+from realtime.whale_collector import (
+    AdaptiveConcurrencyController, ContinuousWhaleRunner, WhaleRunner, whale_message,
+)
 
 
 class WhaleCollectorTests(unittest.TestCase):
+    def test_adaptive_concurrency_scales_up_after_two_healthy_windows(self):
+        controller = AdaptiveConcurrencyController(8, 12)
+        healthy = {"limited_ratio": 0.01, "outbox_pending": 2, "upload_errors": 0, "success_rate": 0.7}
+        self.assertEqual(controller.evaluate(healthy), 8)
+        self.assertEqual(controller.evaluate(healthy), 9)
+        self.assertEqual(controller.reason, "healthy_scale_up")
+
+    def test_adaptive_concurrency_scales_down_immediately(self):
+        controller = AdaptiveConcurrencyController(10, 12)
+        self.assertEqual(controller.evaluate({"limited_ratio": 0.2}), 10)
+        self.assertEqual(controller.evaluate({"outbox_pending": 2000}), 8)
+        self.assertEqual(controller.reason, "outbox_backpressure")
+        healthy = {"limited_ratio": 0.01, "outbox_pending": 0, "upload_errors": 0, "success_rate": 0.7}
+        self.assertEqual(controller.evaluate(healthy), 8)
+        self.assertEqual(controller.reason, "scale_down_cooldown")
+
     def test_message_has_stable_identity_and_required_whale_fields(self):
         config = Config()
         task = {

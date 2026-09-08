@@ -16,6 +16,8 @@ DEFAULT_DISCOVERY_FEEDS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+DEFAULT_GOOGLE_NEWS_LOCALES = "US:en,GB:en,SG:en,SG:zh-Hans,HK:zh-Hant,TW:zh-Hant"
+
 DEFAULT_CONTINUOUS_AI_KEYWORDS = (
     "artificial intelligence,AI news,generative AI,OpenAI,AI regulation"
 )
@@ -121,6 +123,8 @@ class Config:
     browser_timeout_ms: int = int(os.getenv("BROWSER_TIMEOUT_MS", "15000"))
     discovery_pages: int = int(os.getenv("DISCOVERY_PAGES", "20"))
     discovery_pages_per_shard: int = int(os.getenv("DISCOVERY_PAGES_PER_SHARD", "3"))
+    discovery_global_concurrency: int = int(os.getenv("DISCOVERY_GLOBAL_CONCURRENCY", "24"))
+    discovery_query_concurrency: int = int(os.getenv("DISCOVERY_QUERY_CONCURRENCY", "4"))
     discovery_history_start: date = date.fromisoformat(
         os.getenv("DISCOVERY_HISTORY_START", "2015-01-01")
     )
@@ -133,6 +137,43 @@ class Config:
     )
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
     discovery_feeds: tuple[tuple[str, str], ...] = _discovery_feeds()
+    google_web_enabled: bool = _enabled("GOOGLE_WEB_ENABLED", True)
+    google_web_initial_rps: float = float(os.getenv("GOOGLE_WEB_INITIAL_RPS", "0.5"))
+    google_web_max_rps: float = float(os.getenv("GOOGLE_WEB_MAX_RPS", "2"))
+    google_web_burst: int = int(os.getenv("GOOGLE_WEB_BURST", "1"))
+    google_web_max_pages: int = int(os.getenv("GOOGLE_WEB_MAX_PAGES", "2"))
+    google_web_second_page_min_novelty: float = float(
+        os.getenv("GOOGLE_WEB_SECOND_PAGE_MIN_NOVELTY", "0.15")
+    )
+    google_web_query_cache_seconds: int = int(
+        os.getenv("GOOGLE_WEB_QUERY_CACHE_SECONDS", "21600")
+    )
+    google_web_proxy_min_interval_seconds: int = int(
+        os.getenv("GOOGLE_WEB_PROXY_MIN_INTERVAL_SECONDS", "30")
+    )
+    google_web_proxy_cooldown_seconds: int = int(
+        os.getenv("GOOGLE_WEB_PROXY_COOLDOWN_SECONDS", "21600")
+    )
+    google_web_source_cooldown_seconds: int = int(
+        os.getenv("GOOGLE_WEB_SOURCE_COOLDOWN_SECONDS", "1800")
+    )
+    google_web_captcha_threshold: float = float(
+        os.getenv("GOOGLE_WEB_CAPTCHA_THRESHOLD", "0.02")
+    )
+    google_web_share: float = float(os.getenv("GOOGLE_WEB_SHARE", "0.70"))
+    searxng_discovery_enabled: bool = _enabled("SEARXNG_DISCOVERY_ENABLED", False)
+    google_news_locales: tuple[str, ...] = _csv(
+        "GOOGLE_NEWS_LOCALES", DEFAULT_GOOGLE_NEWS_LOCALES
+    )
+    google_news_base_interval_seconds: int = int(
+        os.getenv("GOOGLE_NEWS_BASE_INTERVAL_SECONDS", "3600")
+    )
+    google_news_trend_interval_seconds: int = int(
+        os.getenv("GOOGLE_NEWS_TREND_INTERVAL_SECONDS", "900")
+    )
+    google_trends_interval_seconds: int = int(
+        os.getenv("GOOGLE_TRENDS_INTERVAL_SECONDS", "900")
+    )
     trafilatura_enabled: bool = _enabled("TRAFILATURA_ENABLED")
     robots_bypass_domains: tuple[str, ...] = tuple(
         value.strip().lower()
@@ -168,13 +209,17 @@ class Config:
     continuous_max_items_per_keyword: int = int(os.getenv("CONTINUOUS_MAX_ITEMS_PER_KEYWORD", "1000000"))
     # 0 means unlimited continuous collection.
     continuous_daily_target: int = int(os.getenv("CONTINUOUS_DAILY_TARGET", "0"))
-    continuous_keyword_concurrency: int = int(os.getenv("CONTINUOUS_KEYWORD_CONCURRENCY", "3"))
-    continuous_keywords_per_round: int = int(os.getenv("CONTINUOUS_KEYWORDS_PER_ROUND", "12"))
+    continuous_keyword_concurrency: int = int(os.getenv("CONTINUOUS_KEYWORD_CONCURRENCY", "8"))
+    continuous_keyword_concurrency_max: int = int(os.getenv("CONTINUOUS_KEYWORD_CONCURRENCY_MAX", "12"))
+    continuous_keywords_per_round: int = int(os.getenv("CONTINUOUS_KEYWORDS_PER_ROUND", "24"))
+    continuous_trend_share: float = float(os.getenv("CONTINUOUS_TREND_SHARE", "0.25"))
+    adaptive_concurrency_enabled: bool = _enabled("ADAPTIVE_CONCURRENCY_ENABLED", True)
+    adaptive_evaluation_seconds: int = int(os.getenv("ADAPTIVE_EVALUATION_SECONDS", "300"))
     continuous_trend_enabled: bool = _enabled("CONTINUOUS_TREND_ENABLED", True)
     continuous_trend_limit: int = int(os.getenv("CONTINUOUS_TREND_LIMIT", "50"))
     continuous_trend_refresh_seconds: int = int(os.getenv("CONTINUOUS_TREND_REFRESH_SECONDS", "1800"))
     continuous_proxy_profile: str = os.getenv("CONTINUOUS_PROXY_PROFILE", "direct")
     continuous_executor: str = os.getenv("CONTINUOUS_EXECUTOR", "persistent")
-    persistent_max_crawls: int = int(os.getenv("PERSISTENT_MAX_CRAWLS", "4"))
+    persistent_max_crawls: int = int(os.getenv("PERSISTENT_MAX_CRAWLS", "12"))
     outbox_flush_seconds: float = float(os.getenv("OUTBOX_FLUSH_SECONDS", "1"))
     outbox_max_pending: int = int(os.getenv("OUTBOX_MAX_PENDING", "5000"))

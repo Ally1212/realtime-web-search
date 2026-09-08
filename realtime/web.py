@@ -36,6 +36,26 @@ HTML = HTML.replace(
     "今日总目标 ${fmt(j.daily_target)}",
     "采集目标 ${j.daily_target>0?fmt(j.daily_target):'不限量'}",
 )
+HTML = HTML.replace(
+    "runStatus.textContent=statusText[j.status]||j.status;statusDot.className=j.status==='active'?'dot':'dot bad';",
+    "const externalWait=j.collector_state==='waiting_external';runStatus.textContent=externalWait?'等待 Whale':(statusText[j.status]||j.status);statusDot.className=j.status==='active'&&!externalWait?'dot':'dot bad';",
+).replace(
+    "plainStatus.textContent=j.status==='active'?'正在正常采集':j.status==='failed'?'采集异常':'当前没有持续采集';",
+    "plainStatus.textContent=externalWait?'Whale 暂时不可用':j.status==='active'?'正在正常采集':j.status==='failed'?'采集异常':'当前没有持续采集';",
+).replace(
+    "jobStatus.textContent=statusText[j.status]||j.status;",
+    "jobStatus.textContent=externalWait?'等待外部服务':(statusText[j.status]||j.status);",
+).replace(
+    "plainHelp.textContent=j.status==='active'?(rate>0?'系统正按日期切片持续发现并上传新内容。':'系统正在切换查询时间窗口或等待代理恢复。'):'后台任务没有处于运行状态，需要查看技术详情。';",
+    "plainHelp.textContent=externalWait?'采集器仍在运行并自动重试，Whale 恢复后会自动继续。':j.status==='active'?(rate>0?'系统正按日期切片持续发现并上传新内容。':'系统正在切换查询时间窗口或等待代理恢复。'):'后台任务没有处于运行状态，需要查看技术详情。';",
+)
+RUNTIME_HTML = r'''<script>
+const adaptiveReason={startup:'启动预热',healthy_window:'健康观察',healthy_scale_up:'健康升档',google_limited:'Google 限流降档',outbox_backpressure:'上传积压降档',whale_upload_errors:'Whale 上传异常',whale_register_unavailable:'等待 Whale 恢复连接',scale_down_cooldown:'降档冷却',quality_or_limit_guard:'质量或限流保护',adaptive_disabled:'固定并发'};
+function ensureRuntimePanel(){if(document.getElementById('runtimeCards'))return;const section=document.createElement('section');section.className='section';section.innerHTML='<h2>放量控制</h2><div class="cards" id="runtimeCards"><div class="card"><p>正在读取自适应并发状态。</p></div></div>';document.querySelector('.details').before(section)}
+async function refreshRuntime(){try{const response=await fetch('/api/stats');if(!response.ok)return;const d=await response.json(),a=d.adaptive_concurrency||{},sources=d.discovery_health||[],runtime=(d.google_sources||[]).reduce((m,row)=>(m[row.source]=row,m),{}),web=runtime.google_web||{},ph=d.google_proxy_health||{},cards=document.getElementById('runtimeCards');if(!cards)return;const source=sources.reduce((m,row)=>(m[row.source]=row,m),{}),gs=source.google_search||{},gn=source.google_news||{},open=web.state==='circuit_open';cards.innerHTML=`<div class="card"><div class="card-head"><h3>采集并发</h3><span class="tag ok">${fmt(a.current_concurrency||0)} / ${fmt(a.max_concurrency||0)}</span></div><p>正文抓取、News 和上传并发；不再被 Google Web 验证码连带降速。</p><div class="split"><div><div class="small-label">上传成功率</div><div class="small-value">${(n(a.success_rate)*100).toFixed(1)}%</div></div><div><div class="small-label">Outbox</div><div class="small-value">${fmt(a.outbox_pending)}</div></div></div></div><div class="card"><div class="card-head"><h3>Google Web</h3><span class="tag ${open?'wait':'ok'}">${open?'已熔断':'运行中'}</span></div><p>${open?`暂停到 ${new Date(web.circuit_until).toLocaleTimeString()}，News 仍继续。`:'全局低速发现，第一页有新链接才请求第二页。'}</p><div class="split"><div><div class="small-label">当前 RPS</div><div class="small-value">${n(web.current_rps).toFixed(2)}</div></div><div><div class="small-label">验证码 / 请求</div><div class="small-value">${fmt(web.captcha_window)} / ${fmt(web.requests_window)}</div></div></div></div><div class="card"><div class="card-head"><h3>Google News / Trends</h3><span class="tag ${n(gn.limited)?'wait':'ok'}">持续运行</span></div><p>覆盖全球中英文区域，独立于 Web 熔断。</p><div class="split"><div><div class="small-label">近 5 分钟有效内容</div><div class="small-value">${fmt(gn.accepted)}</div></div><div><div class="small-label">健康 / 冷却代理</div><div class="small-value">${fmt(ph.healthy)} / ${fmt(ph.cooling)}</div></div></div></div>`}catch(e){}}
+ensureRuntimePanel();refreshRuntime();setInterval(refreshRuntime,5000);
+</script>'''
+HTML = HTML.replace("</body>", RUNTIME_HTML + "</body>")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -173,6 +193,32 @@ class Handler(BaseHTTPRequestHandler):
             lines.append(
                 f'realtime_browser_fallback_attempts_hour {browser.get("attempts_hour", 0)}'
             )
+            adaptive = payload.get("adaptive_concurrency") or {}
+            lines.extend([
+                f'realtime_adaptive_concurrency_current {adaptive.get("current_concurrency", 0)}',
+                f'realtime_adaptive_concurrency_max {adaptive.get("max_concurrency", 0)}',
+                f'realtime_adaptive_limited_ratio {adaptive.get("limited_ratio", 0)}',
+                f'realtime_adaptive_success_rate {adaptive.get("success_rate", 0)}',
+            ])
+            for source in payload.get("discovery_health") or []:
+                name = re.sub(r"[^a-zA-Z0-9_]", "_", str(source.get("source") or "unknown"))
+                lines.append(f'realtime_discovery_accepted_5m{{source="{name}"}} {source.get("accepted", 0)}')
+                lines.append(f'realtime_discovery_errors_5m{{source="{name}"}} {source.get("errors", 0)}')
+                lines.append(f'realtime_discovery_limited_5m{{source="{name}"}} {source.get("limited", 0)}')
+            for proxy in payload.get("proxy_utilization") or []:
+                profile = re.sub(r"[^a-zA-Z0-9_]", "_", str(proxy.get("profile") or "unknown"))
+                lines.append(f'realtime_proxy_active_5m{{profile="{profile}"}} {proxy.get("active", 0)}')
+            for source in payload.get("google_sources") or []:
+                name = re.sub(r"[^a-zA-Z0-9_]", "_", str(source.get("source") or "unknown"))
+                lines.append(f'realtime_google_source_rps{{source="{name}"}} {source.get("current_rps", 0)}')
+                lines.append(f'realtime_google_source_requests_total{{source="{name}"}} {source.get("requests_total", 0)}')
+                lines.append(f'realtime_google_source_captcha_total{{source="{name}"}} {source.get("captcha_total", 0)}')
+                lines.append(f'realtime_google_source_results_total{{source="{name}"}} {source.get("result_count", 0)}')
+                lines.append(f'realtime_google_source_novel_total{{source="{name}"}} {source.get("novel_count", 0)}')
+                lines.append(f'realtime_google_source_circuit_open{{source="{name}"}} {int(source.get("state") == "circuit_open")}')
+            google_proxy = payload.get("google_proxy_health") or {}
+            for field in ("total", "healthy", "cooling", "active"):
+                lines.append(f'realtime_google_proxy_sessions{{state="{field}"}} {google_proxy.get(field, 0)}')
             for stage in payload.get("stage_metrics") or []:
                 name = re.sub(r"[^a-zA-Z0-9_]", "_", str(stage.get("stage") or "unknown"))
                 observations = int(stage.get("observations") or 0)

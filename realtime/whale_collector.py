@@ -24,6 +24,53 @@ RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 logger = logging.getLogger(__name__)
 
 
+class AdaptiveConcurrencyController:
+    def __init__(self, initial: int, maximum: int, *, enabled: bool = True, minimum: int = 4):
+        self.minimum = max(1, min(minimum, maximum))
+        self.maximum = max(self.minimum, maximum)
+        self.current = min(max(initial, self.minimum), self.maximum)
+        self.enabled = enabled
+        self.healthy_windows = 0
+        self.cooldown_windows = 0
+        self.state = "warming_up" if enabled else "fixed"
+        self.reason = "startup" if enabled else "adaptive_disabled"
+
+    def evaluate(self, health: dict[str, float | int]) -> int:
+        if not self.enabled:
+            return self.current
+        pending = int(health.get("outbox_pending", 0))
+        upload_errors = int(health.get("upload_errors", 0))
+        success = float(health.get("success_rate", 0))
+        # Google Web owns its RPS and circuit breaker. Search CAPTCHA must not
+        # reduce News, body-fetch, or Whale upload concurrency.
+        if pending >= 2000 or upload_errors > 0:
+            self.current = max(self.minimum, self.current - 2)
+            self.healthy_windows = 0
+            self.cooldown_windows = 2
+            self.state = "throttled"
+            self.reason = (
+                "outbox_backpressure" if pending >= 2000 else "whale_upload_errors"
+            )
+        elif self.cooldown_windows > 0:
+            self.cooldown_windows -= 1
+            self.healthy_windows = 0
+            self.state = "holding"
+            self.reason = "scale_down_cooldown"
+        elif pending < 500 and upload_errors == 0 and success >= 0.30:
+            self.healthy_windows += 1
+            self.state = "healthy"
+            self.reason = "healthy_window"
+            if self.healthy_windows >= 2 and self.current < self.maximum:
+                self.current += 1
+                self.healthy_windows = 0
+                self.reason = "healthy_scale_up"
+        else:
+            self.healthy_windows = 0
+            self.state = "holding"
+            self.reason = "quality_or_limit_guard"
+        return self.current
+
+
 def _diagnostic(event: str, **fields: object) -> None:
     """Emit safe collector diagnostics even when the host has no log config."""
     rendered = " ".join(f"{name}={value}" for name, value in fields.items())
@@ -541,8 +588,37 @@ class ContinuousWhaleRunner:
             raise ValueError("CONTINUOUS_AI_KEYWORDS must contain at least one keyword")
         self.store.sync_continuous_keywords(catalog)
         catalog_aliases = {alias.casefold() for spec in catalog for alias in spec.aliases}
+        retired = self.store.retire_all_trends()
         self.store.retire_blocklisted_trends(TREND_BLACKLIST | catalog_aliases)
-        self.runner.client.register()
+        controller = AdaptiveConcurrencyController(
+            self.config.continuous_keyword_concurrency,
+            self.config.continuous_keyword_concurrency_max,
+            enabled=self.config.adaptive_concurrency_enabled,
+        )
+        while True:
+            try:
+                self.runner.client.register()
+                break
+            except requests.RequestException as exc:
+                # Keep the long-running collector alive while Whale is
+                # temporarily unreachable; Docker restart storms lose useful
+                # runtime diagnostics and do not improve recovery time.
+                _diagnostic(
+                    "continuous_whale_register_retry",
+                    error=type(exc).__name__, seconds=30,
+                )
+                self.store.update_continuous_runtime(
+                    enabled=controller.enabled, current=controller.current,
+                    minimum=controller.minimum, maximum=controller.maximum,
+                    state="waiting_external", reason="whale_register_unavailable",
+                )
+                time.sleep(30)
+        health: dict[str, float | int] = {}
+        self.store.update_continuous_runtime(
+            enabled=controller.enabled, current=controller.current,
+            minimum=controller.minimum, maximum=controller.maximum,
+            state=controller.state, reason=controller.reason,
+        )
         if self.config.continuous_proxy_profile != "direct":
             try:
                 count = ProxySynchronizer(self.config).sync(
@@ -564,9 +640,27 @@ class ContinuousWhaleRunner:
                     raise
         _diagnostic(
             "continuous_whale_registered", agent_id=self.runner.client.agent_id,
-            keywords=len(catalog),
+            keywords=len(catalog), retired_trends=retired,
         )
         last_trend_refresh = 0.0
+        last_adaptive_evaluation = time.monotonic()
+
+        def evaluate_adaptive() -> None:
+            nonlocal health, last_adaptive_evaluation
+            if (
+                time.monotonic() - last_adaptive_evaluation
+                < max(30, self.config.adaptive_evaluation_seconds)
+            ):
+                return
+            health = self.store.continuous_runtime_health(5)
+            controller.evaluate(health)
+            self.store.update_continuous_runtime(
+                enabled=controller.enabled, current=controller.current,
+                minimum=controller.minimum, maximum=controller.maximum,
+                state=controller.state, reason=controller.reason, health=health,
+            )
+            last_adaptive_evaluation = time.monotonic()
+
         while True:
             started = time.monotonic()
             self._flush_pending()
@@ -597,35 +691,27 @@ class ContinuousWhaleRunner:
                 >= max(60, self.config.continuous_trend_refresh_seconds)
             ):
                 trends = trend_keyword_specs(
-                    self.store.recent_titles(24), limit=self.config.continuous_trend_limit,
+                    (
+                        *self.store.recent_google_trend_titles(24),
+                        *self.store.recent_titles(24),
+                    ),
+                    limit=self.config.continuous_trend_limit,
                     excluded=catalog_aliases,
                 )
                 self.store.sync_continuous_keywords(trends)
                 last_trend_refresh = time.monotonic()
                 _diagnostic("continuous_whale_trends_refreshed", keywords=len(trends))
             rows = self.store.due_continuous_keywords(
-                self.config.continuous_keywords_per_round
+                self.config.continuous_keywords_per_round,
+                self.config.continuous_trend_share,
             )
             keywords = tuple(self._spec_from_row(row) for row in rows)
             if not keywords:
                 time.sleep(max(10, self.config.continuous_interval_seconds))
                 continue
-            now = datetime.now(timezone.utc)
-            elapsed_today = now.hour * 3600 + now.minute * 60 + now.second
-            expected = self.config.continuous_daily_target * elapsed_today / 86400
-            behind = (
-                self.config.continuous_daily_target <= 0
-                or self.store.continuous_delivered_today() < expected
-            )
-            proxy_usable = (
-                self.config.continuous_proxy_profile == "direct"
-                or bool(ProxyCache(self.config.proxy_cache_dir).stats(
-                    self.config.continuous_proxy_profile
-                )["usable"])
-            )
+            evaluate_adaptive()
             workers = min(
-                max(self.config.continuous_keyword_concurrency + int(behind and proxy_usable), 1),
-                4,
+                controller.current,
                 len(keywords),
             )
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -636,6 +722,7 @@ class ContinuousWhaleRunner:
                 for future in concurrent.futures.as_completed(futures):
                     future.result()
                     self._flush_pending()
+                    evaluate_adaptive()
             elapsed = time.monotonic() - started
             sleep_seconds = max(0, self.config.continuous_interval_seconds - elapsed)
             _diagnostic("continuous_whale_round_sleep", seconds=round(sleep_seconds, 2))
