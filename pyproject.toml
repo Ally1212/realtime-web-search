@@ -6,12 +6,16 @@ requires-python = ">=3.11"
 dependencies = [
   "beautifulsoup4>=4.13,<5",
   "psycopg[binary]>=3.3,<4",
+  "psycopg-pool>=3.3,<4",
   "redis>=7,<9",
   "requests>=2.32,<3",
   "requests[socks]>=2.32,<3",
   "scrapy>=2.18,<3",
   "scrapy-curl-cffi>=0.3,<1",
+  "scrapy-playwright>=0.0.48,<1",
   "trafilatura>=2.2,<3",
+  "jieba>=0.42,<1",
+  "prometheus-client>=0.23,<1",
 ]
 
 [project.scripts]

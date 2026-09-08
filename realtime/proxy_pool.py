@@ -258,7 +258,9 @@ class ProxyPool:
             self._mtime[profile] = mtime
         return list(self._records.get(profile, {}).values())
 
-    def choose(self, profile: str, domain: str) -> tuple[str, str] | None:
+    def choose(
+        self, profile: str, domain: str, *, sticky_seconds: int | None = None
+    ) -> tuple[str, str] | None:
         if profile == "direct":
             return None
         now = time.monotonic()
@@ -296,9 +298,10 @@ class ProxyPool:
                 )
             top = eligible[: max(1, min(self.config.proxy_selection_window, len(eligible)))]
             record = random.choice(top)
-            if self.config.proxy_sticky_seconds > 0:
+            duration = self.config.proxy_sticky_seconds if sticky_seconds is None else sticky_seconds
+            if duration > 0:
                 self._sticky[(profile, domain)] = (
-                    record.key, now + self.config.proxy_sticky_seconds
+                    record.key, now + duration
                 )
             return self._url(profile, record), record.key
 
@@ -318,7 +321,7 @@ class ProxyPool:
         elif status == 429:
             seconds = 600
         elif status == 403:
-            seconds = 300
+            seconds = 600 if domain.endswith("google.com") else 300
         if seconds:
             scope = "*" if failed or status == 407 else domain
             with self._lock:

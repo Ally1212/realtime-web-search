@@ -1,13 +1,45 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
 import psycopg
+from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
+
+
+_POOLS: dict[tuple[str, int, int], ConnectionPool[Any]] = {}
+_POOLS_LOCK = threading.Lock()
+_INITIALIZED_DSNS: set[str] = set()
+_INITIALIZE_LOCK = threading.Lock()
+
+
+def _shared_pool(dsn: str) -> ConnectionPool[Any]:
+    role = os.getenv("PROCESS_ROLE", "collector").strip().lower()
+    default_min, default_max = ((1, 4) if role == "web" else (4, 16))
+    min_size = int(os.getenv("POSTGRES_POOL_MIN", str(default_min)))
+    max_size = int(os.getenv("POSTGRES_POOL_MAX", str(default_max)))
+    if min_size < 0 or max_size < 1 or min_size > max_size:
+        raise ValueError("invalid PostgreSQL pool size")
+    key = (dsn, min_size, max_size)
+    with _POOLS_LOCK:
+        pool = _POOLS.get(key)
+        if pool is None:
+            pool = ConnectionPool(
+                conninfo=dsn,
+                min_size=min_size,
+                max_size=max_size,
+                kwargs={"row_factory": dict_row, "connect_timeout": 5},
+                timeout=10,
+                open=True,
+            )
+            _POOLS[key] = pool
+        return pool
 
 
 SCHEMA = """
@@ -86,6 +118,77 @@ CREATE TABLE IF NOT EXISTS whale_ingest_outbox (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS whale_ingest_outbox_pending ON whale_ingest_outbox(task_id, status, id);
+CREATE TABLE IF NOT EXISTS discovery_cursors (
+  campaign_id uuid PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE,
+  history_before date NOT NULL DEFAULT CURRENT_DATE,
+  consecutive_empty integer NOT NULL DEFAULT 0,
+  last_candidates integer NOT NULL DEFAULT 0,
+  last_novel integer NOT NULL DEFAULT 0,
+  next_run_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS continuous_keywords (
+  keyword_key text PRIMARY KEY,
+  concept_id text NOT NULL,
+  query text NOT NULL,
+  aliases jsonb NOT NULL DEFAULT '[]'::jsonb,
+  language varchar(8) NOT NULL CHECK (language IN ('en','zh')),
+  category text NOT NULL,
+  kind text NOT NULL CHECK (kind IN ('base','trend')),
+  state text NOT NULL CHECK (state IN ('active','probation','cooldown','retired')),
+  priority integer NOT NULL DEFAULT 50,
+  score double precision NOT NULL DEFAULT 50,
+  runs integer NOT NULL DEFAULT 0,
+  low_yield_runs integer NOT NULL DEFAULT 0,
+  last_candidates integer NOT NULL DEFAULT 0,
+  last_fetched integer NOT NULL DEFAULT 0,
+  last_delivered integer NOT NULL DEFAULT 0,
+  last_failed integer NOT NULL DEFAULT 0,
+  last_duplicates integer NOT NULL DEFAULT 0,
+  next_run_at timestamptz NOT NULL DEFAULT now(),
+  last_run_at timestamptz,
+  expires_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS continuous_keywords_due
+  ON continuous_keywords(state,next_run_at,last_run_at);
+CREATE TABLE IF NOT EXISTS continuous_keyword_runs (
+  id bigserial PRIMARY KEY,
+  keyword_key text NOT NULL REFERENCES continuous_keywords(keyword_key) ON DELETE CASCADE,
+  candidates integer NOT NULL DEFAULT 0,
+  fetched integer NOT NULL DEFAULT 0,
+  delivered integer NOT NULL DEFAULT 0,
+  failed integer NOT NULL DEFAULT 0,
+  duplicates integer NOT NULL DEFAULT 0,
+  duration_seconds double precision NOT NULL DEFAULT 0,
+  score double precision NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS continuous_keyword_runs_recent
+  ON continuous_keyword_runs(keyword_key,created_at DESC);
+CREATE TABLE IF NOT EXISTS crawl_domain_health (
+  domain text PRIMARY KEY,
+  attempts bigint NOT NULL DEFAULT 0,
+  failures bigint NOT NULL DEFAULT 0,
+  consecutive_failures integer NOT NULL DEFAULT 0,
+  cooldown_until timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS crawl_browser_health (
+  domain text PRIMARY KEY,
+  attempts bigint NOT NULL DEFAULT 0,
+  successes bigint NOT NULL DEFAULT 0,
+  disabled_until timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS crawl_stage_totals (
+  stage text PRIMARY KEY,
+  observations bigint NOT NULL DEFAULT 0,
+  total_seconds double precision NOT NULL DEFAULT 0,
+  last_seconds double precision NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 """
 
 
@@ -107,15 +210,74 @@ class CampaignStore:
 
     def __init__(self, dsn: str, initialize: bool = True):
         self.dsn = dsn
+        self.pool = _shared_pool(dsn)
         if initialize:
-            self.initialize()
+            with _INITIALIZE_LOCK:
+                if dsn not in _INITIALIZED_DSNS:
+                    self.initialize()
+                    _INITIALIZED_DSNS.add(dsn)
 
-    def connect(self) -> psycopg.Connection[dict[str, Any]]:
-        return psycopg.connect(self.dsn, row_factory=dict_row, connect_timeout=5)
+    def connect(self):  # type: ignore[no-untyped-def]
+        """Borrow a connection; callers keep the existing `with` contract."""
+        return self.pool.connection()
+
+    def browser_domain_allowed(self, domain: str, *, require_success: bool = False) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT attempts,successes,disabled_until FROM crawl_browser_health WHERE domain=%s",
+                (domain.lower(),),
+            ).fetchone()
+        if not row:
+            return not require_success
+        if row["disabled_until"] and row["disabled_until"] > datetime.now(timezone.utc):
+            return False
+        if require_success and int(row["successes"]) == 0:
+            return False
+        return not (
+            int(row["attempts"]) >= 5
+            and int(row["successes"]) / max(int(row["attempts"]), 1) < 0.1
+        )
+
+    def record_browser_result(self, domain: str, success: bool) -> None:
+        domain = domain.lower()
+        with self.connect() as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    "INSERT INTO crawl_browser_health(domain,attempts,successes) VALUES(%s,1,%s) "
+                    "ON CONFLICT(domain) DO UPDATE SET attempts=crawl_browser_health.attempts+1,"
+                    "successes=crawl_browser_health.successes+EXCLUDED.successes,updated_at=now() "
+                    "RETURNING attempts,successes",
+                    (domain, int(success)),
+                ).fetchone()
+                if int(row["attempts"]) >= 5 and int(row["successes"]) / int(row["attempts"]) < 0.1:
+                    connection.execute(
+                        "UPDATE crawl_browser_health SET disabled_until=now()+interval '7 days' WHERE domain=%s",
+                        (domain,),
+                    )
+
+    def observe_stage(self, stage: str, seconds: float, observations: int = 1) -> None:
+        if observations <= 0:
+            return
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO crawl_stage_totals(stage,observations,total_seconds,last_seconds) "
+                "VALUES(%s,%s,%s,%s) ON CONFLICT(stage) DO UPDATE SET "
+                "observations=crawl_stage_totals.observations+EXCLUDED.observations,"
+                "total_seconds=crawl_stage_totals.total_seconds+EXCLUDED.total_seconds,"
+                "last_seconds=EXCLUDED.last_seconds,updated_at=now()",
+                (stage[:80], observations, max(seconds, 0), max(seconds / observations, 0)),
+            )
 
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.execute(SCHEMA)
+            # Whale is the durable body store. Local rows retain identity and
+            # metadata only; pending outbox rows are the sole transient copy.
+            connection.execute("UPDATE pages SET content='' WHERE content<>''")
+            connection.execute(
+                "UPDATE whale_ingest_outbox SET payload='{}'::jsonb "
+                "WHERE status IN ('delivered','rejected') AND payload<>'{}'::jsonb"
+            )
 
     def create_campaign(
         self, query: str, aliases: list[str], daily_target: int, proxy_profile: str
@@ -214,9 +376,10 @@ class CampaignStore:
             return
         delivered = "now()" if status == "delivered" else "NULL"
         with self.connect() as connection:
+            scrub = ",payload='{}'::jsonb" if status in {"delivered", "rejected"} else ""
             connection.execute(
                 f"UPDATE whale_ingest_outbox SET status=%s,attempts=attempts+1,last_error=%s,"
-                f"delivered_at={delivered},updated_at=now() WHERE id=ANY(%s)",
+                f"delivered_at={delivered},updated_at=now(){scrub} WHERE id=ANY(%s)",
                 (status, (error or "")[:500] or None, ids),
             )
 
@@ -302,10 +465,255 @@ class CampaignStore:
         with self.connect() as connection:
             rows = connection.execute(
                 "SELECT url FROM pages WHERE url=ANY(%s) "
-                "UNION SELECT url FROM crawl_events WHERE campaign_id=%s AND url=ANY(%s)",
+                "UNION SELECT url FROM crawl_events WHERE campaign_id=%s AND url=ANY(%s) "
+                "AND status='permanent_failed'",
                 (urls, campaign_id, urls),
             ).fetchall()
         return {str(row["url"]) for row in rows}
+
+    def discovery_window(
+        self, campaign_id: str, history_start: date, window_days: int
+    ) -> tuple[datetime, datetime]:
+        """Atomically reserve the next historical time slice for a campaign."""
+        days = max(1, window_days)
+        with self.connect() as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    "INSERT INTO discovery_cursors(campaign_id) VALUES(%s) "
+                    "ON CONFLICT (campaign_id) DO UPDATE SET updated_at=now() "
+                    "RETURNING history_before",
+                    (campaign_id,),
+                ).fetchone()
+                before = row["history_before"]
+                start_date = history_start
+                after = max(start_date, before - timedelta(days=days))
+                next_before = after if after > start_date else datetime.now(timezone.utc).date()
+                connection.execute(
+                    "UPDATE discovery_cursors SET history_before=%s,updated_at=now() WHERE campaign_id=%s",
+                    (next_before, campaign_id),
+                )
+        return (
+            datetime.combine(after, datetime.min.time(), tzinfo=timezone.utc),
+            datetime.combine(before, datetime.min.time(), tzinfo=timezone.utc),
+        )
+
+    def record_discovery_novelty(
+        self, campaign_id: str, candidates: int, novel: int,
+        minimum_ratio: float, cooldown_seconds: int,
+    ) -> None:
+        ratio = novel / max(candidates, 1)
+        empty = novel == 0 or ratio < minimum_ratio
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE discovery_cursors SET last_candidates=%s,last_novel=%s,"
+                "consecutive_empty=CASE WHEN %s THEN consecutive_empty+1 ELSE 0 END,"
+                "next_run_at=CASE WHEN %s AND consecutive_empty>=2 "
+                "THEN now()+(%s * interval '1 second') ELSE now() END,updated_at=now() "
+                "WHERE campaign_id=%s",
+                (candidates, novel, empty, empty, max(0, cooldown_seconds), campaign_id),
+            )
+
+    def continuous_delivered_today(self) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT count(*) AS value FROM whale_ingest_outbox o "
+                "WHERE o.task_id LIKE 'continuous:%' AND o.status='delivered' "
+                "AND o.delivered_at >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
+            ).fetchone()
+        return int(row["value"])
+
+    def recent_titles(self, hours: int = 24) -> list[dict[str, str]]:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT title,url FROM pages WHERE fetched_at >= now()-(%s * interval '1 hour') "
+                "AND title<>'' ORDER BY fetched_at DESC LIMIT 20000", (max(1, hours),)
+            ).fetchall()
+
+    def sync_continuous_keywords(self, specs: tuple[Any, ...]) -> None:
+        with self.connect() as connection:
+            with connection.transaction():
+                for spec in specs:
+                    state = "probation" if spec.kind == "trend" else "active"
+                    connection.execute(
+                        "INSERT INTO continuous_keywords(keyword_key,concept_id,query,aliases,language,"
+                        "category,kind,state,priority,expires_at) "
+                        "VALUES(%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s) "
+                        "ON CONFLICT(keyword_key) DO UPDATE SET query=excluded.query,aliases=excluded.aliases,"
+                        "category=excluded.category,priority=excluded.priority,expires_at=excluded.expires_at,"
+                        "state=CASE WHEN continuous_keywords.state='retired' THEN excluded.state "
+                        "ELSE continuous_keywords.state END,updated_at=now()",
+                        (
+                            spec.key, spec.concept_id, spec.query,
+                            json.dumps(spec.aliases, ensure_ascii=False), spec.language,
+                            spec.category, spec.kind, state, spec.priority, spec.expires_at,
+                        ),
+                    )
+
+    def retire_blocklisted_trends(self, values: set[str]) -> int:
+        if not values:
+            return 0
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE continuous_keywords ck SET state='retired',updated_at=now() "
+                "WHERE kind='trend' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(ck.aliases) a "
+                "WHERE lower(a.value)=ANY(%s))", (list(values),),
+            )
+            return cursor.rowcount
+
+    def due_continuous_keywords(self, limit: int) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            with connection.transaction():
+                connection.execute(
+                    "UPDATE continuous_keywords SET state='retired',updated_at=now() "
+                    "WHERE kind='trend' AND expires_at IS NOT NULL AND expires_at<now()"
+                )
+                return connection.execute(
+                    "SELECT * FROM continuous_keywords WHERE state IN ('active','probation','cooldown') "
+                    "AND next_run_at<=now() ORDER BY (last_run_at IS NULL) DESC,"
+                    "CASE state WHEN 'probation' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,"
+                    "priority DESC,score DESC,last_run_at NULLS FIRST LIMIT %s",
+                    (max(1, limit),),
+                ).fetchall()
+
+    def continuous_keyword_snapshot(self, campaign_id: str, task_id: str) -> dict[str, int]:
+        with self.connect() as connection:
+            campaign = connection.execute(
+                "SELECT discovered,fetched,failed,duplicates FROM campaigns WHERE id=%s",
+                (campaign_id,),
+            ).fetchone() or {}
+            delivered = connection.execute(
+                "SELECT count(*) AS value FROM whale_ingest_outbox "
+                "WHERE task_id=%s AND status='delivered'", (task_id,),
+            ).fetchone()
+        return {
+            "candidates": int(campaign.get("discovered") or 0),
+            "fetched": int(campaign.get("fetched") or 0),
+            "failed": int(campaign.get("failed") or 0),
+            "duplicates": int(campaign.get("duplicates") or 0),
+            "delivered": int((delivered or {}).get("value") or 0),
+        }
+
+    def record_continuous_keyword_run(
+        self, keyword_key: str, before: dict[str, int], after: dict[str, int],
+        duration_seconds: float,
+    ) -> None:
+        delta = {name: max(0, after.get(name, 0) - before.get(name, 0)) for name in before}
+        candidates = delta["candidates"]
+        fetched = delta["fetched"]
+        delivered = delta["delivered"]
+        failed = delta["failed"]
+        duplicates = delta["duplicates"]
+        unique_yield = min(delivered / max(fetched, 1), 1.0)
+        novelty = min(max((candidates - duplicates) / max(candidates, 1), 0.0), 1.0)
+        freshness = min(delivered / 20.0, 1.0)
+        reliability = 1.0 - min(failed / max(fetched + failed, 1), 1.0)
+        raw_score = 100 * (
+            0.40 * unique_yield + 0.25 * novelty + 0.20 * freshness + 0.15 * reliability
+        )
+        bad = unique_yield < 0.02 or novelty < 0.05
+        with self.connect() as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    "SELECT kind,state,runs,low_yield_runs,score FROM continuous_keywords "
+                    "WHERE keyword_key=%s FOR UPDATE", (keyword_key,),
+                ).fetchone()
+                if not row:
+                    return
+                runs = int(row["runs"]) + 1
+                score = round(0.65 * raw_score + 0.35 * float(row["score"]), 2)
+                low_runs = int(row["low_yield_runs"]) + 1 if bad else 0
+                state = str(row["state"])
+                interval_seconds = 1800 if score >= 60 else 10800 if score >= 30 else 43200
+                if state == "retired":
+                    interval_seconds = 86400
+                elif str(row["kind"]) == "trend" and runs < 3:
+                    state = "probation"
+                elif str(row["kind"]) == "trend" and (
+                    unique_yield < 0.10 or novelty < 0.15
+                ):
+                    state = "cooldown"
+                    interval_seconds = 86400
+                elif low_runs >= 3:
+                    state = "cooldown"
+                    interval_seconds = 86400
+                else:
+                    state = "active"
+                connection.execute(
+                    "UPDATE continuous_keywords SET state=%s,score=%s,runs=%s,low_yield_runs=%s,"
+                    "last_candidates=%s,last_fetched=%s,last_delivered=%s,last_failed=%s,"
+                    "last_duplicates=%s,last_run_at=now(),next_run_at=now()+(%s * interval '1 second'),"
+                    "updated_at=now() WHERE keyword_key=%s",
+                    (state, score, runs, low_runs, candidates, fetched, delivered, failed,
+                     duplicates, interval_seconds, keyword_key),
+                )
+                connection.execute(
+                    "INSERT INTO continuous_keyword_runs(keyword_key,candidates,fetched,delivered,"
+                    "failed,duplicates,duration_seconds,score) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (keyword_key, candidates, fetched, delivered, failed, duplicates,
+                     max(0.0, duration_seconds), score),
+                )
+
+    def continuous_keyword_stats(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            counts = connection.execute(
+                "SELECT kind,state,language,count(*) AS count FROM continuous_keywords "
+                "GROUP BY kind,state,language"
+            ).fetchall()
+            categories = connection.execute(
+                "SELECT category,sum(last_delivered)::bigint AS delivered,count(*) AS keywords "
+                "FROM continuous_keywords WHERE state<>'retired' GROUP BY category "
+                "ORDER BY delivered DESC,category LIMIT 12"
+            ).fetchall()
+            top = connection.execute(
+                "SELECT keyword_key,query,language,category,kind,state,score,last_candidates,"
+                "last_fetched,last_delivered,last_failed,last_duplicates,last_run_at,next_run_at "
+                "FROM continuous_keywords WHERE state<>'retired' "
+                "ORDER BY score DESC,last_delivered DESC LIMIT 20"
+            ).fetchall()
+            running = connection.execute(
+                "SELECT query,language,category,last_run_at,next_run_at FROM continuous_keywords "
+                "WHERE state<>'retired' ORDER BY next_run_at,last_run_at NULLS FIRST LIMIT 12"
+            ).fetchall()
+        summary = {"base": 0, "trend": 0, "probation": 0, "cooldown": 0, "en": 0, "zh": 0}
+        for row in counts:
+            count = int(row["count"])
+            if row["state"] != "retired":
+                summary[str(row["kind"])] += count
+                summary[str(row["language"])] += count
+            if row["state"] in {"probation", "cooldown"}:
+                summary[str(row["state"])] += count
+        return {"summary": summary, "categories": categories, "top": top, "next": running}
+
+    def blocked_domains(self, domains: list[str]) -> set[str]:
+        domains = list(dict.fromkeys(value.lower() for value in domains if value))
+        if not domains:
+            return set()
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT domain FROM crawl_domain_health WHERE domain=ANY(%s) "
+                "AND cooldown_until>now()", (domains,),
+            ).fetchall()
+        return {str(row["domain"]) for row in rows}
+
+    def record_domain_result(self, url: str, success: bool) -> None:
+        from urllib.parse import urlsplit
+
+        domain = (urlsplit(url).hostname or "").lower()
+        if not domain:
+            return
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO crawl_domain_health(domain,attempts,failures,consecutive_failures,"
+                "cooldown_until) VALUES(%s,1,%s,%s,NULL) ON CONFLICT(domain) DO UPDATE SET "
+                "attempts=crawl_domain_health.attempts+1,"
+                "failures=crawl_domain_health.failures+excluded.failures,"
+                "consecutive_failures=CASE WHEN %s THEN 0 "
+                "ELSE crawl_domain_health.consecutive_failures+1 END,"
+                "cooldown_until=CASE WHEN NOT %s AND "
+                "crawl_domain_health.consecutive_failures+1>=5 THEN now()+interval '6 hours' "
+                "WHEN %s THEN NULL ELSE crawl_domain_health.cooldown_until END,updated_at=now()",
+                (domain, int(not success), int(not success), success, success, success),
+            )
 
     def reusable_pages(self, campaign_id: str, urls: list[str]) -> list[dict[str, Any]]:
         if not urls:
@@ -328,7 +736,15 @@ class CampaignStore:
             ).fetchone()
         return row is not None
 
-    def record_page(self, campaign_id: str, page: PageRecord) -> tuple[int, bool, bool, bool]:
+    def record_page(
+        self,
+        campaign_id: str,
+        page: PageRecord,
+        *,
+        whale_task_id: str | None = None,
+        source_record_key: str | None = None,
+        whale_payload: dict[str, Any] | None = None,
+    ) -> tuple[int, bool, bool, bool]:
         """Returns (page_id, new association, duplicate content, needs indexing)."""
         with self.connect() as connection:
             with connection.transaction():
@@ -345,7 +761,7 @@ class CampaignStore:
                         "UPDATE pages SET title=%s,summary=%s,content=%s,language=%s,http_status=%s,"
                         "fetched_at=%s,source_engines=%s::jsonb WHERE id=%s",
                         (
-                            page.title, page.summary, page.content, page.language, page.http_status,
+                            page.title, page.summary, "", page.language, page.http_status,
                             page.fetched_at, json.dumps(page.source_engines), page_id,
                         ),
                     )
@@ -354,7 +770,7 @@ class CampaignStore:
                         "INSERT INTO pages(url,content_hash,title,summary,content,language,http_status,fetched_at,source_engines) "
                         "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING RETURNING id",
                         (
-                            page.url, page.content_hash, page.title, page.summary, page.content, page.language,
+                            page.url, page.content_hash, page.title, page.summary, "", page.language,
                             page.http_status, page.fetched_at, json.dumps(page.source_engines),
                         ),
                     ).fetchone()
@@ -377,6 +793,16 @@ class CampaignStore:
                     "ON CONFLICT DO NOTHING RETURNING page_id",
                     (campaign_id, page_id),
                 ).fetchone()
+                if whale_task_id and source_record_key and whale_payload is not None:
+                    connection.execute(
+                        "INSERT INTO whale_ingest_outbox(task_id,source_record_key,payload) "
+                        "VALUES(%s,%s,%s::jsonb) ON CONFLICT (source_record_key) DO NOTHING",
+                        (
+                            whale_task_id,
+                            source_record_key,
+                            json.dumps(whale_payload, ensure_ascii=False),
+                        ),
+                    )
         return page_id, inserted is not None, duplicate_content, needs_indexing
 
     def mark_indexed(self, content_hashes: list[str]) -> None:
@@ -397,7 +823,11 @@ class CampaignStore:
             ).fetchone()
             return int(row["value"])
 
-    def stats(self) -> dict[str, Any]:
+    def stats(
+        self,
+        continuous_daily_target: int | None = None,
+        continuous_proxy_profile: str | None = None,
+    ) -> dict[str, Any]:
         with self.connect() as connection:
             campaigns = connection.execute(
                 "SELECT c.*, (SELECT count(*) FROM campaign_pages cp WHERE cp.campaign_id=c.id "
@@ -430,10 +860,10 @@ class CampaignStore:
                 "SELECT c.* FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
                 "WHERE w.task_id ~ '^continuous:[0-9a-f]{12}$'"
                 ") SELECT 'continuous' AS id,'AI 持续采集总览' AS query,"
-                "COALESCE(sum(daily_target),0) AS daily_target,"
-                "'direct' AS proxy_profile,"
-                "CASE WHEN COALESCE(bool_or(status='failed'),false) THEN 'failed' "
-                "WHEN COALESCE(bool_or(status='active'),false) THEN 'active' "
+                "COALESCE(max(daily_target),0) AS daily_target,"
+                "COALESCE(min(proxy_profile),'private') AS proxy_profile,"
+                "CASE WHEN COALESCE(bool_or(status='active'),false) THEN 'active' "
+                "WHEN COALESCE(bool_or(status='failed'),false) THEN 'failed' "
                 "WHEN COALESCE(bool_or(status='paused'),false) THEN 'paused' ELSE 'stopped' END AS status,"
                 "COALESCE(sum(discovered),0) AS discovered,COALESCE(sum(fetched),0) AS fetched,"
                 "COALESCE(sum(failed),0) AS failed,COALESCE(sum(duplicates),0) AS duplicates,"
@@ -444,13 +874,14 @@ class CampaignStore:
                 "WHERE cp.first_seen >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' "
                 "AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.source_engines) AS src(value) "
                 "WHERE src.value LIKE 'google%')) AS today,"
-                "(SELECT count(DISTINCT cp.page_id) FROM campaign_pages cp JOIN continuous_campaigns cc "
-                "ON cc.id=cp.campaign_id JOIN pages p ON p.id=cp.page_id "
-                "WHERE cp.first_seen >= now()-interval '60 seconds' "
-                "AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.source_engines) AS src(value) "
-                "WHERE src.value LIKE 'google%')) AS recent_count,"
+                "(SELECT count(*) FROM whale_ingest_outbox o WHERE o.task_id LIKE 'continuous:%' "
+                "AND o.status='delivered' AND o.delivered_at>=now()-interval '60 seconds') AS recent_count,"
                 "EXTRACT(EPOCH FROM (now()-GREATEST(COALESCE(min(created_at),now()), "
                 "date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))) AS elapsed_seconds,"
+                "(SELECT COALESCE(sum(dc.last_candidates),0) FROM discovery_cursors dc "
+                "JOIN continuous_campaigns dcc ON dcc.id=dc.campaign_id) AS last_candidates,"
+                "(SELECT COALESCE(sum(dc.last_novel),0) FROM discovery_cursors dc "
+                "JOIN continuous_campaigns dcc ON dcc.id=dc.campaign_id) AS last_novel,"
                 "count(*) AS keyword_count FROM continuous_campaigns"
             ).fetchone()
             continuous_source_stats = connection.execute(
@@ -485,6 +916,14 @@ class CampaignStore:
                 "WHERE ce.created_at >= now()-interval '30 minutes' "
                 "GROUP BY reason ORDER BY count DESC"
             ).fetchall()
+            browser_stats = connection.execute(
+                "SELECT count(*) FILTER (WHERE created_at>=now()-interval '1 hour') AS attempts_hour,"
+                "count(DISTINCT NULLIF(url,'')) FILTER (WHERE created_at>=now()-interval '1 hour') AS urls_hour "
+                "FROM crawl_events WHERE status='browser_fallback'"
+            ).fetchone()
+            stage_stats = connection.execute(
+                "SELECT stage,observations,total_seconds,last_seconds,updated_at FROM crawl_stage_totals"
+            ).fetchall()
         for campaign in campaigns:
             elapsed = max(float(campaign.pop("elapsed_seconds") or 0), 1)
             recent = int(campaign.pop("recent_count") or 0)
@@ -494,6 +933,10 @@ class CampaignStore:
         whale_counts = {str(row["status"]): int(row["count"]) for row in continuous_whale_counts}
         bottlenecks = {str(row["reason"]): int(row["count"]) for row in continuous_bottlenecks}
         if continuous and int(continuous.get("keyword_count") or 0):
+            if continuous_daily_target is not None:
+                continuous["daily_target"] = max(0, continuous_daily_target)
+            if continuous_proxy_profile is not None:
+                continuous["proxy_profile"] = continuous_proxy_profile
             elapsed = max(float(continuous.pop("elapsed_seconds") or 0), 1)
             recent = int(continuous.pop("recent_count") or 0)
             recent_window = min(elapsed, 60)
@@ -501,11 +944,37 @@ class CampaignStore:
             continuous["projected_daily"] = round(continuous["rate_per_second"] * 86400)
             continuous["continuous"] = True
             continuous["whale_delivered"] = whale_counts.get("delivered", 0)
+            continuous["whale_delivered_today"] = self.continuous_delivered_today()
+            continuous["today"] = continuous["whale_delivered_today"]
+            continuous["required_rate"] = (
+                round(
+                    max(int(continuous["daily_target"]) - int(continuous["today"]), 0)
+                    / max(86400 - int(datetime.now(timezone.utc).timestamp()) % 86400, 1),
+                    3,
+                )
+                if int(continuous["daily_target"]) > 0 else 0
+            )
+            continuous["validated_unique_today"] = continuous["today"]
+            continuous["novelty_ratio"] = round(
+                int(continuous.pop("last_novel") or 0)
+                / max(int(continuous.pop("last_candidates") or 0), 1),
+                3,
+            )
+            continuous["fetch_success_rate"] = round(
+                int(continuous["whale_delivered"])
+                / max(int(continuous["fetched"]), 1),
+                3,
+            )
             continuous["whale_pending"] = whale_counts.get("pending", 0)
+            continuous["queue_depth"] = continuous["whale_pending"]
             continuous["whale_rejected"] = whale_counts.get("rejected", 0)
             continuous["bottlenecks"] = bottlenecks
         else:
             continuous = None
+        keyword_pool = self.continuous_keyword_stats()
+        if continuous:
+            summary = keyword_pool["summary"]
+            continuous["keyword_count"] = int(summary["base"]) + int(summary["trend"])
         return {
             "totals": totals,
             "campaigns": campaigns,
@@ -513,6 +982,9 @@ class CampaignStore:
             "events": events,
             "source_stats": source_stats,
             "continuous_source_stats": continuous_source_stats,
+            "keyword_pool": keyword_pool,
+            "browser_fallback": browser_stats,
+            "stage_metrics": stage_stats,
         }
 
     def purge_old_events(self, days: int = 30) -> int:

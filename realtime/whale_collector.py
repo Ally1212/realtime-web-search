@@ -7,12 +7,17 @@ import logging
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
 
 from .campaign_store import CampaignStore
 from .config import Config
+from .proxy_pool import ProxyApiError, ProxyCache, ProxySynchronizer
+from .keyword_catalog import (
+    TREND_BLACKLIST, KeywordSpec, base_keyword_specs, trend_keyword_specs,
+)
 
 
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
@@ -216,15 +221,18 @@ class WhaleRunner:
         if not rows:
             return 0, 0, True
         ids = [int(row["id"]) for row in rows]
+        started = time.monotonic()
         try:
             results = self.client.bulk_ingest([dict(row["payload"]) for row in rows])
         except Exception as exc:
+            self.store.observe_stage("whale_upload", time.monotonic() - started)
             status = int(getattr(exc, "status_code", 0) or 0)
             if status and status not in RETRYABLE_STATUS:
                 self.store.mark_whale_outbox(ids, status="rejected", error=str(exc))
                 return 0, 0, False
             self.store.retry_whale_outbox(ids, type(exc).__name__)
             return 0, 0, False
+        self.store.observe_stage("whale_upload", time.monotonic() - started)
         if len(results) != len(rows):
             self.store.retry_whale_outbox(ids, "unexpected_bulk_response_length")
             return 0, 0, False
@@ -375,16 +383,64 @@ class ContinuousWhaleRunner:
         self.config = config
         self.store = CampaignStore(config.database_url)
         self.runner = WhaleRunner(config)
+        self.executor = None
 
-    def _task_id(self, keyword: str) -> str:
-        keyword_hash = hashlib.sha256(keyword.encode()).hexdigest()[:12]
+    def _start_crawler(self, campaign_id: str):  # type: ignore[no-untyped-def]
+        mode = self.config.continuous_executor.strip().lower()
+        if mode == "subprocess":
+            return subprocess.Popen([sys.executable, "-m", "realtime.scrapy_runner", campaign_id])
+        if mode != "persistent":
+            raise ValueError("CONTINUOUS_EXECUTOR must be persistent or subprocess")
+        if self.executor is None:
+            from .persistent_executor import shared_executor
+
+            self.executor = shared_executor(self.config)
+        return self.executor.start(campaign_id)
+
+    def _task_id(self, keyword: str | KeywordSpec) -> str:
+        legacy = {
+            *self.config.continuous_ai_keywords,
+            *self.config.continuous_keyword_expansions,
+        }
+        identity = (
+            keyword.query if isinstance(keyword, KeywordSpec) and keyword.query in legacy
+            else keyword.key if isinstance(keyword, KeywordSpec) else keyword
+        )
+        keyword_hash = hashlib.sha256(identity.encode()).hexdigest()[:12]
         return f"{self.TASK_PREFIX}:{keyword_hash}"
 
-    def _keywords(self) -> tuple[str, ...]:
-        keywords = self.config.continuous_ai_keywords
+    def _catalog(self) -> tuple[KeywordSpec, ...]:
+        specs = list(base_keyword_specs())
+        # Keep operator-provided seeds as auditable custom concepts.
+        configured = self.config.continuous_ai_keywords
         if self.config.continuous_expand_keywords:
-            keywords = (*keywords, *self.config.continuous_keyword_expansions)
-        return tuple(dict.fromkeys(keyword.strip() for keyword in keywords if keyword.strip()))
+            configured = (*configured, *self.config.continuous_keyword_expansions)
+        known = {alias.casefold() for spec in specs for alias in spec.aliases}
+        for value in configured:
+            keyword = value.strip()
+            if not keyword or keyword.casefold() in known:
+                continue
+            digest = hashlib.sha256(keyword.casefold().encode()).hexdigest()[:16]
+            language = "zh" if any("\u3400" <= char <= "\u9fff" for char in keyword) else "en"
+            specs.append(KeywordSpec(
+                f"custom:{digest}", f"custom-{digest}", keyword, (keyword,), language,
+                "custom", priority=65,
+            ))
+        return tuple(specs)
+
+    def _keywords(self) -> tuple[str, ...]:
+        """Backward-compatible view used by callers that only need query text."""
+        return tuple(spec.query for spec in self._catalog())
+
+    @staticmethod
+    def _spec_from_row(row: dict[str, Any]) -> KeywordSpec:
+        return KeywordSpec(
+            key=str(row["keyword_key"]), concept_id=str(row["concept_id"]),
+            query=str(row["query"]), aliases=tuple(row.get("aliases") or ()),
+            language=str(row["language"]), category=str(row["category"]),
+            kind=str(row["kind"]), priority=int(row["priority"]),
+            expires_at=row.get("expires_at"),
+        )
 
     def _flush_pending(self) -> None:
         for task_id in self.store.pending_whale_task_ids(f"{self.TASK_PREFIX}:"):
@@ -393,8 +449,15 @@ class ContinuousWhaleRunner:
                 if not healthy:
                     return
 
-    def _run_keyword(self, keyword: str) -> None:
-        target = min(max(self.config.continuous_max_items_per_keyword, 1), 1_000_000)
+    def _run_keyword(self, keyword: str | KeywordSpec) -> None:
+        if isinstance(keyword, str):
+            spec = KeywordSpec(keyword, keyword, keyword, (keyword,), "en", "custom")
+        else:
+            spec = keyword
+        global_target = self.config.continuous_daily_target
+        # The database campaign needs a positive bound; one million per
+        # keyword/day is only a safety valve when the global mode is unlimited.
+        target = 1_000_000 if global_target <= 0 else min(global_target, 1_000_000)
         profile = self.config.continuous_proxy_profile
         if profile not in {"private", "public", "direct"}:
             raise ValueError("CONTINUOUS_PROXY_PROFILE must be private, public, or direct")
@@ -404,23 +467,42 @@ class ContinuousWhaleRunner:
             dataset_id=self.config.whale_dataset_id,
             source_platform=self.config.whale_source_platform,
             task_type="keyword_search",
-            query=keyword,
-            aliases=[],
+            query=spec.query,
+            aliases=list(spec.aliases),
             daily_target=target,
             proxy_profile=profile,
-            task_payload={"keyword": keyword, "max_items": target, "continuous": True},
+            task_payload={
+                "keyword": spec.query, "aliases": list(spec.aliases), "max_items": target,
+                "continuous": True, "keyword_key": spec.key, "concept_id": spec.concept_id,
+                "language": spec.language, "category": spec.category, "kind": spec.kind,
+            },
             reactivate_existing=True,
         )
-        _diagnostic("continuous_whale_keyword_started", task_id=task_id, keyword=keyword, target=target)
-        process = subprocess.Popen([sys.executable, "-m", "realtime.scrapy_runner", campaign_id])
+        _diagnostic("continuous_whale_keyword_started", task_id=task_id, keyword=spec.query, target=target)
+        if global_target > 0 and int(self.store.continuous_delivered_today() or 0) >= global_target:
+            _diagnostic("continuous_whale_daily_target_already_reached", target=target)
+            return
+        before = self.store.continuous_keyword_snapshot(campaign_id, task_id)
+        started = time.monotonic()
+        process = self._start_crawler(campaign_id)
         try:
+            next_heartbeat = 0.0
             while process.poll() is None:
                 self.runner._flush_outbox(task_id)
-                try:
-                    self.runner.client.heartbeat(1)
-                except requests.RequestException as exc:
-                    _diagnostic("continuous_whale_heartbeat_failed", error=type(exc).__name__)
-                time.sleep(self.config.whale_heartbeat_seconds)
+                if self.store.whale_outbox_counts(task_id).get("pending", 0) >= self.config.outbox_max_pending:
+                    _diagnostic("continuous_whale_outbox_backpressure", task_id=task_id)
+                    process.terminate()
+                    break
+                if global_target > 0 and int(self.store.continuous_delivered_today() or 0) >= global_target:
+                    process.terminate()
+                    break
+                if time.monotonic() >= next_heartbeat:
+                    try:
+                        self.runner.client.heartbeat(1)
+                    except requests.RequestException as exc:
+                        _diagnostic("continuous_whale_heartbeat_failed", error=type(exc).__name__)
+                    next_heartbeat = time.monotonic() + self.config.whale_heartbeat_seconds
+                time.sleep(max(0.1, self.config.outbox_flush_seconds))
             process.wait(timeout=30)
             while self.store.whale_outbox_counts(task_id).get("pending", 0):
                 _, _, healthy = self.runner._flush_outbox(task_id)
@@ -439,28 +521,111 @@ class ContinuousWhaleRunner:
             if process.poll() is None:
                 process.terminate()
             _diagnostic("continuous_whale_keyword_failed", task_id=task_id, error=type(exc).__name__)
+        finally:
+            after = self.store.continuous_keyword_snapshot(campaign_id, task_id)
+            self.store.record_continuous_keyword_run(
+                spec.key, before, after, time.monotonic() - started,
+            )
 
-    def _run_keyword_with_agent(self, keyword: str, agent_id: str) -> None:
+    def _run_keyword_with_agent(self, keyword: str | KeywordSpec, agent_id: str) -> None:
         child = ContinuousWhaleRunner(self.config)
         child.runner.client.agent_id = agent_id
+        child.executor = self.executor
         child._run_keyword(keyword)
 
     def run(self) -> None:
         if not self.config.continuous_whale_enabled:
             raise ValueError("CONTINUOUS_WHALE_ENABLED must be true to run continuous-whale")
-        keywords = self._keywords()
-        if not keywords:
+        catalog = self._catalog()
+        if not catalog:
             raise ValueError("CONTINUOUS_AI_KEYWORDS must contain at least one keyword")
+        self.store.sync_continuous_keywords(catalog)
+        catalog_aliases = {alias.casefold() for spec in catalog for alias in spec.aliases}
+        self.store.retire_blocklisted_trends(TREND_BLACKLIST | catalog_aliases)
         self.runner.client.register()
+        if self.config.continuous_proxy_profile != "direct":
+            try:
+                count = ProxySynchronizer(self.config).sync(
+                    self.config.continuous_proxy_profile, force=True
+                )
+                _diagnostic(
+                    "continuous_whale_proxy_synced",
+                    profile=self.config.continuous_proxy_profile,
+                    count=count,
+                )
+            except ProxyApiError as exc:
+                _diagnostic(
+                    "continuous_whale_proxy_sync_failed",
+                    status=exc.status or "transport",
+                )
+                if not ProxyCache(self.config.proxy_cache_dir).stats(
+                    self.config.continuous_proxy_profile
+                )["usable"]:
+                    raise
         _diagnostic(
             "continuous_whale_registered", agent_id=self.runner.client.agent_id,
-            keywords=len(keywords),
+            keywords=len(catalog),
         )
+        last_trend_refresh = 0.0
         while True:
             started = time.monotonic()
             self._flush_pending()
+            if (
+                self.config.continuous_daily_target > 0
+                and int(self.store.continuous_delivered_today() or 0)
+                >= self.config.continuous_daily_target
+            ):
+                now = datetime.now(timezone.utc)
+                tomorrow = (now + timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                sleep_seconds = max(60, (tomorrow - now).total_seconds())
+                _diagnostic("continuous_whale_daily_target_reached", seconds=round(sleep_seconds))
+                time.sleep(sleep_seconds)
+                continue
+            if self.config.continuous_proxy_profile != "direct":
+                try:
+                    ProxySynchronizer(self.config).sync(self.config.continuous_proxy_profile)
+                except ProxyApiError as exc:
+                    _diagnostic(
+                        "continuous_whale_proxy_sync_failed",
+                        status=exc.status or "transport",
+                    )
+            if (
+                self.config.continuous_trend_enabled
+                and time.monotonic() - last_trend_refresh
+                >= max(60, self.config.continuous_trend_refresh_seconds)
+            ):
+                trends = trend_keyword_specs(
+                    self.store.recent_titles(24), limit=self.config.continuous_trend_limit,
+                    excluded=catalog_aliases,
+                )
+                self.store.sync_continuous_keywords(trends)
+                last_trend_refresh = time.monotonic()
+                _diagnostic("continuous_whale_trends_refreshed", keywords=len(trends))
+            rows = self.store.due_continuous_keywords(
+                self.config.continuous_keywords_per_round
+            )
+            keywords = tuple(self._spec_from_row(row) for row in rows)
+            if not keywords:
+                time.sleep(max(10, self.config.continuous_interval_seconds))
+                continue
+            now = datetime.now(timezone.utc)
+            elapsed_today = now.hour * 3600 + now.minute * 60 + now.second
+            expected = self.config.continuous_daily_target * elapsed_today / 86400
+            behind = (
+                self.config.continuous_daily_target <= 0
+                or self.store.continuous_delivered_today() < expected
+            )
+            proxy_usable = (
+                self.config.continuous_proxy_profile == "direct"
+                or bool(ProxyCache(self.config.proxy_cache_dir).stats(
+                    self.config.continuous_proxy_profile
+                )["usable"])
+            )
             workers = min(
-                max(self.config.continuous_keyword_concurrency, 1),
+                max(self.config.continuous_keyword_concurrency + int(behind and proxy_usable), 1),
+                4,
                 len(keywords),
             )
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:

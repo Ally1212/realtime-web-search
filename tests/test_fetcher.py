@@ -2,9 +2,14 @@ import unittest
 from unittest.mock import patch
 
 from realtime.fetcher import detect_language, extract_text, normalize_url, relevant_to
+from realtime.crawler import is_javascript_shell
 
 
 class FetcherTests(unittest.TestCase):
+    def test_detects_javascript_shell(self):
+        self.assertTrue(is_javascript_shell(b'<html><div id="root"></div><script src="app.js"></script></html>'))
+        self.assertFalse(is_javascript_shell(b"<html><main>A normal article</main></html>"))
+
     def test_extracts_visible_text(self):
         title, text = extract_text(
             b"<html><head><title> Example </title><script>bad()</script></head><body><nav>menu</nav><main>Hello world</main></body></html>",
@@ -32,6 +37,19 @@ class FetcherTests(unittest.TestCase):
             title, text = extract_text(raw, "https://example.com/")
         self.assertEqual(title, "Fallback")
         self.assertEqual(text, "Fallback Visible text")
+
+    def test_prefers_json_ld_article_body(self):
+        body = "Structured article text about artificial intelligence. " * 4
+        raw = (
+            '<html><head><script type="application/ld+json">'
+            '{"@type":"NewsArticle","headline":"Structured title",'
+            f'"articleBody":"{body}"}}'
+            '</script></head><body>Subscribe to continue</body></html>'
+        ).encode()
+        title, text = extract_text(raw, "https://example.com/article")
+        self.assertEqual(title, "Structured title")
+        self.assertIn("Structured article text", text)
+        self.assertNotIn("Subscribe", text)
 
     def test_normalizes_url(self):
         self.assertEqual(

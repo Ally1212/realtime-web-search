@@ -10,7 +10,6 @@ from urllib.parse import parse_qs, urlparse
 from .config import Config
 from .campaign_queue import CampaignQueue
 from .campaign_store import CampaignStore
-from .search import SearchIndex
 from .proxy_pool import ProxyCache
 
 
@@ -22,10 +21,21 @@ const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;
 const ago=value=>{if(!value)return'—';const sec=Math.max(0,Math.round((Date.now()-new Date(value).getTime())/1000));return sec<60?`${sec} 秒前`:sec<3600?`${Math.floor(sec/60)} 分钟前`:`${Math.floor(sec/3600)} 小时前`};
 const sourceName=value=>String(value||'').toLowerCase()==='google'?'Google 搜索':String(value||'Google 搜索');
 function renderSourceCards(sources,j){if(!sources.length){return'<div class="card"><div class="card-head"><h3>Google 搜索</h3><span class="tag wait">等待数据</span></div><p>采集器正在搜索和抓取，拿到有效内容后这里会自动更新。</p><div class="split"><div><div class="small-label">今日贡献</div><div class="small-value">0</div></div><div><div class="small-label">当前状态</div><div class="small-value">运行中</div></div></div></div>'}return sources.map(row=>`<div class="card"><div class="card-head"><h3>${esc(sourceName(row.source))}</h3><span class="tag ok">采集中</span></div><p>只采集 Google 发现的数据，系统会自动去重、抓取正文，并持续上传到 Whale。</p><div class="split"><div><div class="small-label">今日贡献</div><div class="small-value">${fmt(row.today)}</div></div><div><div class="small-label">累计发现</div><div class="small-value">${fmt(j.discovered)}</div></div><div><div class="small-label">已抓正文</div><div class="small-value">${fmt(j.fetched)}</div></div><div><div class="small-label">关键词数</div><div class="small-value">${fmt(j.keyword_count||1)}</div></div></div></div>`).join('')}
-const reasonText={already_processed:['重复旧链接','Google 经常返回之前见过的链接，系统已自动跳过，避免反复抓同一批内容。'],blocked_by_site_rules:['站点限制','部分网站不允许自动抓取，系统会遵守规则并继续抓其他公开页面。'],short_content:['正文太短','有些页面只有导航、摘要或广告，无法形成有效内容。'],google_discovery_error:['搜索暂时受限','Google 发现接口偶尔会限流或超时，系统会下一轮继续尝试。'],fetch_failed:['抓取失败','部分页面超时、拒绝访问或临时不可用。']};
+const reasonText={already_processed:['重复旧链接','Google 经常返回之前见过的链接，系统已自动跳过并切换到新的日期范围。'],blocked_by_site_rules:['站点限制','部分请求被目标站拒绝，系统会更换代理后重试。'],short_content:['正文太短','系统会更换代理和提取方式重试一次。'],google_discovery_error:['搜索暂时受限','Google 超时或验证码会触发代理切换与退避。'],fetch_failed:['抓取失败','临时失败会保留重试资格，不再永久跳过。']};
 function renderBottlenecks(j){const items=Object.entries(j.bottlenecks||{});if(!items.length){return'<div class="card"><div class="card-head"><h3>等待新内容</h3><span class="tag ok">正常</span></div><p>最近没有明显异常。速度为 0 时，通常是在等待 Google 返回新的可采集内容。</p></div>'}return items.slice(0,3).map(([key,count])=>{const info=reasonText[key]||['其他原因','系统会继续重试可恢复的采集任务。'];return`<div class="card"><div class="card-head"><h3>${info[0]}</h3><span class="tag wait">${fmt(count)} 次</span></div><p>${info[1]}</p></div>`}).join('')}
-async function refresh(){try{const response=await fetch('/api/stats');if(!response.ok)throw Error(response.status);const d=await response.json(),j=d.continuous_job||(d.jobs||[])[0];if(!j){runStatus.textContent='空闲';statusDot.className='dot bad';plainStatus.textContent='还没有任务';plainHelp.textContent='启动采集器后，这里会显示采集进度。';return}const done=n(j.today),rate=n(j.rate_per_second),continuous=!!j.continuous;title.textContent=continuous?'AI Google 数据采集':`${j.query} 数据采集`;campaignId.textContent=continuous?`长期任务 · ${fmt(j.keyword_count)} 个关键词 · 只采集 Google 来源`:j.id;runStatus.textContent=statusText[j.status]||j.status;statusDot.className=j.status==='active'?'dot':'dot bad';today.textContent=fmt(done);mainCaption.textContent='今天已经采集到的有效 Google 内容';plainStatus.textContent=j.status==='active'?'正在正常采集':j.status==='failed'?'采集异常':'当前没有持续采集';plainHelp.textContent=j.status==='active'?(rate>0?'Google 搜索结果会持续进入系统，去重后上传到 Whale。刷新页面不会影响后台采集。':'系统还在运行，当前主要是在等待新的有效内容或跳过重复链接。'):'后台任务没有处于运行状态，需要查看技术详情。';discovered.textContent=fmt(j.discovered);uploaded.textContent=fmt(j.whale_delivered||0);speed.textContent=`${(rate*60).toFixed(1)} 条/分钟`;jobStatus.textContent=statusText[j.status]||j.status;collector.textContent=continuous?'google-search':(j.proxy_profile==='private'?'private-proxy':j.proxy_profile);health.textContent=j.status==='failed'?'异常':'正常';health.className=j.status==='failed'?'bad-text':'ok-text';failed.textContent=fmt(j.failed);indexed.textContent=fmt(d.indexed_documents);const event=(d.events||[])[0];anomaly.textContent=event?`${event.error_code||event.status} · ${ago(event.created_at)}`:'—';const sources=continuous?(d.continuous_source_stats||[]):(d.source_stats||[]).filter(row=>String(row.campaign_id)===String(j.id));document.getElementById('sourceCards').innerHTML=renderSourceCards(sources,j);document.getElementById('bottleneckCards').innerHTML=renderBottlenecks(j);const pools=d.proxy_pools||{};proxyRows.innerHTML=['private','public'].map(name=>{const p=pools[name]||{},usable=!!p.usable;return`<tr><td>${name==='private'?'私有代理池':'公共代理池'}</td><td>${fmt(p.fresh)}</td><td>${fmt(p.http)}</td><td>${fmt(p.socks5)}</td><td>${ago(p.synced_at)}</td><td class="${usable?'ok-text':'bad-text'}">${usable?'正常':'不可用'}</td></tr>`}).join('');updated.textContent=`每 2 秒自动刷新 · 最近刷新 ${new Date().toLocaleTimeString()}`}catch(e){runStatus.textContent='离线';statusDot.className='dot bad';plainStatus.textContent='统计读取失败';plainHelp.textContent='后台可能还在运行，页面会继续自动重试。';updated.textContent='统计读取失败，正在重试'}}refresh();setInterval(refresh,2000);
+function ensureKeywordPanel(){if(document.getElementById('keywordCards'))return;const section=document.createElement('section');section.className='section';section.innerHTML='<h2>关键词池</h2><div class="cards" id="keywordCards"><div class="card"><p>正在读取关键词调度状态。</p></div></div><div class="table-wrap" style="margin-top:14px"><table><thead><tr><th>搜索词</th><th>语言</th><th>分类</th><th>状态</th><th>评分</th><th>最近入库</th></tr></thead><tbody id="keywordRows"><tr><td colspan="6">读取中</td></tr></tbody></table></div>';document.querySelector('.details').before(section)}
+function renderKeywords(pool){const s=pool.summary||{},cards=document.getElementById('keywordCards'),rows=document.getElementById('keywordRows');cards.innerHTML=[['基础搜索词',s.base||0,'中英双语分类词库'],['趋势搜索词',s.trend||0,`试采 ${fmt(s.probation||0)} 个`],['语言与冷却',`${fmt(s.zh||0)} 中 / ${fmt(s.en||0)} 英`,`冷却 ${fmt(s.cooldown||0)} 个`]].map(([name,value,help])=>`<div class="card"><div class="card-head"><h3>${name}</h3><span class="tag ok">${typeof value==='number'?fmt(value):esc(value)}</span></div><p>${help}</p></div>`).join('');rows.innerHTML=(pool.top||[]).slice(0,12).map(row=>`<tr><td>${esc(row.query)}</td><td>${row.language==='zh'?'中文':'英文'}</td><td>${esc(row.category)}</td><td>${esc(row.state)}</td><td>${Number(row.score||0).toFixed(1)}</td><td>${fmt(row.last_delivered)}</td></tr>`).join('')||'<tr><td colspan="6">等待第一轮调度</td></tr>'}
+async function refreshKeywords(){try{const response=await fetch('/api/stats');if(response.ok)renderKeywords((await response.json()).keyword_pool||{})}catch(e){}}
+async function refresh(){try{const response=await fetch('/api/stats');if(!response.ok)throw Error(response.status);const d=await response.json(),j=d.continuous_job||(d.jobs||[])[0];if(!j){runStatus.textContent='空闲';statusDot.className='dot bad';plainStatus.textContent='还没有任务';plainHelp.textContent='启动采集器后，这里会显示采集进度。';return}const done=n(j.today),rate=n(j.rate_per_second),continuous=!!j.continuous;title.textContent=continuous?'AI Google 数据采集':`${j.query} 数据采集`;campaignId.textContent=continuous?`长期任务 · ${fmt(j.keyword_count)} 个关键词 · 今日总目标 ${fmt(j.daily_target)}`:j.id;runStatus.textContent=statusText[j.status]||j.status;statusDot.className=j.status==='active'?'dot':'dot bad';today.textContent=fmt(done);mainCaption.textContent='今天 Whale 已确认接收的唯一 Google 内容';plainStatus.textContent=j.status==='active'?'正在正常采集':j.status==='failed'?'采集异常':'当前没有持续采集';plainHelp.textContent=j.status==='active'?(rate>0?'系统正按日期切片持续发现并上传新内容。':'系统正在切换查询时间窗口或等待代理恢复。'):'后台任务没有处于运行状态，需要查看技术详情。';discovered.textContent=fmt(j.discovered);uploaded.textContent=fmt(j.whale_delivered_today||0);speed.textContent=`${(rate*60).toFixed(1)} 条/分钟`;jobStatus.textContent=statusText[j.status]||j.status;collector.textContent=continuous?'google-search':(j.proxy_profile==='private'?'private-proxy':j.proxy_profile);health.textContent=j.status==='failed'?'异常':'正常';health.className=j.status==='failed'?'bad-text':'ok-text';failed.textContent=fmt(j.failed);indexed.textContent=fmt(d.indexed_documents);const event=(d.events||[])[0];anomaly.textContent=event?`${event.error_code||event.status} · ${ago(event.created_at)}`:'—';const sources=continuous?(d.continuous_source_stats||[]):(d.source_stats||[]).filter(row=>String(row.campaign_id)===String(j.id));document.getElementById('sourceCards').innerHTML=renderSourceCards(sources,j);document.getElementById('bottleneckCards').innerHTML=renderBottlenecks(j);const pools=d.proxy_pools||{};proxyRows.innerHTML=['private','public'].map(name=>{const p=pools[name]||{},usable=!!p.usable;return`<tr><td>${name==='private'?'私有代理池':'公共代理池'}</td><td>${fmt(p.fresh)}</td><td>${fmt(p.http)}</td><td>${fmt(p.socks5)}</td><td>${ago(p.synced_at)}</td><td class="${usable?'ok-text':'bad-text'}">${usable?'正常':'不可用'}</td></tr>`}).join('');updated.textContent=`每 2 秒自动刷新 · 最近刷新 ${new Date().toLocaleTimeString()}`}catch(e){runStatus.textContent='离线';statusDot.className='dot bad';plainStatus.textContent='统计读取失败';plainHelp.textContent='后台可能还在运行，页面会继续自动重试。';updated.textContent='统计读取失败，正在重试'}}refresh();setInterval(refresh,2000);
+ensureKeywordPanel();refreshKeywords();setInterval(refreshKeywords,10000);
 </script></body></html>'''
+HTML = HTML.replace("索引数量", "待上传 Outbox").replace(
+    "fmt(d.indexed_documents)", "fmt(j.queue_depth||0)"
+)
+HTML = HTML.replace(
+    "今日总目标 ${fmt(j.daily_target)}",
+    "采集目标 ${j.daily_target>0?fmt(j.daily_target):'不限量'}",
+)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -94,11 +104,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/healthz":
             self.send_body(b"ok", "text/plain")
             return
-        index = SearchIndex(self.config.opensearch_url, self.config.index_name, self.config.request_timeout)
         if parsed.path == "/api/stats":
-            payload = self.store.stats()
+            payload = self.store.stats(
+                self.config.continuous_daily_target,
+                self.config.continuous_proxy_profile,
+            )
             payload["jobs"] = payload["campaigns"]
-            payload["indexed_documents"] = index.count()
+            payload["indexed_documents"] = None
+            payload["local_search_enabled"] = False
             cache = ProxyCache(self.config.proxy_cache_dir)
             payload["proxy_pools"] = {
                 profile: cache.stats(profile) for profile in ("private", "public")
@@ -106,7 +119,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(payload)
             return
         if parsed.path == "/metrics":
-            payload = self.store.stats()
+            payload = self.store.stats(
+                self.config.continuous_daily_target,
+                self.config.continuous_proxy_profile,
+            )
             lines = [
                 "# HELP realtime_campaign_today Unique relevant pages associated today.",
                 "# TYPE realtime_campaign_today gauge",
@@ -136,14 +152,37 @@ class Handler(BaseHTTPRequestHandler):
                         f'realtime_campaign_{field}_total{{campaign_id="{campaign_id}"}} '
                         f'{campaign[field]}'
                     )
+            continuous = payload.get("continuous_job") or {}
+            if continuous:
+                lines.extend([
+                    f'realtime_continuous_whale_delivered_today {continuous.get("whale_delivered_today", 0)}',
+                    f'realtime_continuous_required_rate {continuous.get("required_rate", 0)}',
+                    f'realtime_continuous_projected_daily {continuous.get("projected_daily", 0)}',
+                    f'realtime_continuous_daily_target {continuous.get("daily_target", 0)}',
+                    f'realtime_continuous_novelty_ratio {continuous.get("novelty_ratio", 0)}',
+                    f'realtime_continuous_fetch_success_rate {continuous.get("fetch_success_rate", 0)}',
+                    f'realtime_continuous_queue_depth {continuous.get("queue_depth", 0)}',
+                ])
+            keyword_summary = (payload.get("keyword_pool") or {}).get("summary") or {}
+            for field in ("base", "trend", "probation", "cooldown", "en", "zh"):
+                lines.append(
+                    f'realtime_continuous_keywords{{kind="{field}"}} '
+                    f'{keyword_summary.get(field, 0)}'
+                )
+            browser = payload.get("browser_fallback") or {}
+            lines.append(
+                f'realtime_browser_fallback_attempts_hour {browser.get("attempts_hour", 0)}'
+            )
+            for stage in payload.get("stage_metrics") or []:
+                name = re.sub(r"[^a-zA-Z0-9_]", "_", str(stage.get("stage") or "unknown"))
+                observations = int(stage.get("observations") or 0)
+                average = float(stage.get("total_seconds") or 0) / max(observations, 1)
+                lines.append(f'realtime_stage_duration_seconds_avg{{stage="{name}"}} {average}')
+                lines.append(f'realtime_stage_observations_total{{stage="{name}"}} {observations}')
             self.send_body(("\n".join(lines) + "\n").encode(), "text/plain; version=0.0.4")
             return
         if parsed.path == "/api/search":
-            query = parse_qs(parsed.query).get("q", [""])[0].strip()
-            if not query:
-                self.send_json({"error": "q is required"}, 400)
-                return
-            self.send_json(index.search(query))
+            self.send_json({"error": "local_search_disabled", "storage": "whale"}, 410)
             return
         self.send_body(b"not found", "text/plain", 404)
 

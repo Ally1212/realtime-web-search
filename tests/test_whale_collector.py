@@ -68,6 +68,7 @@ class WhaleCollectorTests(unittest.TestCase):
         store = MagicMock()
         store.create_whale_campaign.return_value = "campaign-1"
         store.whale_outbox_counts.return_value = {}
+        store.continuous_delivered_today.return_value = 0
         store_class.return_value = store
         runner = MagicMock()
         runner._stats.return_value = {"collected_count": 3, "ingested_count": 3, "duplicate_count": 0}
@@ -81,7 +82,9 @@ class WhaleCollectorTests(unittest.TestCase):
             whale_dataset_id="social_media_raw",
             whale_source_platform="google_search",
             continuous_max_items_per_keyword=7,
+            continuous_daily_target=0,
             continuous_proxy_profile="direct",
+            continuous_executor="subprocess",
         )
 
         ContinuousWhaleRunner(config)._run_keyword("AI chips")
@@ -91,7 +94,7 @@ class WhaleCollectorTests(unittest.TestCase):
         self.assertEqual(kwargs["dataset_id"], "social_media_raw")
         self.assertEqual(kwargs["source_platform"], "google_search")
         self.assertEqual(kwargs["query"], "AI chips")
-        self.assertEqual(kwargs["daily_target"], 7)
+        self.assertEqual(kwargs["daily_target"], 1_000_000)
         self.assertEqual(kwargs["proxy_profile"], "direct")
         self.assertTrue(kwargs["reactivate_existing"])
         self.assertEqual(kwargs["task_id"], "continuous:b5ffddc26966")

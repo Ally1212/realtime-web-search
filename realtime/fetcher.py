@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import socket
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import lru_cache
 from hashlib import sha256
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
@@ -89,15 +89,30 @@ def relevant_to(text: str, title: str, terms: tuple[str, ...]) -> bool:
     return False
 
 
-@lru_cache(maxsize=32_768)
+_DNS_CACHE: dict[tuple[str, int], tuple[bool, float]] = {}
+_DNS_LOCK = threading.Lock()
+
+
 def _is_public_endpoint(hostname: str, port: int) -> bool:
+    key = (hostname, port)
+    now = time.monotonic()
+    with _DNS_LOCK:
+        cached = _DNS_CACHE.get(key)
+        if cached and cached[1] > now:
+            return cached[0]
     try:
         addresses = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
-        return bool(addresses) and all(
+        result = bool(addresses) and all(
             ipaddress.ip_address(item[4][0]).is_global for item in addresses
         )
     except OSError:
-        return False
+        result = False
+    with _DNS_LOCK:
+        if len(_DNS_CACHE) >= 32_768:
+            for item in [key for key, value in _DNS_CACHE.items() if value[1] <= now][:4096]:
+                _DNS_CACHE.pop(item, None)
+        _DNS_CACHE[key] = (result, now + (1800 if result else 300))
+    return result
 
 
 def is_public_url(url: str) -> bool:
@@ -120,7 +135,36 @@ def _fallback_extract_text(raw: bytes, url: str) -> tuple[str, str]:
     return (title or url)[:300], text
 
 
+def _json_ld_article(raw: bytes, url: str) -> tuple[str, str] | None:
+    soup = BeautifulSoup(raw, "html.parser")
+
+    def objects(value: object):  # type: ignore[no-untyped-def]
+        if isinstance(value, dict):
+            yield value
+            for child in value.values():
+                yield from objects(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from objects(child)
+
+    for node in soup.select('script[type="application/ld+json"]'):
+        try:
+            payload = json.loads(node.string or node.get_text() or "")
+        except (ValueError, TypeError):
+            continue
+        for item in objects(payload):
+            body = " ".join(str(item.get("articleBody") or "").split())[:MAX_TEXT_CHARS]
+            if len(body) < 100:
+                continue
+            title = " ".join(str(item.get("headline") or item.get("name") or "").split())
+            return (title or url)[:300], body
+    return None
+
+
 def extract_text(raw: bytes, url: str, use_trafilatura: bool = True) -> tuple[str, str]:
+    structured = _json_ld_article(raw, url)
+    if structured:
+        return structured
     if use_trafilatura:
         try:
             document = bare_extraction(

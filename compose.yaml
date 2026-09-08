@@ -10,23 +10,6 @@ services:
       timeout: 5s
       retries: 12
 
-  opensearch:
-    image: opensearchproject/opensearch:3.8.0
-    environment:
-      discovery.type: single-node
-      DISABLE_SECURITY_PLUGIN: "true"
-      OPENSEARCH_JAVA_OPTS: -Xms2g -Xmx2g
-    ports:
-      - "127.0.0.1:9201:9200"
-    volumes:
-      - opensearch-data:/usr/share/opensearch/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-
   postgres:
     image: postgres:17-alpine
     environment:
@@ -56,20 +39,24 @@ services:
 
   web:
     build: .
+    entrypoint: ["python", "-m", "realtime.cli"]
+    command: ["serve"]
     environment:
-      OPENSEARCH_URL: http://opensearch:9200
       SEARXNG_URL: http://searxng:8080
-      OPENSEARCH_INDEX: realtime-pages-v3
+      PROCESS_ROLE: web
       DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
       VALKEY_URL: redis://valkey:6379/0
       PROXY_API_BASE: https://proxyapi.pekpik.com
       PRIVATE_READER_API_KEY: ${PRIVATE_READER_API_KEY:-}
       SHARED_PROXY_USERNAME: ${SHARED_PROXY_USERNAME:-}
       SHARED_PROXY_PASSWORD: ${SHARED_PROXY_PASSWORD:-}
-      PROXY_STICKY_SECONDS: ${PROXY_STICKY_SECONDS:-300}
+      PROXY_STICKY_SECONDS: ${PROXY_STICKY_SECONDS:-0}
+      GOOGLE_PROXY_STICKY_SECONDS: ${GOOGLE_PROXY_STICKY_SECONDS:-120}
       PROXY_SELECTION_WINDOW: ${PROXY_SELECTION_WINDOW:-20}
       PROXY_SORT: ${PROXY_SORT:-quality}
       DEFAULT_PROXY_PROFILE: ${DEFAULT_PROXY_PROFILE:-private}
+      CONTINUOUS_DAILY_TARGET: ${CONTINUOUS_DAILY_TARGET:-0}
+      CONTINUOUS_PROXY_PROFILE: ${CONTINUOUS_PROXY_PROFILE:-private}
       ROBOTS_BYPASS_DOMAINS: ${ROBOTS_BYPASS_DOMAINS:-}
       WEB_HOST: 0.0.0.0
       WEB_PORT: "8091"
@@ -78,9 +65,8 @@ services:
       - "127.0.0.1:8091:8091"
     volumes:
       - ./state:/app/state
+      - ./realtime:/app/realtime:ro
     depends_on:
-      opensearch:
-        condition: service_healthy
       searxng:
         condition: service_healthy
       postgres:
@@ -101,9 +87,8 @@ services:
     entrypoint: ["python", "-m", "realtime.cli"]
     command: ["${COLLECTOR_COMMAND:-whale-worker}"]
     environment:
-      OPENSEARCH_URL: http://opensearch:9200
-      OPENSEARCH_INDEX: realtime-pages-v3
       SEARXNG_URL: http://searxng:8080
+      PROCESS_ROLE: collector
       DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
       VALKEY_URL: redis://valkey:6379/0
       WHALE_ENABLED: ${WHALE_ENABLED:-false}
@@ -124,29 +109,48 @@ services:
       CONTINUOUS_EXPAND_KEYWORDS: ${CONTINUOUS_EXPAND_KEYWORDS:-true}
       CONTINUOUS_INTERVAL_SECONDS: ${CONTINUOUS_INTERVAL_SECONDS:-60}
       CONTINUOUS_MAX_ITEMS_PER_KEYWORD: ${CONTINUOUS_MAX_ITEMS_PER_KEYWORD:-1000000}
+      CONTINUOUS_DAILY_TARGET: ${CONTINUOUS_DAILY_TARGET:-0}
       CONTINUOUS_KEYWORD_CONCURRENCY: ${CONTINUOUS_KEYWORD_CONCURRENCY:-3}
-      CONTINUOUS_PROXY_PROFILE: ${CONTINUOUS_PROXY_PROFILE:-direct}
+      CONTINUOUS_KEYWORDS_PER_ROUND: ${CONTINUOUS_KEYWORDS_PER_ROUND:-12}
+      CONTINUOUS_TREND_ENABLED: ${CONTINUOUS_TREND_ENABLED:-true}
+      CONTINUOUS_TREND_LIMIT: ${CONTINUOUS_TREND_LIMIT:-50}
+      CONTINUOUS_TREND_REFRESH_SECONDS: ${CONTINUOUS_TREND_REFRESH_SECONDS:-1800}
+      CONTINUOUS_PROXY_PROFILE: ${CONTINUOUS_PROXY_PROFILE:-private}
       PROXY_API_BASE: https://proxyapi.pekpik.com
       PRIVATE_READER_API_KEY: ${PRIVATE_READER_API_KEY:-}
       SHARED_PROXY_USERNAME: ${SHARED_PROXY_USERNAME:-}
       SHARED_PROXY_PASSWORD: ${SHARED_PROXY_PASSWORD:-}
       DEFAULT_PROXY_PROFILE: ${DEFAULT_PROXY_PROFILE:-private}
       PROXY_CACHE_DIR: /app/state/proxies
-      PROXY_STICKY_SECONDS: ${PROXY_STICKY_SECONDS:-300}
+      PROXY_STICKY_SECONDS: ${PROXY_STICKY_SECONDS:-0}
+      GOOGLE_PROXY_STICKY_SECONDS: ${GOOGLE_PROXY_STICKY_SECONDS:-120}
       PROXY_SELECTION_WINDOW: ${PROXY_SELECTION_WINDOW:-20}
       PROXY_SORT: ${PROXY_SORT:-quality}
       ROBOTS_BYPASS_DOMAINS: ${ROBOTS_BYPASS_DOMAINS:-}
-      CRAWLER_OBEY_ROBOTS: ${CRAWLER_OBEY_ROBOTS:-true}
+      CRAWLER_OBEY_ROBOTS: ${CRAWLER_OBEY_ROBOTS:-false}
       CRAWLER_SLOTS: ${CRAWLER_SLOTS:-2}
-      CRAWLER_CONCURRENCY: ${CRAWLER_CONCURRENCY:-32}
+      CRAWLER_CONCURRENCY: ${CRAWLER_CONCURRENCY:-64}
       CRAWLER_CONCURRENCY_PER_DOMAIN: ${CRAWLER_CONCURRENCY_PER_DOMAIN:-4}
       CRAWLER_DOWNLOAD_DELAY: ${CRAWLER_DOWNLOAD_DELAY:-0.1}
       CRAWLER_AUTOTHROTTLE_ENABLED: ${CRAWLER_AUTOTHROTTLE_ENABLED:-true}
-      CRAWLER_AUTOTHROTTLE_TARGET: ${CRAWLER_AUTOTHROTTLE_TARGET:-3}
+      CRAWLER_AUTOTHROTTLE_TARGET: ${CRAWLER_AUTOTHROTTLE_TARGET:-8}
+      CONTINUOUS_EXECUTOR: ${CONTINUOUS_EXECUTOR:-persistent}
+      PERSISTENT_MAX_CRAWLS: ${PERSISTENT_MAX_CRAWLS:-4}
+      OUTBOX_FLUSH_SECONDS: ${OUTBOX_FLUSH_SECONDS:-1}
+      OUTBOX_MAX_PENDING: ${OUTBOX_MAX_PENDING:-5000}
       CRAWLER_RETRY_HTTP_CODES: ${CRAWLER_RETRY_HTTP_CODES:-408,425,429,500,502,503,504}
       CRAWLER_DEPTH_LIMIT: ${CRAWLER_DEPTH_LIMIT:-12}
       CRAWLER_MIN_CONTENT_CHARS: ${CRAWLER_MIN_CONTENT_CHARS:-100}
+      BROWSER_FALLBACK_ENABLED: ${BROWSER_FALLBACK_ENABLED:-true}
+      BROWSER_FALLBACK_RATIO: ${BROWSER_FALLBACK_RATIO:-0.05}
+      BROWSER_MAX_PAGES: ${BROWSER_MAX_PAGES:-2}
+      BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-15000}
       DISCOVERY_PAGES: ${DISCOVERY_PAGES:-20}
+      DISCOVERY_PAGES_PER_SHARD: ${DISCOVERY_PAGES_PER_SHARD:-3}
+      DISCOVERY_HISTORY_START: ${DISCOVERY_HISTORY_START:-2015-01-01}
+      DISCOVERY_WINDOW_DAYS: ${DISCOVERY_WINDOW_DAYS:-7}
+      DISCOVERY_MIN_NOVELTY_RATIO: ${DISCOVERY_MIN_NOVELTY_RATIO:-0.05}
+      DISCOVERY_EXHAUSTED_COOLDOWN_SECONDS: ${DISCOVERY_EXHAUSTED_COOLDOWN_SECONDS:-21600}
       MAX_LINKS_PER_PAGE: ${MAX_LINKS_PER_PAGE:-100}
       DISCOVERY_FEEDS_JSON: ${DISCOVERY_FEEDS_JSON:-}
       TRAFILATURA_ENABLED: ${TRAFILATURA_ENABLED:-true}
@@ -157,8 +161,6 @@ services:
       # code; persistent state remains isolated in ./state.
       - ./realtime:/app/realtime:ro
     depends_on:
-      opensearch:
-        condition: service_healthy
       searxng:
         condition: service_healthy
       postgres:
@@ -168,6 +170,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  opensearch-data:
   postgres-data:
   valkey-data:

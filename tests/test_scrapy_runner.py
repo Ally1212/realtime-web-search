@@ -25,6 +25,15 @@ class ScrapyRunnerTests(unittest.TestCase):
             self.assertTrue((queue_dir / "2").exists())
             self.assertTrue((chunk_dir / "q00000").exists())
 
+    def test_repairs_empty_spider_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job_dir = Path(directory)
+            state = job_dir / "spider.state"
+            state.touch()
+
+            self.assertEqual(repair_jobdir(job_dir), 1)
+            self.assertFalse(state.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

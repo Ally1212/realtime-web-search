@@ -12,11 +12,10 @@ from .fetcher import LiveDocument
 
 INDEX_MAPPING = {
     "settings": {"index": {"number_of_shards": 1, "number_of_replicas": 0}},
-    "mappings": {"_source": {"excludes": ["content"]}, "properties": {
+    "mappings": {"properties": {
         "url": {"type": "keyword", "ignore_above": 2048},
         "title": {"type": "text"},
-        "content": {"type": "text"},
-        "summary": {"type": "text", "index": False},
+        "summary": {"type": "text"},
         "query": {"type": "keyword"},
         "source_engines": {"type": "keyword"},
         "discovered_at": {"type": "date"},
@@ -39,6 +38,13 @@ class SearchIndex:
         response = requests.head(f"{self.base_url}/{self.index_name}", timeout=self.timeout)
         if response.status_code == 404:
             response = requests.put(f"{self.base_url}/{self.index_name}", json=INDEX_MAPPING, timeout=self.timeout)
+            if response.status_code == 400:
+                try:
+                    error_type = response.json().get("error", {}).get("type")
+                except (TypeError, ValueError):
+                    error_type = None
+                if error_type == "resource_already_exists_exception":
+                    return
         response.raise_for_status()
 
     def bulk_index(self, documents: Iterable[LiveDocument | dict[str, Any]]) -> tuple[int, list[str]]:
@@ -46,6 +52,7 @@ class SearchIndex:
         for document in documents:
             payload = dict(document) if isinstance(document, dict) else asdict(document)
             document_id = str(payload.pop("document_id"))
+            payload.pop("content", None)
             lines.append(json.dumps({"index": {"_index": self.index_name, "_id": document_id}}))
             lines.append(json.dumps(payload, ensure_ascii=False))
         if not lines:
@@ -78,9 +85,9 @@ class SearchIndex:
     def search(self, query: str, size: int = 20) -> dict[str, Any]:
         response = requests.post(f"{self.base_url}/{self.index_name}/_search", json={
             "size": min(max(size, 1), 100),
-            "query": {"multi_match": {"query": query, "fields": ["title^4", "content", "url^2"]}},
+            "query": {"multi_match": {"query": query, "fields": ["title^4", "summary", "url^2", "query"]}},
             "sort": ["_score", {"fetched_at": "desc"}],
-            "highlight": {"fields": {"content": {"fragment_size": 240, "number_of_fragments": 1}}},
+            "highlight": {"fields": {"summary": {"fragment_size": 240, "number_of_fragments": 1}}},
             "_source": ["url", "title", "summary", "fetched_at", "http_status", "source_engines", "query"],
         }, timeout=self.timeout)
         if response.status_code == 404:
@@ -91,6 +98,6 @@ class SearchIndex:
         results = []
         for item in hits.get("hits", []):
             source = item.get("_source", {})
-            snippet = (item.get("highlight", {}).get("content") or [source.get("summary", "")])[0]
+            snippet = (item.get("highlight", {}).get("summary") or [source.get("summary", "")])[0]
             results.append({**source, "score": item.get("_score"), "snippet": self._snippet(snippet)})
         return {"total": hits.get("total", {}).get("value", 0), "took_ms": payload.get("took", 0), "results": results}

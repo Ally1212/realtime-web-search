@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -11,7 +12,7 @@ from urllib.parse import urlsplit
 DEFAULT_DISCOVERY_FEEDS: tuple[tuple[str, str], ...] = (
     (
         "google-news-rss",
-        "https://news.google.com/rss/search?q={query}&hl=en-SG&gl=SG&ceid=SG:en",
+        "https://news.google.com/rss/search?q={query}&hl={hl}&gl=SG&ceid={ceid}",
     ),
 )
 
@@ -69,8 +70,9 @@ def _discovery_feeds() -> tuple[tuple[str, str], ...]:
         url = str(item.get("url", "")).strip()
         if not name or not url.startswith(("http://", "https://")):
             raise ValueError("each discovery feed requires name and an HTTP(S) url")
-        if "{" in url.replace("{query}", "") or "}" in url.replace("{query}", ""):
-            raise ValueError("discovery feed URLs only support the {query} placeholder")
+        remainder = url.replace("{query}", "").replace("{hl}", "").replace("{ceid}", "")
+        if "{" in remainder or "}" in remainder:
+            raise ValueError("discovery feed URLs only support {query}, {hl}, and {ceid}")
         host = (urlsplit(url).hostname or "").lower()
         if host != "news.google.com":
             continue
@@ -99,7 +101,8 @@ class Config:
     proxy_password: str = os.getenv("SHARED_PROXY_PASSWORD", "")
     proxy_cache_dir: Path = Path(os.getenv("PROXY_CACHE_DIR", "state/proxies"))
     proxy_sync_seconds: int = int(os.getenv("PROXY_SYNC_SECONDS", "1800"))
-    proxy_sticky_seconds: int = int(os.getenv("PROXY_STICKY_SECONDS", "300"))
+    proxy_sticky_seconds: int = int(os.getenv("PROXY_STICKY_SECONDS", "0"))
+    google_proxy_sticky_seconds: int = int(os.getenv("GOOGLE_PROXY_STICKY_SECONDS", "120"))
     proxy_selection_window: int = int(os.getenv("PROXY_SELECTION_WINDOW", "20"))
     proxy_sort: str = os.getenv("PROXY_SORT", "quality")
     default_proxy_profile: str = os.getenv("DEFAULT_PROXY_PROFILE", "private")
@@ -112,7 +115,22 @@ class Config:
     crawler_retry_http_codes: tuple[int, ...] = _int_csv("CRAWLER_RETRY_HTTP_CODES", "408,425,429,500,502,503,504")
     crawler_depth_limit: int = int(os.getenv("CRAWLER_DEPTH_LIMIT", "12"))
     crawler_min_content_chars: int = int(os.getenv("CRAWLER_MIN_CONTENT_CHARS", "100"))
+    browser_fallback_enabled: bool = _enabled("BROWSER_FALLBACK_ENABLED", True)
+    browser_fallback_ratio: float = float(os.getenv("BROWSER_FALLBACK_RATIO", "0.05"))
+    browser_max_pages: int = int(os.getenv("BROWSER_MAX_PAGES", "2"))
+    browser_timeout_ms: int = int(os.getenv("BROWSER_TIMEOUT_MS", "15000"))
     discovery_pages: int = int(os.getenv("DISCOVERY_PAGES", "20"))
+    discovery_pages_per_shard: int = int(os.getenv("DISCOVERY_PAGES_PER_SHARD", "3"))
+    discovery_history_start: date = date.fromisoformat(
+        os.getenv("DISCOVERY_HISTORY_START", "2015-01-01")
+    )
+    discovery_window_days: int = int(os.getenv("DISCOVERY_WINDOW_DAYS", "7"))
+    discovery_min_novelty_ratio: float = float(
+        os.getenv("DISCOVERY_MIN_NOVELTY_RATIO", "0.05")
+    )
+    discovery_exhausted_cooldown_seconds: int = int(
+        os.getenv("DISCOVERY_EXHAUSTED_COOLDOWN_SECONDS", "21600")
+    )
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
     discovery_feeds: tuple[tuple[str, str], ...] = _discovery_feeds()
     trafilatura_enabled: bool = _enabled("TRAFILATURA_ENABLED")
@@ -148,5 +166,15 @@ class Config:
     continuous_expand_keywords: bool = _enabled("CONTINUOUS_EXPAND_KEYWORDS", True)
     continuous_interval_seconds: int = int(os.getenv("CONTINUOUS_INTERVAL_SECONDS", "60"))
     continuous_max_items_per_keyword: int = int(os.getenv("CONTINUOUS_MAX_ITEMS_PER_KEYWORD", "1000000"))
+    # 0 means unlimited continuous collection.
+    continuous_daily_target: int = int(os.getenv("CONTINUOUS_DAILY_TARGET", "0"))
     continuous_keyword_concurrency: int = int(os.getenv("CONTINUOUS_KEYWORD_CONCURRENCY", "3"))
+    continuous_keywords_per_round: int = int(os.getenv("CONTINUOUS_KEYWORDS_PER_ROUND", "12"))
+    continuous_trend_enabled: bool = _enabled("CONTINUOUS_TREND_ENABLED", True)
+    continuous_trend_limit: int = int(os.getenv("CONTINUOUS_TREND_LIMIT", "50"))
+    continuous_trend_refresh_seconds: int = int(os.getenv("CONTINUOUS_TREND_REFRESH_SECONDS", "1800"))
     continuous_proxy_profile: str = os.getenv("CONTINUOUS_PROXY_PROFILE", "direct")
+    continuous_executor: str = os.getenv("CONTINUOUS_EXECUTOR", "persistent")
+    persistent_max_crawls: int = int(os.getenv("PERSISTENT_MAX_CRAWLS", "4"))
+    outbox_flush_seconds: float = float(os.getenv("OUTBOX_FLUSH_SECONDS", "1"))
+    outbox_max_pending: int = int(os.getenv("OUTBOX_MAX_PENDING", "5000"))

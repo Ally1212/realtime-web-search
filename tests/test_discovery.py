@@ -1,10 +1,32 @@
 import unittest
 from unittest.mock import Mock
 
-from realtime.discovery import SearchDiscovery
+from realtime.discovery import SearchDiscovery, SearchResult
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_parses_google_html_results(self):
+        content = (
+            b'<a href="/url?q=https%3A%2F%2Fexample.com%2Fai&amp;sa=U">'
+            b'<h3>AI report</h3></a><a href="https://www.google.com/preferences">'
+            b'<h3>Preferences</h3></a>'
+        )
+
+        results = SearchDiscovery._parse_google_html(content)
+
+        self.assertEqual([row.url for row in results], ["https://example.com/ai"])
+        self.assertEqual(results[0].engines, ("google",))
+
+    def test_chinese_google_locale(self):
+        response = Mock(content=b"")
+        response.raise_for_status.return_value = None
+        session = Mock()
+        session.get.return_value = response
+        SearchDiscovery("http://search", session=session, language="zh")._discover_google_page(
+            "人工智能", 1
+        )
+        self.assertEqual(session.get.call_args.kwargs["params"]["hl"], "zh-CN")
+        self.assertIn("zh-CN", session.get.call_args.kwargs["headers"]["Accept-Language"])
     def test_deduplicates_results(self):
         response = Mock()
         response.raise_for_status.return_value = None
@@ -154,3 +176,63 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
         self.assertEqual(results[0].url, "https://publisher.example/ai")
+
+    def test_decodes_modern_google_news_article_urls(self):
+        article = Mock()
+        article.url = "https://news.google.com/rss/articles/token"
+        article.content = (
+            b'<div data-n-a-id="article-id" data-n-a-ts="1700000000" '
+            b'data-n-a-sg="signature"></div>'
+        )
+        article.raise_for_status.return_value = None
+        article.close.return_value = None
+        decoded = Mock()
+        decoded.text = (
+            r'garturlres\",\"https://publisher.example/full-article\",1]'
+        )
+        decoded.raise_for_status.return_value = None
+        decoded.close.return_value = None
+        session = Mock()
+        session.get.return_value = article
+        session.post.return_value = decoded
+        discovery = SearchDiscovery("http://search", session=session)
+
+        result = discovery._resolve_google_news(
+            SearchResult(article.url, "Article", ("google-news-rss",))
+        )
+
+        self.assertEqual(result.url, "https://publisher.example/full-article")
+        self.assertIn("f.req", session.post.call_args.kwargs["data"])
+
+    def test_drops_unresolved_google_news_article_urls(self):
+        article = Mock()
+        article.url = "https://news.google.com/rss/articles/token"
+        article.content = b"<html></html>"
+        article.raise_for_status.return_value = None
+        article.close.return_value = None
+        session = Mock()
+        session.get.return_value = article
+        discovery = SearchDiscovery("http://search", session=session)
+
+        result = discovery._resolve_google_news(
+            SearchResult(article.url, "Article", ("google-news-rss",))
+        )
+
+        self.assertIsNone(result)
+
+    def test_resolves_google_news_urls_returned_by_regular_search(self):
+        discovery = SearchDiscovery("http://search")
+        source = SearchResult(
+            "https://news.google.com/articles/token", "Article", ("google",)
+        )
+        resolved = SearchResult(
+            "https://publisher.example/article", "Article", ("google",)
+        )
+        discovery.discover = Mock(return_value=([source], []))
+        discovery.discover_feeds = Mock(return_value=([], []))
+        discovery._resolve_google_news = Mock(return_value=resolved)
+
+        results, errors = discovery.discover_many(("AI",), 1)
+
+        self.assertEqual(errors, [])
+        self.assertEqual([item.url for item in results], [resolved.url])

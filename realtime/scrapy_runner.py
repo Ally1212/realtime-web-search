@@ -10,12 +10,34 @@ from .config import Config
 from .crawler import FocusedSpider
 
 
+def crawler_settings(config: Config, job_dir: Path):  # type: ignore[no-untyped-def]
+    settings = get_project_settings()
+    settings.set("CONCURRENT_REQUESTS", config.crawler_concurrency, priority="cmdline")
+    settings.set("CONCURRENT_REQUESTS_PER_DOMAIN", config.crawler_concurrency_per_domain, priority="cmdline")
+    settings.set("DOWNLOAD_DELAY", config.crawler_download_delay, priority="cmdline")
+    settings.set("AUTOTHROTTLE_ENABLED", config.crawler_autothrottle_enabled, priority="cmdline")
+    settings.set("AUTOTHROTTLE_TARGET_CONCURRENCY", config.crawler_autothrottle_target, priority="cmdline")
+    settings.set("RETRY_HTTP_CODES", list(config.crawler_retry_http_codes), priority="cmdline")
+    settings.set("ROBOTSTXT_OBEY", config.crawler_obey_robots, priority="cmdline")
+    settings.set("DEPTH_LIMIT", config.crawler_depth_limit, priority="cmdline")
+    settings.set("USER_AGENT", config.user_agent, priority="cmdline")
+    settings.set("JOBDIR", str(job_dir), priority="cmdline")
+    settings.set("BROWSER_FALLBACK_ENABLED", config.browser_fallback_enabled, priority="cmdline")
+    settings.set("PLAYWRIGHT_MAX_PAGES_PER_CONTEXT", config.browser_max_pages, priority="cmdline")
+    settings.set("PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT", config.browser_timeout_ms, priority="cmdline")
+    return settings
+
+
 def repair_jobdir(job_dir: Path) -> int:
     """Remove truncated LIFO queue files left by an interrupted container stop."""
     queue_dir = job_dir / "requests.queue"
-    if not queue_dir.exists():
-        return 0
     repaired = 0
+    spider_state = job_dir / "spider.state"
+    if spider_state.exists() and spider_state.stat().st_size == 0:
+        spider_state.unlink()
+        repaired += 1
+    if not queue_dir.exists():
+        return repaired
     for queue_file in queue_dir.rglob("*"):
         if (
             queue_file.is_file()
@@ -32,27 +54,14 @@ def main() -> None:
     parser.add_argument("campaign_id")
     args = parser.parse_args()
     config = Config()
-    job_dir = Path("state/jobs") / args.campaign_id
+    # v2 invalidates pending requests created before Google News article URLs
+    # were decoded to publisher URLs. Keep the old directory untouched so the
+    # operational change remains recoverable.
+    job_dir = Path("state/jobs-v2") / args.campaign_id
     repaired = repair_jobdir(job_dir)
     if repaired:
         print(f"repaired {repaired} interrupted scheduler queue files", flush=True)
-    settings = get_project_settings()
-    settings.set("CONCURRENT_REQUESTS", config.crawler_concurrency, priority="cmdline")
-    settings.set(
-        "CONCURRENT_REQUESTS_PER_DOMAIN", config.crawler_concurrency_per_domain,
-        priority="cmdline",
-    )
-    settings.set("DOWNLOAD_DELAY", config.crawler_download_delay, priority="cmdline")
-    settings.set("AUTOTHROTTLE_ENABLED", config.crawler_autothrottle_enabled, priority="cmdline")
-    settings.set(
-        "AUTOTHROTTLE_TARGET_CONCURRENCY", config.crawler_autothrottle_target,
-        priority="cmdline",
-    )
-    settings.set("RETRY_HTTP_CODES", list(config.crawler_retry_http_codes), priority="cmdline")
-    settings.set("ROBOTSTXT_OBEY", config.crawler_obey_robots, priority="cmdline")
-    settings.set("DEPTH_LIMIT", config.crawler_depth_limit, priority="cmdline")
-    settings.set("USER_AGENT", config.user_agent)
-    settings.set("JOBDIR", str(job_dir))
+    settings = crawler_settings(config, job_dir)
     process = CrawlerProcess(settings)
     process.crawl(FocusedSpider, campaign_id=args.campaign_id)
     process.start()
