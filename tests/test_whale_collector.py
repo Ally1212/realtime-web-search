@@ -35,7 +35,7 @@ class WhaleCollectorTests(unittest.TestCase):
             "title": "Example", "content": "A" * 120, "content_hash": "a" * 64,
             "language": "en", "fetched_at": "2026-09-02T00:00:00+00:00",
             "discovered_at": "2026-09-02T00:00:00+00:00", "query": "example",
-            "source_engines": ("searxng",),
+            "source_engines": ("google_web",),
         }
 
         record_key, message = whale_message(item, task, config)

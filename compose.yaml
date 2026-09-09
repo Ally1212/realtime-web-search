@@ -1,15 +1,4 @@
 services:
-  searxng:
-    image: docker.io/searxng/searxng:latest
-    volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:8080/healthz' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-
   postgres:
     image: postgres:17-alpine
     environment:
@@ -42,7 +31,6 @@ services:
     entrypoint: ["python", "-m", "realtime.cli"]
     command: ["serve"]
     environment:
-      SEARXNG_URL: http://searxng:8080
       PROCESS_ROLE: web
       DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
       VALKEY_URL: redis://valkey:6379/0
@@ -67,8 +55,6 @@ services:
       - ./state:/app/state
       - ./realtime:/app/realtime:ro
     depends_on:
-      searxng:
-        condition: service_healthy
       postgres:
         condition: service_healthy
       valkey:
@@ -80,14 +66,75 @@ services:
       timeout: 3s
       retries: 10
 
+  local-worker:
+    build: .
+    entrypoint: ["sh", "-c"]
+    command: ["Xvfb :99 -screen 0 1280x900x24 >/tmp/xvfb.log 2>&1 & exec python -m realtime.cli worker"]
+    environment:
+      PROCESS_ROLE: local-worker
+      DISPLAY: ":99"
+      DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
+      VALKEY_URL: redis://valkey:6379/0
+      WHALE_ENABLED: "false"
+      WHALE_COLLECTOR_API_KEY: ""
+      PROXY_API_BASE: https://proxyapi.pekpik.com
+      PRIVATE_READER_API_KEY: ${PRIVATE_READER_API_KEY:-}
+      SHARED_PROXY_USERNAME: ${SHARED_PROXY_USERNAME:-}
+      SHARED_PROXY_PASSWORD: ${SHARED_PROXY_PASSWORD:-}
+      DEFAULT_PROXY_PROFILE: ${DEFAULT_PROXY_PROFILE:-private}
+      PROXY_CACHE_DIR: /app/state/proxies
+      PROXY_STICKY_SECONDS: ${PROXY_STICKY_SECONDS:-0}
+      GOOGLE_PROXY_STICKY_SECONDS: ${GOOGLE_PROXY_STICKY_SECONDS:-0}
+      PROXY_SELECTION_WINDOW: ${PROXY_SELECTION_WINDOW:-160}
+      PROXY_SORT: ${PROXY_SORT:-quality}
+      PROXY_SYNC_SECONDS: ${PROXY_SYNC_SECONDS:-1800}
+      ROBOTS_BYPASS_DOMAINS: ${ROBOTS_BYPASS_DOMAINS:-}
+      CRAWLER_OBEY_ROBOTS: ${CRAWLER_OBEY_ROBOTS:-false}
+      CRAWLER_SLOTS: ${CRAWLER_SLOTS:-2}
+      CRAWLER_CONCURRENCY: ${CRAWLER_CONCURRENCY:-144}
+      CRAWLER_CONCURRENCY_PER_DOMAIN: ${CRAWLER_CONCURRENCY_PER_DOMAIN:-4}
+      CRAWLER_DOWNLOAD_DELAY: ${CRAWLER_DOWNLOAD_DELAY:-0.1}
+      CRAWLER_AUTOTHROTTLE_ENABLED: ${CRAWLER_AUTOTHROTTLE_ENABLED:-true}
+      CRAWLER_AUTOTHROTTLE_TARGET: ${CRAWLER_AUTOTHROTTLE_TARGET:-8}
+      CRAWLER_RETRY_HTTP_CODES: ${CRAWLER_RETRY_HTTP_CODES:-408,425,429,500,502,503,504}
+      CRAWLER_DEPTH_LIMIT: ${CRAWLER_DEPTH_LIMIT:-12}
+      CRAWLER_MIN_CONTENT_CHARS: ${CRAWLER_MIN_CONTENT_CHARS:-100}
+      BROWSER_FALLBACK_ENABLED: ${BROWSER_FALLBACK_ENABLED:-true}
+      BROWSER_FALLBACK_RATIO: ${BROWSER_FALLBACK_RATIO:-0.05}
+      BROWSER_MAX_PAGES: ${BROWSER_MAX_PAGES:-2}
+      BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-15000}
+      DISCOVERY_GLOBAL_CONCURRENCY: ${DISCOVERY_GLOBAL_CONCURRENCY:-24}
+      DISCOVERY_QUERY_CONCURRENCY: ${DISCOVERY_QUERY_CONCURRENCY:-4}
+      GOOGLE_WEB_ENABLED: ${GOOGLE_WEB_ENABLED:-true}
+      GOOGLE_WEB_INITIAL_RPS: ${GOOGLE_WEB_INITIAL_RPS:-0.5}
+      GOOGLE_WEB_MAX_RPS: ${GOOGLE_WEB_MAX_RPS:-2}
+      GOOGLE_WEB_MAX_PAGES: ${GOOGLE_WEB_MAX_PAGES:-11}
+      GOOGLE_WEB_PAGES_PER_BATCH: ${GOOGLE_WEB_PAGES_PER_BATCH:-3}
+      GOOGLE_WEB_QUERY_CACHE_SECONDS: ${GOOGLE_WEB_QUERY_CACHE_SECONDS:-21600}
+      GOOGLE_WEB_PROXY_MIN_INTERVAL_SECONDS: ${GOOGLE_WEB_PROXY_MIN_INTERVAL_SECONDS:-30}
+      GOOGLE_WEB_PROXY_COOLDOWN_SECONDS: ${GOOGLE_WEB_PROXY_COOLDOWN_SECONDS:-21600}
+      GOOGLE_WEB_SOURCE_COOLDOWN_SECONDS: ${GOOGLE_WEB_SOURCE_COOLDOWN_SECONDS:-1800}
+      GOOGLE_WEB_CAPTCHA_THRESHOLD: ${GOOGLE_WEB_CAPTCHA_THRESHOLD:-0.02}
+      TRAFILATURA_ENABLED: ${TRAFILATURA_ENABLED:-true}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./state:/app/state
+      - ./realtime:/app/realtime:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    restart: unless-stopped
+
   collector:
+    profiles: ["whale"]
     build: .
     # Run the checked-out module so operational fixes take effect without a
     # Docker image rebuild while the registry is unavailable.
     entrypoint: ["python", "-m", "realtime.cli"]
     command: ["${COLLECTOR_COMMAND:-whale-worker}"]
     environment:
-      SEARXNG_URL: http://searxng:8080
       PROCESS_ROLE: collector
       DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
       VALKEY_URL: redis://valkey:6379/0
@@ -113,12 +160,8 @@ services:
       CONTINUOUS_KEYWORD_CONCURRENCY: ${CONTINUOUS_KEYWORD_CONCURRENCY:-8}
       CONTINUOUS_KEYWORD_CONCURRENCY_MAX: ${CONTINUOUS_KEYWORD_CONCURRENCY_MAX:-12}
       CONTINUOUS_KEYWORDS_PER_ROUND: ${CONTINUOUS_KEYWORDS_PER_ROUND:-24}
-      CONTINUOUS_TREND_SHARE: ${CONTINUOUS_TREND_SHARE:-0.25}
       ADAPTIVE_CONCURRENCY_ENABLED: ${ADAPTIVE_CONCURRENCY_ENABLED:-true}
       ADAPTIVE_EVALUATION_SECONDS: ${ADAPTIVE_EVALUATION_SECONDS:-300}
-      CONTINUOUS_TREND_ENABLED: ${CONTINUOUS_TREND_ENABLED:-true}
-      CONTINUOUS_TREND_LIMIT: ${CONTINUOUS_TREND_LIMIT:-50}
-      CONTINUOUS_TREND_REFRESH_SECONDS: ${CONTINUOUS_TREND_REFRESH_SECONDS:-1800}
       CONTINUOUS_PROXY_PROFILE: ${CONTINUOUS_PROXY_PROFILE:-private}
       PROXY_API_BASE: https://proxyapi.pekpik.com
       PRIVATE_READER_API_KEY: ${PRIVATE_READER_API_KEY:-}
@@ -150,7 +193,6 @@ services:
       BROWSER_MAX_PAGES: ${BROWSER_MAX_PAGES:-2}
       BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-15000}
       DISCOVERY_PAGES: ${DISCOVERY_PAGES:-20}
-      DISCOVERY_PAGES_PER_SHARD: ${DISCOVERY_PAGES_PER_SHARD:-3}
       DISCOVERY_GLOBAL_CONCURRENCY: ${DISCOVERY_GLOBAL_CONCURRENCY:-24}
       DISCOVERY_QUERY_CONCURRENCY: ${DISCOVERY_QUERY_CONCURRENCY:-4}
       DISCOVERY_HISTORY_START: ${DISCOVERY_HISTORY_START:-2015-01-01}
@@ -158,24 +200,17 @@ services:
       DISCOVERY_MIN_NOVELTY_RATIO: ${DISCOVERY_MIN_NOVELTY_RATIO:-0.05}
       DISCOVERY_EXHAUSTED_COOLDOWN_SECONDS: ${DISCOVERY_EXHAUSTED_COOLDOWN_SECONDS:-21600}
       MAX_LINKS_PER_PAGE: ${MAX_LINKS_PER_PAGE:-100}
-      DISCOVERY_FEEDS_JSON: ${DISCOVERY_FEEDS_JSON:-}
       GOOGLE_WEB_ENABLED: ${GOOGLE_WEB_ENABLED:-true}
       GOOGLE_WEB_INITIAL_RPS: ${GOOGLE_WEB_INITIAL_RPS:-0.5}
       GOOGLE_WEB_MAX_RPS: ${GOOGLE_WEB_MAX_RPS:-2}
       GOOGLE_WEB_BURST: ${GOOGLE_WEB_BURST:-1}
-      GOOGLE_WEB_MAX_PAGES: ${GOOGLE_WEB_MAX_PAGES:-2}
-      GOOGLE_WEB_SECOND_PAGE_MIN_NOVELTY: ${GOOGLE_WEB_SECOND_PAGE_MIN_NOVELTY:-0.15}
+      GOOGLE_WEB_MAX_PAGES: ${GOOGLE_WEB_MAX_PAGES:-11}
+      GOOGLE_WEB_PAGES_PER_BATCH: ${GOOGLE_WEB_PAGES_PER_BATCH:-3}
       GOOGLE_WEB_QUERY_CACHE_SECONDS: ${GOOGLE_WEB_QUERY_CACHE_SECONDS:-21600}
       GOOGLE_WEB_PROXY_MIN_INTERVAL_SECONDS: ${GOOGLE_WEB_PROXY_MIN_INTERVAL_SECONDS:-30}
       GOOGLE_WEB_PROXY_COOLDOWN_SECONDS: ${GOOGLE_WEB_PROXY_COOLDOWN_SECONDS:-21600}
       GOOGLE_WEB_SOURCE_COOLDOWN_SECONDS: ${GOOGLE_WEB_SOURCE_COOLDOWN_SECONDS:-1800}
       GOOGLE_WEB_CAPTCHA_THRESHOLD: ${GOOGLE_WEB_CAPTCHA_THRESHOLD:-0.02}
-      GOOGLE_WEB_SHARE: ${GOOGLE_WEB_SHARE:-0.70}
-      SEARXNG_DISCOVERY_ENABLED: ${SEARXNG_DISCOVERY_ENABLED:-false}
-      GOOGLE_NEWS_BASE_INTERVAL_SECONDS: ${GOOGLE_NEWS_BASE_INTERVAL_SECONDS:-3600}
-      GOOGLE_NEWS_TREND_INTERVAL_SECONDS: ${GOOGLE_NEWS_TREND_INTERVAL_SECONDS:-900}
-      GOOGLE_NEWS_LOCALES: ${GOOGLE_NEWS_LOCALES:-US:en,GB:en,SG:en,SG:zh-Hans,HK:zh-Hant,TW:zh-Hant}
-      GOOGLE_TRENDS_INTERVAL_SECONDS: ${GOOGLE_TRENDS_INTERVAL_SECONDS:-900}
       TRAFILATURA_ENABLED: ${TRAFILATURA_ENABLED:-true}
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -184,8 +219,6 @@ services:
       # code; persistent state remains isolated in ./state.
       - ./realtime:/app/realtime:ro
     depends_on:
-      searxng:
-        condition: service_healthy
       postgres:
         condition: service_healthy
       valkey:

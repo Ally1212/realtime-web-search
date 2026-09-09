@@ -1,16 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import re
-from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
-
-try:
-    import jieba
-except ImportError:  # Source checkouts can still use the conservative fallback.
-    jieba = None
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -137,106 +129,3 @@ AI_ANCHORS = re.compile(
     r"人工智能|大模型|生成式|机器学习|智能体|机器人",
     re.IGNORECASE,
 )
-EN_CANDIDATE = re.compile(
-    r"\b(?:[A-Z][A-Za-z0-9.-]*(?:\s+[A-Z][A-Za-z0-9.-]*){0,3}|"
-    r"(?:GPT|Llama|Claude|Gemini|Qwen|DeepSeek|Mistral)[-\s]?[A-Za-z0-9.]+)\b"
-)
-ZH_CANDIDATE = re.compile(r"[\u3400-\u9fff]{2,10}")
-TREND_BLACKLIST = {
-    "artificial intelligence", "machine learning", "generative ai", "ai", "news",
-    "latest news", "人工智能", "机器学习", "生成式人工智能", "最新消息", "科技新闻",
-    "english", "chinese", "today", "latest", "new", "report", "research", "update",
-    "the", "how", "why", "what", "us", "uk", "china", "world", "technology",
-    "article", "article display", "home", "page", "image", "video", "read more",
-    "american", "british", "european", "german", "french", "spanish", "italian",
-    "japanese", "korean", "indian", "canadian", "australian", "singaporean",
-    "europe", "asia", "africa", "america", "germany", "france", "japan", "india",
-    "中文", "英文", "今日", "最新", "新闻", "报告", "研究", "更新", "中国", "全球",
-    "文章", "首页", "页面", "图片", "视频", "阅读全文",
-    "a", "an", "and", "are", "as", "at", "be", "billion", "but", "by",
-    "can", "could", "education", "everything", "for", "from", "future", "in",
-    "is", "it", "january", "february", "march", "april", "may", "june",
-    "july", "august", "september", "october", "november", "december", "more",
-    "no", "of", "on", "one", "or", "should", "that", "this", "to", "top",
-    "was", "we", "were", "when", "where", "which", "who", "will", "with", "you",
-    "big tech", "cloud", "business", "nasdaq", "london", "brazil", "israel",
-    "hyderabad", "assam", "u.s", "u.s.",
-}
-
-
-def _normalized_candidate(value: str) -> str:
-    return " ".join(value.strip(" -–—:：,，.。'\"()（）").split())
-
-
-def trend_candidate_allowed(value: str, excluded: set[str] | None = None) -> bool:
-    normalized = _normalized_candidate(value)
-    folded = normalized.casefold()
-    without_anchor = _normalized_candidate(AI_ANCHORS.sub("", normalized)).casefold()
-    excluded_values = {item.casefold() for item in (excluded or set())}
-    if (
-        len(normalized) < 2 or folded in TREND_BLACKLIST or folded in excluded_values
-        or without_anchor in TREND_BLACKLIST or without_anchor in excluded_values
-        or AI_ANCHORS.fullmatch(normalized)
-    ):
-        return False
-    if re.fullmatch(r"[A-Za-z0-9. -]+", normalized):
-        tokens = normalized.split()
-        if not 1 <= len(tokens) <= 4 or all(token.casefold() in TREND_BLACKLIST for token in tokens):
-            return False
-        if len(tokens) == 1 and len(tokens[0].strip(".")) < 3:
-            return False
-    return True
-
-
-def trend_keyword_specs(
-    rows: list[dict[str, str]], *, now: datetime | None = None, limit: int = 50,
-    excluded: set[str] | None = None,
-) -> tuple[KeywordSpec, ...]:
-    """Extract auditable trends backed by >=3 domains and >=5 distinct titles."""
-    domains: dict[tuple[str, str], set[str]] = defaultdict(set)
-    titles: dict[tuple[str, str], set[str]] = defaultdict(set)
-    display: dict[tuple[str, str], str] = {}
-    excluded_values = {value.casefold() for value in (excluded or set())}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        title = str(row.get("title") or "")
-        if not AI_ANCHORS.search(title):
-            continue
-        domain = (urlsplit(str(row.get("url") or "")).hostname or "").lower()
-        candidates: list[tuple[str, str]] = []
-        candidates.extend(("en", value) for value in EN_CANDIDATE.findall(title))
-        chinese_chunks = ZH_CANDIDATE.findall(title)
-        if jieba:
-            candidates.extend(
-                ("zh", token) for chunk in chinese_chunks
-                for token in jieba.cut(chunk) if 2 <= len(token) <= 10
-            )
-        else:
-            candidates.extend(("zh", value) for value in chinese_chunks)
-        for language, raw in candidates:
-            value = _normalized_candidate(raw)
-            folded = value.casefold()
-            if not trend_candidate_allowed(value, excluded_values):
-                continue
-            key = (language, folded)
-            display.setdefault(key, value)
-            if domain:
-                domains[key].add(domain)
-            titles[key].add(title)
-    ranked = sorted(
-        (key for key in titles if len(domains[key]) >= 3 and len(titles[key]) >= 5),
-        key=lambda key: (-len(domains[key]), -len(titles[key]), key[1]),
-    )[:max(0, limit)]
-    current = now or datetime.now(timezone.utc)
-    specs: list[KeywordSpec] = []
-    for language, folded in ranked:
-        phrase = display[(language, folded)]
-        digest = hashlib.sha256(f"{language}:{folded}".encode()).hexdigest()[:16]
-        query = f'"{phrase}" AI' if language == "en" else f'"{phrase}" 人工智能'
-        specs.append(KeywordSpec(
-            f"trend:{digest}", f"trend-{digest}", query, (phrase,), language,
-            "trends", kind="trend", priority=60,
-            expires_at=current + timedelta(days=7),
-        ))
-    return tuple(specs)

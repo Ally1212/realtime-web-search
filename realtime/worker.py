@@ -5,7 +5,6 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
 
 from .campaign_queue import CampaignQueue
 from .campaign_store import CampaignStore
@@ -25,7 +24,7 @@ class WorkerManager:
         last_purge = 0.0
         while not self.stop.is_set():
             retry = self.config.proxy_sync_seconds
-            profiles = self.store.active_proxy_profiles() - {"direct"}
+            profiles = self.store.local_proxy_profiles() - {"direct"}
             for profile in profiles:
                 try:
                     self.syncer.sync(profile)
@@ -39,12 +38,11 @@ class WorkerManager:
 
     def run_campaign(self, campaign_id: str) -> None:
         campaign = self.store.campaign(campaign_id)
-        if not campaign or campaign["status"] != "active":
-            return
-        if self.store.daily_count(campaign_id) >= int(campaign["daily_target"]):
-            now = datetime.now(timezone.utc)
-            next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            self.queue.schedule(campaign_id, max(60, int((next_day - now).total_seconds()) + 30))
+        if (
+            not campaign
+            or campaign["status"] != "active"
+            or not self.store.is_local_campaign(campaign_id)
+        ):
             return
         profile = str(campaign["proxy_profile"])
         if profile != "direct":
@@ -71,12 +69,9 @@ class WorkerManager:
                     campaign_id, "", "worker_failed", error_code=f"exit_{result.returncode}"
                 )
                 self.queue.schedule(campaign_id, 60)
-            elif self.store.daily_count(campaign_id) < int(campaign["daily_target"]):
-                self.queue.schedule(campaign_id, 300)
             else:
-                now = datetime.now(timezone.utc)
-                next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-                self.queue.schedule(campaign_id, max(60, int((next_day - now).total_seconds()) + 30))
+                frontier_delay = self.store.next_google_frontier_delay(campaign_id)
+                self.queue.schedule(campaign_id, frontier_delay if frontier_delay is not None else 300)
 
     def worker_loop(self) -> None:
         while not self.stop.is_set():
@@ -86,7 +81,7 @@ class WorkerManager:
                 self.run_campaign(campaign_id)
 
     def run(self) -> None:
-        for campaign_id in self.store.active_campaign_ids():
+        for campaign_id in self.store.active_local_campaign_ids():
             self.queue.recover(campaign_id)
         threading.Thread(target=self.proxy_sync_loop, daemon=True).start()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.config.crawler_slots) as pool:

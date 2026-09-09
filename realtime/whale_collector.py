@@ -15,9 +15,7 @@ import requests
 from .campaign_store import CampaignStore
 from .config import Config
 from .proxy_pool import ProxyApiError, ProxyCache, ProxySynchronizer
-from .keyword_catalog import (
-    TREND_BLACKLIST, KeywordSpec, base_keyword_specs, trend_keyword_specs,
-)
+from .keyword_catalog import KeywordSpec, base_keyword_specs
 
 
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
@@ -42,7 +40,7 @@ class AdaptiveConcurrencyController:
         upload_errors = int(health.get("upload_errors", 0))
         success = float(health.get("success_rate", 0))
         # Google Web owns its RPS and circuit breaker. Search CAPTCHA must not
-        # reduce News, body-fetch, or Whale upload concurrency.
+        # reduce body-fetch or Whale upload concurrency.
         if pending >= 2000 or upload_errors > 0:
             self.current = max(self.minimum, self.current - 2)
             self.healthy_windows = 0
@@ -170,7 +168,7 @@ class WhaleClient:
             "declared_capabilities": ["identity", "title", "body"],
             "max_concurrency": self.config.whale_max_concurrency,
             "current_load": current_load,
-            "metadata": {"crawler": "scrapy", "discovery": ["google", "google-news-rss"]},
+            "metadata": {"crawler": "scrapy", "discovery": ["google_web"]},
         })
         response.raise_for_status()
         data = response.json()
@@ -587,9 +585,6 @@ class ContinuousWhaleRunner:
         if not catalog:
             raise ValueError("CONTINUOUS_AI_KEYWORDS must contain at least one keyword")
         self.store.sync_continuous_keywords(catalog)
-        catalog_aliases = {alias.casefold() for spec in catalog for alias in spec.aliases}
-        retired = self.store.retire_all_trends()
-        self.store.retire_blocklisted_trends(TREND_BLACKLIST | catalog_aliases)
         controller = AdaptiveConcurrencyController(
             self.config.continuous_keyword_concurrency,
             self.config.continuous_keyword_concurrency_max,
@@ -640,9 +635,8 @@ class ContinuousWhaleRunner:
                     raise
         _diagnostic(
             "continuous_whale_registered", agent_id=self.runner.client.agent_id,
-            keywords=len(catalog), retired_trends=retired,
+            keywords=len(catalog),
         )
-        last_trend_refresh = 0.0
         last_adaptive_evaluation = time.monotonic()
 
         def evaluate_adaptive() -> None:
@@ -685,25 +679,8 @@ class ContinuousWhaleRunner:
                         "continuous_whale_proxy_sync_failed",
                         status=exc.status or "transport",
                     )
-            if (
-                self.config.continuous_trend_enabled
-                and time.monotonic() - last_trend_refresh
-                >= max(60, self.config.continuous_trend_refresh_seconds)
-            ):
-                trends = trend_keyword_specs(
-                    (
-                        *self.store.recent_google_trend_titles(24),
-                        *self.store.recent_titles(24),
-                    ),
-                    limit=self.config.continuous_trend_limit,
-                    excluded=catalog_aliases,
-                )
-                self.store.sync_continuous_keywords(trends)
-                last_trend_refresh = time.monotonic()
-                _diagnostic("continuous_whale_trends_refreshed", keywords=len(trends))
             rows = self.store.due_continuous_keywords(
                 self.config.continuous_keywords_per_round,
-                self.config.continuous_trend_share,
             )
             keywords = tuple(self._spec_from_row(row) for row in rows)
             if not keywords:

@@ -41,8 +41,8 @@ if [[ "$collector_command" == "continuous-whale" ]]; then
   fi
 fi
 
-docker compose up -d --build --wait --remove-orphans \
-  postgres opensearch searxng valkey web collector
+docker compose --profile whale up -d --build --wait --remove-orphans \
+  postgres valkey web collector
 
 curl -fsS --max-time 10 http://127.0.0.1:8091/healthz >/dev/null
 if [[ "$(docker compose ps --status running -q collector)" == "" ]]; then

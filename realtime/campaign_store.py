@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS campaign_pages (
   PRIMARY KEY (campaign_id, page_id)
 );
 CREATE INDEX IF NOT EXISTS campaign_pages_daily ON campaign_pages(campaign_id, first_seen);
+CREATE INDEX IF NOT EXISTS campaign_pages_page ON campaign_pages(page_id);
 CREATE TABLE IF NOT EXISTS crawl_events (
   id bigserial PRIMARY KEY,
   campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -134,8 +136,8 @@ CREATE TABLE IF NOT EXISTS continuous_keywords (
   aliases jsonb NOT NULL DEFAULT '[]'::jsonb,
   language varchar(8) NOT NULL CHECK (language IN ('en','zh')),
   category text NOT NULL,
-  kind text NOT NULL CHECK (kind IN ('base','trend')),
-  state text NOT NULL CHECK (state IN ('active','probation','cooldown','retired')),
+  kind text NOT NULL CHECK (kind='base'),
+  state text NOT NULL CHECK (state IN ('active','cooldown','retired')),
   priority integer NOT NULL DEFAULT 50,
   score double precision NOT NULL DEFAULT 50,
   runs integer NOT NULL DEFAULT 0,
@@ -260,6 +262,29 @@ CREATE TABLE IF NOT EXISTS google_proxy_sessions (
   cooldown_until timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS google_page_frontier (
+  campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  query_hash char(64) NOT NULL,
+  query text NOT NULL,
+  locale text NOT NULL,
+  next_page integer NOT NULL DEFAULT 1 CHECK (next_page >= 1),
+  max_page integer NOT NULL DEFAULT 11 CHECK (max_page >= 1),
+  batch_start integer,
+  batch_end integer,
+  state text NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending','running','completed','cooling','failed')),
+  attempts integer NOT NULL DEFAULT 0,
+  lease_token uuid,
+  lease_expires_at timestamptz,
+  next_run_at timestamptz NOT NULL DEFAULT now(),
+  last_error text,
+  page_stats jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (campaign_id,query_hash,locale)
+);
+CREATE INDEX IF NOT EXISTS google_page_frontier_due
+  ON google_page_frontier(state,next_run_at,lease_expires_at);
 """
 
 
@@ -420,14 +445,6 @@ class CampaignStore:
             )
         return dict(row) if row else None
 
-    def get_discovery_cache_metadata(self, cache_key: str) -> dict[str, Any] | None:
-        with self.connect() as connection:
-            row = connection.execute(
-                "SELECT payload,etag,last_modified,result_count,novel_count "
-                "FROM discovery_query_cache WHERE cache_key=%s", (cache_key,),
-            ).fetchone()
-        return dict(row) if row else None
-
     def put_discovery_cache(
         self, cache_key: str, source: str, query_hash: str, locale: str, page: int,
         payload: list[dict[str, Any]], ttl_seconds: int, *, novel_count: int = 0,
@@ -583,30 +600,154 @@ class CampaignStore:
                 ),
             )
 
-    def recent_google_trend_titles(self, hours: int = 24) -> list[dict[str, str]]:
+    def acquire_google_page_batch(
+        self, campaign_id: str, query: str, locale: str, max_page: int,
+        pages_per_batch: int, repeat_seconds: int, lease_seconds: int = 900,
+    ) -> dict[str, Any] | None:
+        """Atomically lease the next Google result-page batch for one query."""
+        query_hash = hashlib.sha256(query.encode()).hexdigest()
+        maximum = max(1, max_page)
+        batch_size = max(1, pages_per_batch)
         with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT item->>'title' AS title,item->>'url' AS url "
-                "FROM discovery_query_cache cache "
-                "CROSS JOIN LATERAL jsonb_array_elements(cache.payload) item "
-                "WHERE cache.source='google_trends' AND cache.updated_at>=now()-(%s*interval '1 hour') "
-                "AND length(item->>'title') BETWEEN 3 AND 300",
-                (max(1, hours),),
-            ).fetchall()
-        unique: dict[tuple[str, str], dict[str, str]] = {}
-        for row in rows:
-            title = str(row["title"] or "")
-            url = str(row["url"] or "")
-            if title:
-                unique[(title, url)] = {"title": title, "url": url}
-        return list(unique.values())
+            with connection.transaction():
+                connection.execute(
+                    "INSERT INTO google_page_frontier(campaign_id,query_hash,query,locale,max_page) "
+                    "VALUES(%s,%s,%s,%s,%s) ON CONFLICT(campaign_id,query_hash,locale) DO NOTHING",
+                    (campaign_id, query_hash, query, locale, maximum),
+                )
+                row = connection.execute(
+                    "SELECT * FROM google_page_frontier WHERE campaign_id=%s AND query_hash=%s "
+                    "AND locale=%s FOR UPDATE SKIP LOCKED", (campaign_id, query_hash, locale),
+                ).fetchone()
+                if not row:
+                    return None
+                now = datetime.now(timezone.utc)
+                state = str(row["state"])
+                connection.execute(
+                    "UPDATE google_page_frontier SET query=%s,max_page=%s,updated_at=now() "
+                    "WHERE campaign_id=%s AND query_hash=%s AND locale=%s",
+                    (query, maximum, campaign_id, query_hash, locale),
+                )
+                if state == "running" and row["lease_expires_at"] and row["lease_expires_at"] <= now:
+                    state = "pending"
+                if state in {"cooling", "failed"} and row["next_run_at"] <= now:
+                    state = "pending"
+                if state == "completed" and row["next_run_at"] <= now:
+                    state = "pending"
+                    connection.execute(
+                        "UPDATE google_page_frontier SET next_page=1,page_stats='{}'::jsonb,"
+                        "attempts=0,last_error=NULL WHERE campaign_id=%s AND query_hash=%s AND locale=%s",
+                        (campaign_id, query_hash, locale),
+                    )
+                    row = dict(row)
+                    row["next_page"] = 1
+                if state != "pending" or row["next_run_at"] > now:
+                    if state != str(row["state"]):
+                        connection.execute(
+                            "UPDATE google_page_frontier SET state=%s,lease_token=NULL,"
+                            "lease_expires_at=NULL,updated_at=now() WHERE campaign_id=%s "
+                            "AND query_hash=%s AND locale=%s",
+                            (state, campaign_id, query_hash, locale),
+                        )
+                    return None
+                start_page = min(max(int(row["next_page"]), 1), maximum)
+                end_page = min(start_page + batch_size - 1, maximum)
+                lease_token = uuid4()
+                connection.execute(
+                    "UPDATE google_page_frontier SET state='running',batch_start=%s,batch_end=%s,"
+                    "lease_token=%s,lease_expires_at=now()+(%s*interval '1 second'),updated_at=now() "
+                    "WHERE campaign_id=%s AND query_hash=%s AND locale=%s",
+                    (
+                        start_page, end_page, lease_token, max(30, lease_seconds), campaign_id,
+                        query_hash, locale,
+                    ),
+                )
+        return {
+            "campaign_id": campaign_id, "query_hash": query_hash, "locale": locale,
+            "lease_token": str(lease_token), "start_page": start_page, "end_page": end_page,
+            "max_page": maximum, "repeat_seconds": max(1, repeat_seconds),
+        }
+
+    def record_google_page_result(
+        self, batch: dict[str, Any], page: int, *, success: bool,
+        result_count: int = 0, unique_count: int = 0, novel_count: int = 0,
+        error: str | None = None, captcha: bool = False,
+    ) -> bool:
+        """Advance a leased frontier only after a page was fetched or read from cache."""
+        now = datetime.now(timezone.utc)
+        with self.connect() as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    "SELECT * FROM google_page_frontier WHERE campaign_id=%s AND query_hash=%s "
+                    "AND locale=%s AND lease_token=%s AND state='running' FOR UPDATE",
+                    (
+                        batch["campaign_id"], batch["query_hash"], batch["locale"],
+                        batch["lease_token"],
+                    ),
+                ).fetchone()
+                if not row:
+                    return False
+                stats = dict(row["page_stats"] or {})
+                stats[str(page)] = {
+                    "status": "success" if success else "failed",
+                    "candidates": max(0, result_count),
+                    "unique_urls": max(0, unique_count),
+                    "novel_urls": max(0, novel_count),
+                    "captcha": bool(captcha),
+                    "updated_at": now.isoformat(),
+                }
+                if success:
+                    if page != int(row["next_page"]):
+                        return False
+                    next_page = page + 1
+                    completed = next_page > int(row["max_page"])
+                    batch_done = page >= int(row["batch_end"])
+                    state = "completed" if completed else ("pending" if batch_done else "running")
+                    next_run_at = (
+                        now + timedelta(seconds=max(1, int(batch["repeat_seconds"])))
+                        if completed else now
+                    )
+                    clear_lease = completed or batch_done
+                    connection.execute(
+                        "UPDATE google_page_frontier SET next_page=%s,state=%s,next_run_at=%s,"
+                        "attempts=0,last_error=NULL,page_stats=%s::jsonb,lease_token=CASE WHEN %s THEN NULL "
+                        "ELSE lease_token END,lease_expires_at=CASE WHEN %s THEN NULL ELSE "
+                        "lease_expires_at END,updated_at=now() WHERE campaign_id=%s AND query_hash=%s "
+                        "AND locale=%s AND lease_token=%s",
+                        (
+                            next_page, state, next_run_at, json.dumps(stats), clear_lease,
+                            clear_lease, batch["campaign_id"], batch["query_hash"],
+                            batch["locale"], batch["lease_token"],
+                        ),
+                    )
+                    return True
+                attempts = int(row["attempts"]) + 1
+                limited = captcha or str(error or "") in {
+                    "google_captcha", "google_http_403", "google_http_429",
+                    "google_web_circuit_open",
+                }
+                delay = 1800 if limited else min(60 * (2 ** min(attempts - 1, 6)), 3600)
+                state = "cooling" if limited else ("failed" if attempts >= 8 else "pending")
+                if state == "failed":
+                    delay = max(delay, 21600)
+                connection.execute(
+                    "UPDATE google_page_frontier SET state=%s,attempts=%s,next_run_at=%s,"
+                    "last_error=%s,page_stats=%s::jsonb,lease_token=NULL,lease_expires_at=NULL,"
+                    "updated_at=now() WHERE campaign_id=%s AND query_hash=%s AND locale=%s "
+                    "AND lease_token=%s",
+                    (
+                        state, attempts, now + timedelta(seconds=delay), str(error or "unknown")[:200],
+                        json.dumps(stats), batch["campaign_id"], batch["query_hash"],
+                        batch["locale"], batch["lease_token"],
+                    ),
+                )
+                return True
 
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.execute(SCHEMA)
-            # Whale is the durable body store. Local rows retain identity and
-            # metadata only; pending outbox rows are the sole transient copy.
-            connection.execute("UPDATE pages SET content='' WHERE content<>''")
+            # Delivered Whale payloads must not retain a second body copy.
+            # Locally-created campaigns keep their extracted body in pages.
             connection.execute(
                 "UPDATE whale_ingest_outbox SET payload='{}'::jsonb "
                 "WHERE status IN ('delivered','rejected') AND payload<>'{}'::jsonb"
@@ -762,6 +903,97 @@ class CampaignStore:
             ).fetchall()
         return [str(row["id"]) for row in rows]
 
+    def active_local_campaign_ids(self) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT c.id FROM campaigns c WHERE c.status='active' AND NOT EXISTS ("
+                "SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id) ORDER BY c.created_at"
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    def is_local_campaign(self, campaign_id: str) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM campaigns c WHERE c.id=%s AND NOT EXISTS ("
+                "SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id)) AS value",
+                (campaign_id,),
+            ).fetchone()
+        return bool(row and row["value"])
+
+    def local_campaigns(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT c.id,c.query,c.status,c.discovered,c.fetched,c.failed,c.duplicates,"
+                "c.irrelevant,c.last_error,c.created_at,c.updated_at,"
+                "count(cp.page_id) AS saved_count FROM campaigns c "
+                "LEFT JOIN campaign_pages cp ON cp.campaign_id=c.id "
+                "WHERE NOT EXISTS (SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id) "
+                "GROUP BY c.id ORDER BY c.created_at DESC LIMIT %s",
+                (min(max(limit, 1), 100),),
+            ).fetchall()
+
+    def local_campaign_detail(self, campaign_id: str, limit: int = 100) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            campaign = connection.execute(
+                "SELECT c.*,count(cp.page_id) AS saved_count FROM campaigns c "
+                "LEFT JOIN campaign_pages cp ON cp.campaign_id=c.id WHERE c.id=%s "
+                "AND NOT EXISTS (SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id) "
+                "GROUP BY c.id",
+                (campaign_id,),
+            ).fetchone()
+            if not campaign:
+                return None
+            pages = connection.execute(
+                "SELECT p.id,p.url,p.title,left(CASE WHEN p.content<>'' THEN p.content "
+                "ELSE p.summary END,600) AS preview,p.language,p.http_status,p.fetched_at,"
+                "p.source_engines,cp.first_seen FROM campaign_pages cp JOIN pages p ON p.id=cp.page_id "
+                "WHERE cp.campaign_id=%s ORDER BY cp.first_seen DESC,p.id DESC LIMIT %s",
+                (campaign_id, min(max(limit, 1), 500)),
+            ).fetchall()
+            frontier = connection.execute(
+                "SELECT count(*) AS queries,COALESCE(sum(LEAST(GREATEST(next_page-1,0),max_page)),0) "
+                "AS covered_pages,COALESCE(sum(max_page),0) AS total_pages,"
+                "count(*) FILTER (WHERE state='pending') AS pending,"
+                "count(*) FILTER (WHERE state='running') AS running,"
+                "count(*) FILTER (WHERE state IN ('cooling','failed')) AS waiting,"
+                "count(*) FILTER (WHERE state='completed') AS completed "
+                "FROM google_page_frontier WHERE campaign_id=%s",
+                (campaign_id,),
+            ).fetchone()
+        result = dict(campaign)
+        # Local campaigns are intentionally unlimited. The persisted value is
+        # only a legacy schema-compatible placeholder.
+        result["daily_target"] = 0
+        result["pages"] = pages
+        result["frontier"] = dict(frontier)
+        result["upload_to_whale"] = False
+        return result
+
+    def local_proxy_profiles(self) -> set[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT c.proxy_profile FROM campaigns c WHERE c.status='active' "
+                "AND NOT EXISTS (SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id)"
+            ).fetchall()
+        return {str(row["proxy_profile"]) for row in rows}
+
+    def next_google_frontier_delay(self, campaign_id: str) -> int | None:
+        """Return the delay until the next unfinished page batch is ready."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT state,next_run_at,lease_expires_at FROM google_page_frontier "
+                "WHERE campaign_id=%s",
+                (campaign_id,),
+            ).fetchall()
+        if not rows:
+            return None
+        now = datetime.now(timezone.utc)
+        delays: list[int] = []
+        for row in rows:
+            due_at = row["lease_expires_at"] if row["state"] == "running" else row["next_run_at"]
+            delays.append(max(1, int((due_at - now).total_seconds()) + 1) if due_at else 1)
+        return min(delays)
+
     def set_status(self, campaign_id: str, status: str, error: str | None = None) -> bool:
         if status not in {"active", "paused", "stopped", "failed"}:
             raise ValueError("invalid campaign status")
@@ -855,18 +1087,10 @@ class CampaignStore:
             ).fetchone()
         return int(row["value"])
 
-    def recent_titles(self, hours: int = 24) -> list[dict[str, str]]:
-        with self.connect() as connection:
-            return connection.execute(
-                "SELECT title,url FROM pages WHERE fetched_at >= now()-(%s * interval '1 hour') "
-                "AND title<>'' ORDER BY fetched_at DESC LIMIT 20000", (max(1, hours),)
-            ).fetchall()
-
     def sync_continuous_keywords(self, specs: tuple[Any, ...]) -> None:
         with self.connect() as connection:
             with connection.transaction():
                 for spec in specs:
-                    state = "probation" if spec.kind == "trend" else "active"
                     connection.execute(
                         "INSERT INTO continuous_keywords(keyword_key,concept_id,query,aliases,language,"
                         "category,kind,state,priority,expires_at) "
@@ -878,50 +1102,21 @@ class CampaignStore:
                         (
                             spec.key, spec.concept_id, spec.query,
                             json.dumps(spec.aliases, ensure_ascii=False), spec.language,
-                            spec.category, spec.kind, state, spec.priority, spec.expires_at,
+                            spec.category, "base", "active", spec.priority, None,
                         ),
                     )
 
-    def retire_blocklisted_trends(self, values: set[str]) -> int:
-        if not values:
-            return 0
-        with self.connect() as connection:
-            cursor = connection.execute(
-                "UPDATE continuous_keywords ck SET state='retired',updated_at=now() "
-                "WHERE kind='trend' AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(ck.aliases) a "
-                "WHERE lower(a.value)=ANY(%s))", (list(values),),
-            )
-            return cursor.rowcount
-
-    def retire_all_trends(self) -> int:
-        with self.connect() as connection:
-            cursor = connection.execute(
-                "UPDATE continuous_keywords SET state='retired',updated_at=now() "
-                "WHERE kind='trend' AND state<>'retired'"
-            )
-            return cursor.rowcount
-
-    def due_continuous_keywords(
-        self, limit: int, trend_share: float = 0.25
-    ) -> list[dict[str, Any]]:
+    def due_continuous_keywords(self, limit: int) -> list[dict[str, Any]]:
         bounded_limit = max(1, limit)
-        trend_limit = max(0, min(bounded_limit, int(bounded_limit * max(0, min(trend_share, 1)))))
         with self.connect() as connection:
             with connection.transaction():
-                connection.execute(
-                    "UPDATE continuous_keywords SET state='retired',updated_at=now() "
-                    "WHERE kind='trend' AND expires_at IS NOT NULL AND expires_at<now()"
-                )
                 return connection.execute(
-                    "WITH due AS (SELECT *,row_number() OVER (PARTITION BY kind ORDER BY "
-                    "(last_run_at IS NULL) DESC,CASE state WHEN 'probation' THEN 0 "
-                    "WHEN 'active' THEN 1 ELSE 2 END,priority DESC,score DESC,last_run_at NULLS FIRST) AS kind_rank "
-                    "FROM continuous_keywords WHERE state IN ('active','probation','cooldown') "
-                    "AND next_run_at<=now()) SELECT * FROM due WHERE kind<>'trend' OR kind_rank<=%s "
-                    "ORDER BY (kind='trend'),(last_run_at IS NULL) DESC,"
-                    "CASE state WHEN 'probation' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,"
+                    "SELECT * FROM continuous_keywords WHERE kind='base' "
+                    "AND state IN ('active','cooldown') AND next_run_at<=now() "
+                    "ORDER BY (last_run_at IS NULL) DESC,"
+                    "CASE state WHEN 'active' THEN 0 ELSE 1 END,"
                     "priority DESC,score DESC,last_run_at NULLS FIRST LIMIT %s",
-                    (trend_limit, bounded_limit),
+                    (bounded_limit,),
                 ).fetchall()
 
     def continuous_keyword_snapshot(self, campaign_id: str, task_id: str) -> dict[str, int]:
@@ -963,7 +1158,7 @@ class CampaignStore:
         with self.connect() as connection:
             with connection.transaction():
                 row = connection.execute(
-                    "SELECT kind,state,runs,low_yield_runs,score FROM continuous_keywords "
+                    "SELECT state,runs,low_yield_runs,score FROM continuous_keywords "
                     "WHERE keyword_key=%s FOR UPDATE", (keyword_key,),
                 ).fetchone()
                 if not row:
@@ -975,14 +1170,6 @@ class CampaignStore:
                 interval_seconds = 1800 if score >= 60 else 10800 if score >= 30 else 43200
                 if state == "retired":
                     interval_seconds = 86400
-                elif str(row["kind"]) == "trend":
-                    if runs < 3 and delivered < 10:
-                        state = "probation"
-                    elif delivered < 10 or unique_yield < 0.10 or novelty < 0.15:
-                        state = "cooldown"
-                        interval_seconds = 86400
-                    else:
-                        state = "active"
                 elif low_runs >= 3:
                     state = "cooldown"
                     interval_seconds = 86400
@@ -1024,13 +1211,13 @@ class CampaignStore:
                 "SELECT query,language,category,last_run_at,next_run_at FROM continuous_keywords "
                 "WHERE state<>'retired' ORDER BY next_run_at,last_run_at NULLS FIRST LIMIT 12"
             ).fetchall()
-        summary = {"base": 0, "trend": 0, "probation": 0, "cooldown": 0, "en": 0, "zh": 0}
+        summary = {"base": 0, "cooldown": 0, "en": 0, "zh": 0}
         for row in counts:
             count = int(row["count"])
             if row["state"] != "retired":
                 summary[str(row["kind"])] += count
                 summary[str(row["language"])] += count
-            if row["state"] in {"probation", "cooldown"}:
+            if row["state"] == "cooldown":
                 summary[str(row["state"])] += count
         return {"summary": summary, "categories": categories, "top": top, "next": running}
 
@@ -1099,7 +1286,7 @@ class CampaignStore:
         with self.connect() as connection:
             with connection.transaction():
                 existing = connection.execute(
-                    "SELECT id,url,content_hash,indexed_at FROM pages WHERE url=%s OR content_hash=%s "
+                    "SELECT id,url,content_hash,content,indexed_at FROM pages WHERE url=%s OR content_hash=%s "
                     "ORDER BY (content_hash=%s) DESC LIMIT 1 FOR UPDATE",
                     (page.url, page.content_hash, page.content_hash),
                 ).fetchone()
@@ -1107,20 +1294,22 @@ class CampaignStore:
                 needs_indexing = not existing or existing["indexed_at"] is None
                 if existing:
                     page_id = int(existing["id"])
+                    stored_content = str(existing["content"] or "") if whale_task_id else page.content
                     connection.execute(
                         "UPDATE pages SET title=%s,summary=%s,content=%s,language=%s,http_status=%s,"
                         "fetched_at=%s,source_engines=%s::jsonb WHERE id=%s",
                         (
-                            page.title, page.summary, "", page.language, page.http_status,
+                            page.title, page.summary, stored_content, page.language, page.http_status,
                             page.fetched_at, json.dumps(page.source_engines), page_id,
                         ),
                     )
                 else:
+                    stored_content = "" if whale_task_id else page.content
                     row = connection.execute(
                         "INSERT INTO pages(url,content_hash,title,summary,content,language,http_status,fetched_at,source_engines) "
                         "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING RETURNING id",
                         (
-                            page.url, page.content_hash, page.title, page.summary, "", page.language,
+                            page.url, page.content_hash, page.title, page.summary, stored_content, page.language,
                             page.http_status, page.fetched_at, json.dumps(page.source_engines),
                         ),
                     ).fetchone()
@@ -1238,7 +1427,7 @@ class CampaignStore:
                 "WITH continuous_campaigns AS ("
                 "SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
                 "WHERE w.task_id ~ '^continuous:[0-9a-f]{12}$'"
-                ") SELECT 'continuous' AS campaign_id, 'google' AS source, "
+                ") SELECT 'continuous' AS campaign_id, 'google_web' AS source, "
                 "count(DISTINCT cp.page_id) AS today "
                 "FROM campaign_pages cp JOIN continuous_campaigns cc ON cc.id=cp.campaign_id "
                 "JOIN pages p ON p.id=cp.page_id "
@@ -1281,19 +1470,19 @@ class CampaignStore:
             ).fetchone()
             discovery_errors = connection.execute(
                 "WITH cc AS (SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
-                "WHERE w.task_id LIKE 'continuous:%') SELECT "
-                "CASE WHEN ce.error_code ILIKE '%%google-news%%' THEN 'google_news' ELSE 'google_search' END AS source,"
+                "WHERE w.task_id LIKE 'continuous:%') SELECT 'google_web' AS source,"
                 "count(*) AS errors,count(*) FILTER (WHERE ce.http_status IN (403,429) OR "
                 "ce.error_code ILIKE '%%captcha%%') AS limited FROM crawl_events ce JOIN cc ON cc.id=ce.campaign_id "
-                "WHERE ce.status='discovery_failed' AND ce.created_at>=now()-interval '5 minutes' GROUP BY source"
+                "WHERE ce.status='discovery_failed' AND ce.created_at>=now()-interval '5 minutes'"
             ).fetchall()
             discovery_success = connection.execute(
                 "WITH cc AS (SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
-                "WHERE w.task_id LIKE 'continuous:%') SELECT CASE WHEN source.value ILIKE '%%google-news%%' "
-                "THEN 'google_news' ELSE 'google_search' END AS source,count(DISTINCT cp.page_id) AS accepted "
+                "WHERE w.task_id LIKE 'continuous:%') SELECT 'google_web' AS source,"
+                "count(DISTINCT cp.page_id) AS accepted "
                 "FROM campaign_pages cp JOIN cc ON cc.id=cp.campaign_id JOIN pages p ON p.id=cp.page_id "
                 "CROSS JOIN LATERAL jsonb_array_elements_text(p.source_engines) source(value) "
-                "WHERE cp.first_seen>=now()-interval '5 minutes' AND source.value ILIKE 'google%%' GROUP BY 1"
+                "WHERE cp.first_seen>=now()-interval '5 minutes' "
+                "AND source.value IN ('google','google_web')"
             ).fetchall()
             proxy_utilization = connection.execute(
                 "SELECT profile,count(*) FILTER (WHERE last_used_at>=now()-interval '5 minutes') AS active,"
@@ -1312,6 +1501,23 @@ class CampaignStore:
                 "count(*) FILTER (WHERE last_used_at>=now()-interval '5 minutes') AS active "
                 "FROM google_proxy_sessions"
             ).fetchone()
+            google_frontier = connection.execute(
+                "SELECT count(*) AS queries,"
+                "count(*) FILTER (WHERE state='pending') AS pending,"
+                "count(*) FILTER (WHERE state='running') AS running,"
+                "count(*) FILTER (WHERE state='cooling') AS cooling,"
+                "count(*) FILTER (WHERE state='failed') AS failed,"
+                "count(*) FILTER (WHERE state='completed') AS completed,"
+                "COALESCE(sum(LEAST(GREATEST(next_page-1,0),max_page)),0) AS covered_pages,"
+                "COALESCE(sum(max_page),0) AS total_pages FROM google_page_frontier"
+            ).fetchone()
+            google_frontier_tasks = connection.execute(
+                "SELECT campaign_id,left(query,160) AS query,locale,state,next_page,max_page,"
+                "batch_start,batch_end,attempts,next_run_at,last_error,page_stats,updated_at "
+                "FROM google_page_frontier ORDER BY "
+                "CASE state WHEN 'running' THEN 0 WHEN 'cooling' THEN 1 WHEN 'pending' THEN 2 "
+                "WHEN 'failed' THEN 3 ELSE 4 END,updated_at DESC LIMIT 20"
+            ).fetchall()
         for campaign in campaigns:
             elapsed = max(float(campaign.pop("elapsed_seconds") or 0), 1)
             recent = int(campaign.pop("recent_count") or 0)
@@ -1364,7 +1570,7 @@ class CampaignStore:
         keyword_pool = self.continuous_keyword_stats()
         discovery_map: dict[str, dict[str, Any]] = {
             name: {"source": name, "accepted": 0, "errors": 0, "limited": 0}
-            for name in ("google_search", "google_news")
+            for name in ("google_web",)
         }
         for row in discovery_success:
             discovery_map[str(row["source"])]["accepted"] += int(row["accepted"])
@@ -1373,7 +1579,7 @@ class CampaignStore:
             discovery_map[str(row["source"])]["limited"] += int(row["limited"])
         if continuous:
             summary = keyword_pool["summary"]
-            continuous["keyword_count"] = int(summary["base"]) + int(summary["trend"])
+            continuous["keyword_count"] = int(summary["base"])
         return {
             "totals": totals,
             "campaigns": campaigns,
@@ -1389,6 +1595,10 @@ class CampaignStore:
             "proxy_utilization": proxy_utilization,
             "google_sources": google_sources,
             "google_proxy_health": google_proxy_health,
+            "google_page_frontier": {
+                "summary": google_frontier,
+                "tasks": google_frontier_tasks,
+            },
         }
 
     def purge_old_events(self, days: int = 30) -> int:

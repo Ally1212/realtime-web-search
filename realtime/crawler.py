@@ -153,7 +153,11 @@ class PagePipeline:
             target = int(getattr(spider, "daily_target", 50_000))
             accepted = int(getattr(spider, "accepted", 0))
             starting = int(getattr(spider, "starting_daily_count", 0))
-            if starting + accepted >= target and not getattr(spider, "closing_for_target", False):
+            if (
+                target > 0
+                and starting + accepted >= target
+                and not getattr(spider, "closing_for_target", False)
+            ):
                 setattr(spider, "closing_for_target", True)
                 asyncio.get_running_loop().create_task(
                     spider.crawler.engine.close_spider_async(reason="daily_target_reached")
@@ -225,9 +229,12 @@ class FocusedSpider(scrapy.Spider):
         self.terms = tuple(dict.fromkeys(
             aliases if task_payload.get("continuous") and aliases else (self.query, *aliases)
         ))
-        self.search_language = str(task_payload.get("language") or "en")
+        inferred_language = "zh" if any("\u4e00" <= char <= "\u9fff" for char in self.query) else "en"
+        self.search_language = str(task_payload.get("language") or inferred_language)
         self.keyword_kind = str(task_payload.get("kind") or "base")
-        self.daily_target = int(campaign["daily_target"])
+        # Zero means unlimited for a locally-created campaign. Whale tasks keep
+        # their explicit platform-provided limit.
+        self.daily_target = int(campaign["daily_target"]) if self.whale_task else 0
         self.proxy_profile = str(campaign["proxy_profile"])
         self.robots_bypass_domains = self.config.robots_bypass_domains
         self.accepted = 0
@@ -290,21 +297,8 @@ class FocusedSpider(scrapy.Spider):
                 if is_public_url(url):
                     yield self._page_request(url, ("whale-content-detail",))
             return
-        web_bucket = (
-            int(hashlib.sha256(
-                f"{self.query}|{datetime.now(timezone.utc):%Y%m%d%H}".encode()
-            ).hexdigest()[:8], 16) % 10_000
-        ) / 10_000
-        task_payload = dict(whale_task.get("payload") or {}) if whale_task else {}
-        news_interval = (
-            self.config.google_news_trend_interval_seconds
-            if task_payload.get("kind") == "trend"
-            else self.config.google_news_base_interval_seconds
-        )
         discovery = SearchDiscovery(
-            self.config.searxng_url,
             self.config.request_timeout,
-            feeds=self.config.discovery_feeds,
             proxy_pool=ProxyPool(self.config),
             proxy_profile=self.proxy_profile,
             language=self.search_language,
@@ -312,23 +306,17 @@ class FocusedSpider(scrapy.Spider):
             query_concurrency=self.config.discovery_query_concurrency,
             proxy_usage_recorder=self.store.record_proxy_usage,
             google_web_enabled=self.config.google_web_enabled,
-            searxng_enabled=self.config.searxng_discovery_enabled,
             google_web_initial_rps=self.config.google_web_initial_rps,
             google_web_max_rps=self.config.google_web_max_rps,
             google_web_max_pages=self.config.google_web_max_pages,
-            second_page_min_novelty=self.config.google_web_second_page_min_novelty,
+            google_web_pages_per_batch=self.config.google_web_pages_per_batch,
             query_cache_seconds=self.config.google_web_query_cache_seconds,
             proxy_min_interval_seconds=self.config.google_web_proxy_min_interval_seconds,
             proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
             source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
             captcha_threshold=self.config.google_web_captcha_threshold,
-            news_locales=self.config.google_news_locales,
-            news_base_interval_seconds=news_interval,
-            news_trend_interval_seconds=self.config.google_news_trend_interval_seconds,
-            trends_interval_seconds=self.config.google_trends_interval_seconds,
-            web_query_eligible=web_bucket < self.config.google_web_share,
+            web_query_eligible=True,
             cache_get=self.store.get_discovery_cache,
-            cache_metadata_get=self.store.get_discovery_cache_metadata,
             cache_put=self.store.put_discovery_cache,
             source_slot_acquirer=self.store.acquire_discovery_slot,
             source_result_recorder=self.store.record_discovery_result,
@@ -337,6 +325,13 @@ class FocusedSpider(scrapy.Spider):
             novelty_counter=lambda urls: len(urls) - len(
                 self.store.processed_urls(self.campaign_id, urls)
             ),
+            page_batch_acquirer=lambda query, locale, max_page, batch_size: (
+                self.store.acquire_google_page_batch(
+                    self.campaign_id, query, locale, max_page, batch_size,
+                    self.config.google_web_query_cache_seconds,
+                )
+            ),
+            page_result_recorder=self.store.record_google_page_result,
         )
         queries = self.terms
         if whale_task and dict(whale_task.get("payload") or {}).get("continuous"):
@@ -355,11 +350,7 @@ class FocusedSpider(scrapy.Spider):
                     f"{term} after:{after.date().isoformat()} before:{before.date().isoformat()}",
                 )
             ))
-        pages = min(
-            self.config.discovery_pages,
-            self.config.discovery_pages_per_shard,
-            self.config.google_web_max_pages,
-        )
+        pages = self.config.google_web_max_pages
         # Discovery uses requests and its own bounded thread pools. Never let
         # those blocking calls stall the shared long-lived Scrapy reactor.
         discovery_started = time.monotonic()
@@ -522,7 +513,10 @@ class FocusedSpider(scrapy.Spider):
                 for alias in self.terms if alias.strip()
             )
         if relevant and language in {"zh", "en"}:
-            if self.starting_daily_count + self.pending_accepts >= self.daily_target:
+            if (
+                self.daily_target > 0
+                and self.starting_daily_count + self.pending_accepts >= self.daily_target
+            ):
                 return
             self.pending_accepts += 1
             normalized = normalize_url(response.url)
@@ -542,7 +536,10 @@ class FocusedSpider(scrapy.Spider):
                 "content_hash": content_hash,
                 "language": language,
             }
-            if self.starting_daily_count + self.pending_accepts >= self.daily_target:
+            if (
+                self.daily_target > 0
+                and self.starting_daily_count + self.pending_accepts >= self.daily_target
+            ):
                 return
         else:
             self._increment(irrelevant=1)

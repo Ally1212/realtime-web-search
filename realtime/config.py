@@ -1,22 +1,9 @@
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlsplit
-
-
-DEFAULT_DISCOVERY_FEEDS: tuple[tuple[str, str], ...] = (
-    (
-        "google-news-rss",
-        "https://news.google.com/rss/search?q={query}&hl={hl}&gl=SG&ceid={ceid}",
-    ),
-)
-
-DEFAULT_GOOGLE_NEWS_LOCALES = "US:en,GB:en,SG:en,SG:zh-Hans,HK:zh-Hant,TW:zh-Hant"
 
 DEFAULT_CONTINUOUS_AI_KEYWORDS = (
     "artificial intelligence,AI news,generative AI,OpenAI,AI regulation"
@@ -54,39 +41,10 @@ def _int_csv(name: str, default: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def _discovery_feeds() -> tuple[tuple[str, str], ...]:
-    raw = os.getenv("DISCOVERY_FEEDS_JSON", "").strip()
-    if not raw:
-        return DEFAULT_DISCOVERY_FEEDS
-    try:
-        payload: Any = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError("DISCOVERY_FEEDS_JSON must be valid JSON") from exc
-    if not isinstance(payload, list):
-        raise ValueError("DISCOVERY_FEEDS_JSON must be a JSON array")
-    feeds: list[tuple[str, str]] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            raise ValueError("each discovery feed must be an object")
-        name = str(item.get("name", "")).strip()
-        url = str(item.get("url", "")).strip()
-        if not name or not url.startswith(("http://", "https://")):
-            raise ValueError("each discovery feed requires name and an HTTP(S) url")
-        remainder = url.replace("{query}", "").replace("{hl}", "").replace("{ceid}", "")
-        if "{" in remainder or "}" in remainder:
-            raise ValueError("discovery feed URLs only support {query}, {hl}, and {ceid}")
-        host = (urlsplit(url).hostname or "").lower()
-        if host != "news.google.com":
-            continue
-        feeds.append((name[:80], url))
-    return tuple(dict.fromkeys(feeds))
-
-
 @dataclass(frozen=True)
 class Config:
     opensearch_url: str = os.getenv("OPENSEARCH_URL", "http://127.0.0.1:9201")
     index_name: str = os.getenv("OPENSEARCH_INDEX", "realtime-pages-v3")
-    searxng_url: str = os.getenv("SEARXNG_URL", "http://127.0.0.1:8082")
     state_db: Path = Path(os.getenv("STATE_DB", "state/realtime-v2.db"))
     request_timeout: int = int(os.getenv("REQUEST_TIMEOUT", "20"))
     user_agent: str = os.getenv(
@@ -122,7 +80,6 @@ class Config:
     browser_max_pages: int = int(os.getenv("BROWSER_MAX_PAGES", "2"))
     browser_timeout_ms: int = int(os.getenv("BROWSER_TIMEOUT_MS", "15000"))
     discovery_pages: int = int(os.getenv("DISCOVERY_PAGES", "20"))
-    discovery_pages_per_shard: int = int(os.getenv("DISCOVERY_PAGES_PER_SHARD", "3"))
     discovery_global_concurrency: int = int(os.getenv("DISCOVERY_GLOBAL_CONCURRENCY", "24"))
     discovery_query_concurrency: int = int(os.getenv("DISCOVERY_QUERY_CONCURRENCY", "4"))
     discovery_history_start: date = date.fromisoformat(
@@ -136,15 +93,12 @@ class Config:
         os.getenv("DISCOVERY_EXHAUSTED_COOLDOWN_SECONDS", "21600")
     )
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
-    discovery_feeds: tuple[tuple[str, str], ...] = _discovery_feeds()
     google_web_enabled: bool = _enabled("GOOGLE_WEB_ENABLED", True)
     google_web_initial_rps: float = float(os.getenv("GOOGLE_WEB_INITIAL_RPS", "0.5"))
     google_web_max_rps: float = float(os.getenv("GOOGLE_WEB_MAX_RPS", "2"))
     google_web_burst: int = int(os.getenv("GOOGLE_WEB_BURST", "1"))
-    google_web_max_pages: int = int(os.getenv("GOOGLE_WEB_MAX_PAGES", "2"))
-    google_web_second_page_min_novelty: float = float(
-        os.getenv("GOOGLE_WEB_SECOND_PAGE_MIN_NOVELTY", "0.15")
-    )
+    google_web_max_pages: int = int(os.getenv("GOOGLE_WEB_MAX_PAGES", "11"))
+    google_web_pages_per_batch: int = int(os.getenv("GOOGLE_WEB_PAGES_PER_BATCH", "3"))
     google_web_query_cache_seconds: int = int(
         os.getenv("GOOGLE_WEB_QUERY_CACHE_SECONDS", "21600")
     )
@@ -159,20 +113,6 @@ class Config:
     )
     google_web_captcha_threshold: float = float(
         os.getenv("GOOGLE_WEB_CAPTCHA_THRESHOLD", "0.02")
-    )
-    google_web_share: float = float(os.getenv("GOOGLE_WEB_SHARE", "0.70"))
-    searxng_discovery_enabled: bool = _enabled("SEARXNG_DISCOVERY_ENABLED", False)
-    google_news_locales: tuple[str, ...] = _csv(
-        "GOOGLE_NEWS_LOCALES", DEFAULT_GOOGLE_NEWS_LOCALES
-    )
-    google_news_base_interval_seconds: int = int(
-        os.getenv("GOOGLE_NEWS_BASE_INTERVAL_SECONDS", "3600")
-    )
-    google_news_trend_interval_seconds: int = int(
-        os.getenv("GOOGLE_NEWS_TREND_INTERVAL_SECONDS", "900")
-    )
-    google_trends_interval_seconds: int = int(
-        os.getenv("GOOGLE_TRENDS_INTERVAL_SECONDS", "900")
     )
     trafilatura_enabled: bool = _enabled("TRAFILATURA_ENABLED")
     robots_bypass_domains: tuple[str, ...] = tuple(
@@ -212,12 +152,8 @@ class Config:
     continuous_keyword_concurrency: int = int(os.getenv("CONTINUOUS_KEYWORD_CONCURRENCY", "8"))
     continuous_keyword_concurrency_max: int = int(os.getenv("CONTINUOUS_KEYWORD_CONCURRENCY_MAX", "12"))
     continuous_keywords_per_round: int = int(os.getenv("CONTINUOUS_KEYWORDS_PER_ROUND", "24"))
-    continuous_trend_share: float = float(os.getenv("CONTINUOUS_TREND_SHARE", "0.25"))
     adaptive_concurrency_enabled: bool = _enabled("ADAPTIVE_CONCURRENCY_ENABLED", True)
     adaptive_evaluation_seconds: int = int(os.getenv("ADAPTIVE_EVALUATION_SECONDS", "300"))
-    continuous_trend_enabled: bool = _enabled("CONTINUOUS_TREND_ENABLED", True)
-    continuous_trend_limit: int = int(os.getenv("CONTINUOUS_TREND_LIMIT", "50"))
-    continuous_trend_refresh_seconds: int = int(os.getenv("CONTINUOUS_TREND_REFRESH_SECONDS", "1800"))
     continuous_proxy_profile: str = os.getenv("CONTINUOUS_PROXY_PROFILE", "direct")
     continuous_executor: str = os.getenv("CONTINUOUS_EXECUTOR", "persistent")
     persistent_max_crawls: int = int(os.getenv("PERSISTENT_MAX_CRAWLS", "12"))

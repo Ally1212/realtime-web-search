@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 
 def main() -> None:
@@ -17,6 +18,9 @@ def main() -> None:
     benchmark.add_argument("--hours", type=float, default=24)
     benchmark.add_argument("--profile", choices=("private", "public", "direct"), default="private")
     benchmark.add_argument("--target", type=int, default=50_000)
+    purge = commands.add_parser("purge-non-google-web")
+    purge.add_argument("--apply", action="store_true")
+    purge.add_argument("--manifest-directory", type=Path, default=Path("state"))
     args = parser.parse_args()
     if args.command == "serve":
         from .web import serve
@@ -38,6 +42,9 @@ def main() -> None:
     elif args.command == "benchmark":
         from .benchmark import run_benchmark
         raise SystemExit(run_benchmark(args.query, args.hours, args.profile, args.target))
+    elif args.command == "purge-non-google-web":
+        from .purge import run_purge
+        run_purge(args.manifest_directory, apply=args.apply)
 
 
 if __name__ == "__main__":

@@ -54,8 +54,8 @@ def main() -> None:
     parser.add_argument("campaign_id")
     args = parser.parse_args()
     config = Config()
-    # v2 invalidates pending requests created before Google News article URLs
-    # were decoded to publisher URLs. Keep the old directory untouched so the
+    # v2 invalidates pending requests created before discovery URL handling
+    # was stabilized. Keep the old directory untouched so the
     # operational change remains recoverable.
     job_dir = Path("state/jobs-v2") / args.campaign_id
     repaired = repair_jobdir(job_dir)
