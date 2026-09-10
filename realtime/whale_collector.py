@@ -6,6 +6,7 @@ import json
 import logging
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -442,6 +443,26 @@ class ContinuousWhaleRunner:
             self.executor = shared_executor(self.config)
         return self.executor.start(campaign_id)
 
+    def _start_runtime_heartbeat(self) -> None:
+        self.store.start_continuous_runtime()
+
+        def heartbeat() -> None:
+            while True:
+                time.sleep(2)
+                try:
+                    self.store.heartbeat_continuous_runtime()
+                except Exception as exc:
+                    _diagnostic(
+                        "continuous_runtime_heartbeat_failed",
+                        error=type(exc).__name__,
+                    )
+
+        threading.Thread(
+            target=heartbeat,
+            name="continuous-runtime-heartbeat",
+            daemon=True,
+        ).start()
+
     def _task_id(self, keyword: str | KeywordSpec) -> str:
         legacy = {
             *self.config.continuous_ai_keywords,
@@ -570,6 +591,7 @@ class ContinuousWhaleRunner:
             after = self.store.continuous_keyword_snapshot(campaign_id, task_id)
             self.store.record_continuous_keyword_run(
                 spec.key, before, after, time.monotonic() - started,
+                retry_delay=self.store.next_google_frontier_delay(campaign_id),
             )
 
     def _run_keyword_with_agent(self, keyword: str | KeywordSpec, agent_id: str) -> None:
@@ -585,6 +607,7 @@ class ContinuousWhaleRunner:
         if not catalog:
             raise ValueError("CONTINUOUS_AI_KEYWORDS must contain at least one keyword")
         self.store.sync_continuous_keywords(catalog)
+        self._start_runtime_heartbeat()
         controller = AdaptiveConcurrencyController(
             self.config.continuous_keyword_concurrency,
             self.config.continuous_keyword_concurrency_max,

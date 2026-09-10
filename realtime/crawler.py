@@ -332,9 +332,22 @@ class FocusedSpider(scrapy.Spider):
                 )
             ),
             page_result_recorder=self.store.record_google_page_result,
+            providers=self.config.google_free_providers,
+            searxng_url=self.config.searxng_url,
+            deep_cache_seconds=self.config.google_web_deep_cache_seconds,
+            singleflight_acquirer=self.store.acquire_query_lease,
+            singleflight_releaser=self.store.release_query_lease,
         )
         queries = self.terms
         if whale_task and dict(whale_task.get("payload") or {}).get("continuous"):
+            # Send the full catalog query, including event modifiers. Aliases
+            # remain available for relevance, not additional search requests.
+            queries = (self.query,)
+        if (
+            whale_task
+            and dict(whale_task.get("payload") or {}).get("continuous")
+            and self.config.continuous_date_slicing_enabled
+        ):
             after, before = self.store.discovery_window(
                 self.campaign_id,
                 self.config.discovery_history_start,
@@ -344,13 +357,14 @@ class FocusedSpider(scrapy.Spider):
             recent_after = today - timedelta(days=2)
             queries = tuple(dict.fromkeys(
                 query
-                for term in self.terms
+                for term in queries
                 for query in (
                     f"{term} after:{recent_after.isoformat()}",
                     f"{term} after:{after.date().isoformat()} before:{before.date().isoformat()}",
                 )
             ))
         pages = self.config.google_web_max_pages
+        self.store.reconcile_google_queries(self.campaign_id, queries, discovery.locale)
         # Discovery uses requests and its own bounded thread pools. Never let
         # those blocking calls stall the shared long-lived Scrapy reactor.
         discovery_started = time.monotonic()

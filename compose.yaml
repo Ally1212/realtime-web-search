@@ -1,4 +1,17 @@
 services:
+  searxng:
+    image: searxng/searxng@sha256:3547509b419cd6a67333d6d68bd1ffad8d46d3669d82e7a7bd538f7b45827432
+    ports:
+      - "127.0.0.1:8092:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:17-alpine
     environment:
@@ -72,6 +85,9 @@ services:
     command: ["Xvfb :99 -screen 0 1280x900x24 >/tmp/xvfb.log 2>&1 & exec python -m realtime.cli worker"]
     environment:
       PROCESS_ROLE: local-worker
+      GOOGLE_FREE_PROVIDERS: ${GOOGLE_FREE_PROVIDERS:-wml,wml_direct,searxng}
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+      GOOGLE_WEB_DEEP_CACHE_SECONDS: ${GOOGLE_WEB_DEEP_CACHE_SECONDS:-86400}
       DISPLAY: ":99"
       DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
       VALKEY_URL: redis://valkey:6379/0
@@ -121,6 +137,8 @@ services:
       - ./state:/app/state
       - ./realtime:/app/realtime:ro
     depends_on:
+      searxng:
+        condition: service_started
       postgres:
         condition: service_healthy
       valkey:
@@ -132,10 +150,14 @@ services:
     build: .
     # Run the checked-out module so operational fixes take effect without a
     # Docker image rebuild while the registry is unavailable.
-    entrypoint: ["python", "-m", "realtime.cli"]
-    command: ["${COLLECTOR_COMMAND:-whale-worker}"]
+    entrypoint: ["sh", "-c"]
+    command: ["Xvfb :99 -screen 0 1280x900x24 >/tmp/xvfb.log 2>&1 & exec python -m realtime.cli ${COLLECTOR_COMMAND:-whale-worker}"]
     environment:
       PROCESS_ROLE: collector
+      GOOGLE_FREE_PROVIDERS: ${GOOGLE_FREE_PROVIDERS:-wml,wml_direct,searxng}
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+      GOOGLE_WEB_DEEP_CACHE_SECONDS: ${GOOGLE_WEB_DEEP_CACHE_SECONDS:-86400}
+      DISPLAY: ":99"
       DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
       VALKEY_URL: redis://valkey:6379/0
       WHALE_ENABLED: ${WHALE_ENABLED:-false}
@@ -151,6 +173,7 @@ services:
       WHALE_HEARTBEAT_SECONDS: ${WHALE_HEARTBEAT_SECONDS:-20}
       WHALE_INGEST_BATCH_SIZE: ${WHALE_INGEST_BATCH_SIZE:-50}
       CONTINUOUS_WHALE_ENABLED: ${CONTINUOUS_WHALE_ENABLED:-false}
+      CONTINUOUS_DATE_SLICING_ENABLED: ${CONTINUOUS_DATE_SLICING_ENABLED:-false}
       CONTINUOUS_AI_KEYWORDS: ${CONTINUOUS_AI_KEYWORDS:-artificial intelligence,AI news,generative AI,OpenAI,AI regulation}
       CONTINUOUS_KEYWORD_EXPANSIONS: ${CONTINUOUS_KEYWORD_EXPANSIONS:-AI agents,AI chips,AI safety,enterprise AI,AI startups,machine learning,large language models,AI search,AI infrastructure,AI policy}
       CONTINUOUS_EXPAND_KEYWORDS: ${CONTINUOUS_EXPAND_KEYWORDS:-true}
@@ -219,6 +242,8 @@ services:
       # code; persistent state remains isolated in ./state.
       - ./realtime:/app/realtime:ro
     depends_on:
+      searxng:
+        condition: service_started
       postgres:
         condition: service_healthy
       valkey:

@@ -12,6 +12,7 @@ dependencies = [
   "requests[socks]>=2.32,<3",
   "scrapy>=2.18,<3",
   "scrapy-curl-cffi>=0.3,<1",
+  "curl-cffi>=0.15,<1",
   "scrapy-playwright>=0.0.48,<1",
   "trafilatura>=2.2,<3",
   "jieba>=0.42,<1",

@@ -2,10 +2,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from realtime.proxy_pool import (
-    ProxyApiClient, ProxyApiError, ProxyCache, ProxyRecord, ProxySynchronizer,
+    ProxyApiClient, ProxyApiError, ProxyCache, ProxyRecord, ProxySynchronizer, ProxyPool,
 )
 
 
@@ -19,6 +19,17 @@ def config(directory: str = "/tmp"):
 
 
 class ProxyApiTests(unittest.TestCase):
+    def test_unchanged_cache_cannot_keep_expired_records_alive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(directory)
+            cache = ProxyCache(Path(directory))
+            cache.publish("private", [ProxyRecord("192.0.2.1", 8080, "http")], None)
+            pool = ProxyPool(cfg)
+            with patch.object(ProxyRecord, "fresh", return_value=True):
+                self.assertEqual(len(pool._reload("private")), 1)
+            with patch.object(ProxyRecord, "fresh", return_value=False):
+                self.assertEqual(pool._reload("private"), [])
+
     def test_reads_complete_cursor_chain_without_changing_filters(self):
         first = Mock(status_code=200, headers={"X-Request-ID": "r1"})
         first.json.return_value = {

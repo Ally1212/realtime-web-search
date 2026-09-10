@@ -203,8 +203,12 @@ CREATE TABLE IF NOT EXISTS continuous_runtime (
   success_rate double precision NOT NULL DEFAULT 0,
   outbox_pending integer NOT NULL DEFAULT 0,
   upload_errors integer NOT NULL DEFAULT 0,
+  run_started_at timestamptz,
+  heartbeat_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE continuous_runtime ADD COLUMN IF NOT EXISTS run_started_at timestamptz;
+ALTER TABLE continuous_runtime ADD COLUMN IF NOT EXISTS heartbeat_at timestamptz;
 CREATE TABLE IF NOT EXISTS crawl_proxy_usage (
   proxy_key_hash char(64) NOT NULL,
   profile text NOT NULL,
@@ -285,6 +289,17 @@ CREATE TABLE IF NOT EXISTS google_page_frontier (
 );
 CREATE INDEX IF NOT EXISTS google_page_frontier_due
   ON google_page_frontier(state,next_run_at,lease_expires_at);
+ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS consecutive_failures bigint NOT NULL DEFAULT 0;
+ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS latency_seconds_total double precision NOT NULL DEFAULT 0;
+ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_error text;
+ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
+ALTER TABLE google_page_frontier ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
+CREATE TABLE IF NOT EXISTS discovery_query_leases (
+  cache_key char(64) PRIMARY KEY,
+  token uuid NOT NULL,
+  expires_at timestamptz NOT NULL
+);
 """
 
 
@@ -417,6 +432,20 @@ class CampaignStore:
                 ),
             )
 
+    def start_continuous_runtime(self) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO continuous_runtime(id,run_started_at,heartbeat_at) "
+                "VALUES(1,now(),now()) ON CONFLICT(id) DO UPDATE SET "
+                "run_started_at=now(),heartbeat_at=now(),updated_at=now()"
+            )
+
+    def heartbeat_continuous_runtime(self) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE continuous_runtime SET heartbeat_at=now(),updated_at=now() WHERE id=1"
+            )
+
     def record_proxy_usage(self, rows: list[tuple[str, str, int]]) -> None:
         if not rows:
             return
@@ -491,7 +520,7 @@ class CampaignStore:
                     connection.execute(
                         "UPDATE discovery_source_runtime SET circuit_until=NULL,current_rps=%s,state=%s,"
                         "window_started_at=now(),requests_window=0,successes_window=0,errors_window=0,"
-                        "limited_window=0,captcha_window=0 WHERE source=%s", (rps, state, source),
+                        "limited_window=0,captcha_window=0,consecutive_failures=0 WHERE source=%s", (rps, state, source),
                     )
                 next_at = max(row["next_request_at"], now)
                 wait = max(0.0, (next_at - now).total_seconds())
@@ -506,6 +535,7 @@ class CampaignStore:
         captcha: bool = False, result_count: int = 0, novel_count: int = 0,
         maximum_rps: float = 2.0, captcha_threshold: float = 0.02,
         source_cooldown_seconds: int = 1800,
+        error_code: str = "", elapsed_seconds: float = 0, shared_exit: bool = True,
     ) -> None:
         now = datetime.now(timezone.utc)
         with self.connect() as connection:
@@ -526,14 +556,21 @@ class CampaignStore:
                 rps = float(row["current_rps"])
                 state = "healthy" if success else "degraded"
                 circuit_until = row["circuit_until"]
-                if captcha_count / max(requests, 1) > max(captcha_threshold, 0):
-                    rps = max(0.25, rps / 2)
+                streak = int(row["consecutive_failures"]) + 1 if not success else 0
+                provider = source != "google_web"
+                unhealthy = streak >= (3 if provider else 10) or (
+                    requests >= 20 and successes / requests < 0.2
+                )
+                if unhealthy or (provider and captcha and shared_exit):
+                    rps = max(0.05, min(0.25, rps / 2))
                     state = "circuit_open"
                     circuit_until = now + timedelta(seconds=max(1, source_cooldown_seconds))
+                elif circuit_until and circuit_until > now:
+                    state = "circuit_open"
                 evaluated_at = row["evaluated_at"]
                 if (now - evaluated_at).total_seconds() >= 1800 and not circuit_until:
                     ratio = captcha_count / max(requests, 1)
-                    if ratio < 0.01:
+                    if ratio < 0.01 and requests >= 20 and successes / requests >= 0.9 and (row["result_count"] or result_count):
                         rps = min(maximum_rps, rps * 1.25)
                         state = "healthy"
                     elif ratio > captcha_threshold:
@@ -554,6 +591,27 @@ class CampaignStore:
                         max(0, result_count), max(0, novel_count), source,
                     ),
                 )
+                connection.execute(
+                    "UPDATE discovery_source_runtime SET consecutive_failures=%s,"
+                    "latency_seconds_total=latency_seconds_total+%s,last_error=%s,"
+                    "last_success_at=CASE WHEN %s THEN now() ELSE last_success_at END WHERE source=%s",
+                    (streak, max(0.0, elapsed_seconds), error_code or None, success, source),
+                )
+
+    def acquire_query_lease(self, cache_key: str) -> str | None:
+        token = str(uuid4())
+        with self.connect() as connection:
+            row = connection.execute(
+                "INSERT INTO discovery_query_leases(cache_key,token,expires_at) "
+                "VALUES(%s,%s,now()+interval '5 minutes') ON CONFLICT(cache_key) DO UPDATE "
+                "SET token=EXCLUDED.token,expires_at=EXCLUDED.expires_at "
+                "WHERE discovery_query_leases.expires_at<=now() RETURNING token", (cache_key, token),
+            ).fetchone()
+        return str(row["token"]) if row else None
+
+    def release_query_lease(self, cache_key: str, token: str) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM discovery_query_leases WHERE cache_key=%s AND token=%s", (cache_key, token))
 
     def reserve_google_proxy(
         self, proxy_hash: str, locale: str, minimum_interval_seconds: int,
@@ -599,6 +657,12 @@ class CampaignStore:
                     int(success), int(not success), cooldown_seconds, cooldown_seconds,
                 ),
             )
+
+            if success:
+                connection.execute(
+                    "UPDATE google_proxy_sessions SET last_success_at=now(),cooldown_until=NULL WHERE proxy_key_hash=%s",
+                    (proxy_hash,),
+                )
 
     def acquire_google_page_batch(
         self, campaign_id: str, query: str, locale: str, max_page: int,
@@ -668,6 +732,15 @@ class CampaignStore:
             "max_page": maximum, "repeat_seconds": max(1, repeat_seconds),
         }
 
+    def reconcile_google_queries(self, campaign_id: str, queries: tuple[str, ...], locale: str) -> None:
+        """Retain old cursors for audit, but schedule only this campaign's current queries."""
+        hashes = [hashlib.sha256(query.encode()).hexdigest() for query in queries]
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE google_page_frontier SET enabled=(query_hash=ANY(%s) AND locale=%s) "
+                "WHERE campaign_id=%s", (hashes, locale, campaign_id),
+            )
+
     def record_google_page_result(
         self, batch: dict[str, Any], page: int, *, success: bool,
         result_count: int = 0, unique_count: int = 0, novel_count: int = 0,
@@ -721,12 +794,15 @@ class CampaignStore:
                         ),
                     )
                     return True
-                attempts = int(row["attempts"]) + 1
+                shared_wait = error in {"google_query_inflight", "google_provider_cooling", "google_web_circuit_open"}
+                attempts = int(row["attempts"]) + (0 if shared_wait else 1)
                 limited = captcha or str(error or "") in {
                     "google_captcha", "google_http_403", "google_http_429",
                     "google_web_circuit_open",
                 }
                 delay = 1800 if limited else min(60 * (2 ** min(attempts - 1, 6)), 3600)
+                if error == "google_query_inflight":
+                    delay = 3
                 state = "cooling" if limited else ("failed" if attempts >= 8 else "pending")
                 if state == "failed":
                     delay = max(delay, 21600)
@@ -982,7 +1058,7 @@ class CampaignStore:
         with self.connect() as connection:
             rows = connection.execute(
                 "SELECT state,next_run_at,lease_expires_at FROM google_page_frontier "
-                "WHERE campaign_id=%s",
+                "WHERE campaign_id=%s AND enabled",
                 (campaign_id,),
             ).fetchall()
         if not rows:
@@ -1129,17 +1205,23 @@ class CampaignStore:
                 "SELECT count(*) AS value FROM whale_ingest_outbox "
                 "WHERE task_id=%s AND status='delivered'", (task_id,),
             ).fetchone()
+            discovery_errors = connection.execute(
+                "SELECT count(*) AS value FROM crawl_events WHERE campaign_id=%s AND status='discovery_failed'",
+                (campaign_id,),
+            ).fetchone()
         return {
             "candidates": int(campaign.get("discovered") or 0),
             "fetched": int(campaign.get("fetched") or 0),
             "failed": int(campaign.get("failed") or 0),
             "duplicates": int(campaign.get("duplicates") or 0),
             "delivered": int((delivered or {}).get("value") or 0),
+            "discovery_errors": int((discovery_errors or {}).get("value") or 0),
         }
 
     def record_continuous_keyword_run(
         self, keyword_key: str, before: dict[str, int], after: dict[str, int],
         duration_seconds: float,
+        retry_delay: int | None = None,
     ) -> None:
         delta = {name: max(0, after.get(name, 0) - before.get(name, 0)) for name in before}
         candidates = delta["candidates"]
@@ -1155,6 +1237,7 @@ class CampaignStore:
             0.40 * unique_yield + 0.25 * novelty + 0.20 * freshness + 0.15 * reliability
         )
         bad = unique_yield < 0.02 or novelty < 0.05
+        transport_failed = delta.get("discovery_errors", 0) > 0 and candidates == 0
         with self.connect() as connection:
             with connection.transaction():
                 row = connection.execute(
@@ -1166,6 +1249,10 @@ class CampaignStore:
                 runs = int(row["runs"]) + 1
                 score = round(0.65 * raw_score + 0.35 * float(row["score"]), 2)
                 low_runs = int(row["low_yield_runs"]) + 1 if bad else 0
+                if transport_failed:
+                    # An unavailable search provider says nothing about a keyword's quality.
+                    score = float(row["score"])
+                    low_runs = int(row["low_yield_runs"])
                 state = str(row["state"])
                 interval_seconds = 1800 if score >= 60 else 10800 if score >= 30 else 43200
                 if state == "retired":
@@ -1175,6 +1262,10 @@ class CampaignStore:
                     interval_seconds = 86400
                 else:
                     state = "active"
+                if retry_delay is not None and state != "retired":
+                    interval_seconds = max(5, retry_delay)
+                    if transport_failed:
+                        state = "active"
                 connection.execute(
                     "UPDATE continuous_keywords SET state=%s,score=%s,runs=%s,low_yield_runs=%s,"
                     "last_candidates=%s,last_fetched=%s,last_delivered=%s,last_failed=%s,"
@@ -1465,7 +1556,8 @@ class CampaignStore:
             ).fetchall()
             adaptive = connection.execute(
                 "SELECT enabled,current_concurrency,min_concurrency,max_concurrency,state,reason,"
-                "limited_ratio,success_rate,outbox_pending,upload_errors,updated_at "
+                "limited_ratio,success_rate,outbox_pending,upload_errors,run_started_at,"
+                "heartbeat_at,updated_at "
                 "FROM continuous_runtime WHERE id=1"
             ).fetchone()
             discovery_errors = connection.execute(
@@ -1493,11 +1585,14 @@ class CampaignStore:
                 "SELECT source,state,current_rps,circuit_until,requests_window,successes_window,"
                 "errors_window,limited_window,captcha_window,requests_total,successes_total,"
                 "errors_total,limited_total,captcha_total,result_count,novel_count,cache_hits,"
-                "cache_misses,updated_at FROM discovery_source_runtime WHERE source<>'cache' ORDER BY source"
+                "cache_misses,consecutive_failures,latency_seconds_total,last_error,last_success_at,"
+                "updated_at FROM discovery_source_runtime WHERE source<>'cache' ORDER BY source"
             ).fetchall()
             google_proxy_health = connection.execute(
                 "SELECT count(*) AS total,count(*) FILTER (WHERE cooldown_until>now()) AS cooling,"
-                "count(*) FILTER (WHERE cooldown_until IS NULL OR cooldown_until<=now()) AS healthy,"
+                "count(*) FILTER (WHERE (cooldown_until IS NULL OR cooldown_until<=now()) "
+                "AND last_success_at>=now()-interval '1 hour') AS healthy,"
+                "count(*) FILTER (WHERE last_success_at IS NULL OR last_success_at<now()-interval '1 hour') AS unverified,"
                 "count(*) FILTER (WHERE last_used_at>=now()-interval '5 minutes') AS active "
                 "FROM google_proxy_sessions"
             ).fetchone()
@@ -1509,12 +1604,12 @@ class CampaignStore:
                 "count(*) FILTER (WHERE state='failed') AS failed,"
                 "count(*) FILTER (WHERE state='completed') AS completed,"
                 "COALESCE(sum(LEAST(GREATEST(next_page-1,0),max_page)),0) AS covered_pages,"
-                "COALESCE(sum(max_page),0) AS total_pages FROM google_page_frontier"
+                "COALESCE(sum(max_page),0) AS total_pages FROM google_page_frontier WHERE enabled"
             ).fetchone()
             google_frontier_tasks = connection.execute(
                 "SELECT campaign_id,left(query,160) AS query,locale,state,next_page,max_page,"
                 "batch_start,batch_end,attempts,next_run_at,last_error,page_stats,updated_at "
-                "FROM google_page_frontier ORDER BY "
+                "FROM google_page_frontier WHERE enabled ORDER BY "
                 "CASE state WHEN 'running' THEN 0 WHEN 'cooling' THEN 1 WHEN 'pending' THEN 2 "
                 "WHEN 'failed' THEN 3 ELSE 4 END,updated_at DESC LIMIT 20"
             ).fetchall()
@@ -1565,6 +1660,28 @@ class CampaignStore:
             continuous["bottlenecks"] = bottlenecks
             continuous["collector_state"] = str(adaptive["state"]) if adaptive else "unknown"
             continuous["collector_reason"] = str(adaptive["reason"]) if adaptive else "unknown"
+            started_at = adaptive.get("run_started_at") if adaptive else None
+            heartbeat_at = adaptive.get("heartbeat_at") if adaptive else None
+            continuous["collector_running"] = bool(
+                heartbeat_at
+                and heartbeat_at >= datetime.now(timezone.utc) - timedelta(seconds=10)
+            )
+            if continuous["collector_running"]:
+                continuous["collector_status_reason"] = (
+                    "Whale 暂时不可用，采集器正在自动重试"
+                    if continuous["collector_state"] == "waiting_external"
+                    else "采集器心跳正常"
+                )
+            elif heartbeat_at:
+                continuous["collector_status_reason"] = "采集器进程已停止或失联"
+            else:
+                continuous["collector_status_reason"] = "尚未收到采集器心跳"
+            continuous["running_seconds"] = (
+                max(0, round((heartbeat_at - started_at).total_seconds()))
+                if started_at and heartbeat_at else 0
+            )
+            continuous["running_since"] = started_at
+            continuous["last_heartbeat_at"] = heartbeat_at
         else:
             continuous = None
         keyword_pool = self.continuous_keyword_stats()

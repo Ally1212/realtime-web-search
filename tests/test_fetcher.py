@@ -29,7 +29,7 @@ class FetcherTests(unittest.TestCase):
         self.assertIn("Singapore AI policy", text)
         self.assertNotIn("Navigation marker", text)
         self.assertNotIn("Footer marker", text)
-        self.assertTrue(title)
+        self.assertEqual(title, "AI policy")
 
     def test_falls_back_when_trafilatura_fails(self):
         raw = b"<html><head><title>Fallback</title></head><body><main>Visible text</main></body></html>"

@@ -240,6 +240,7 @@ class ProxyPool:
         self._sticky: dict[tuple[str, str], tuple[str, float]] = {}
         self._records: dict[str, dict[str, ProxyRecord]] = {}
         self._mtime: dict[str, float] = {}
+        self._expires_at: dict[str, float] = {}
         self._last_used: dict[str, float] = {}
         self._lock = threading.Lock()
 
@@ -257,7 +258,14 @@ class ProxyPool:
             records = [record for record in records if record.fresh(max_age)]
             self._records[profile] = {record.key: record for record in records}
             self._mtime[profile] = mtime
-        return list(self._records.get(profile, {}).values())
+            self._expires_at[profile] = synced_at.timestamp() + 7200 if synced_at else 0
+        # A cache file need not change while its entries expire or sync is failing.
+        max_age = 120 if profile == "private" else 30
+        self._records[profile] = {
+            key: record for key, record in self._records.get(profile, {}).items()
+            if self._expires_at.get(profile, 0) > time.time() and record.fresh(max_age)
+        }
+        return list(self._records[profile].values())
 
     def choose(
         self, profile: str, domain: str, *, sticky_seconds: int | None = None,

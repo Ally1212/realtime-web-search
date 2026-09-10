@@ -1,0 +1,22 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - google
+server:
+  secret_key: local-realtime-search-internal-service
+  limiter: false
+  image_proxy: false
+search:
+  formats:
+    - html
+    - json
+  safe_search: 0
+outgoing:
+  request_timeout: 12.0
+  max_request_timeout: 20.0
+  pool_connections: 20
+  pool_maxsize: 8
+engines:
+  - name: google
+    engine: google
+    disabled: false

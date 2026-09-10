@@ -174,6 +174,7 @@ def extract_text(raw: bytes, url: str, use_trafilatura: bool = True) -> tuple[st
                 include_tables=True,
                 favor_precision=True,
                 deduplicate=True,
+                with_metadata=True,
             )
             if document:
                 title = " ".join(str(document.title or "").split())

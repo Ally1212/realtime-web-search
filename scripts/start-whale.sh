@@ -42,7 +42,7 @@ if [[ "$collector_command" == "continuous-whale" ]]; then
 fi
 
 docker compose --profile whale up -d --build --wait --remove-orphans \
-  postgres valkey web collector
+  postgres valkey searxng web collector
 
 curl -fsS --max-time 10 http://127.0.0.1:8091/healthz >/dev/null
 if [[ "$(docker compose ps --status running -q collector)" == "" ]]; then
@@ -50,5 +50,5 @@ if [[ "$(docker compose ps --status running -q collector)" == "" ]]; then
   exit 1
 fi
 
-echo "Ready: dashboard http://127.0.0.1:8091"
+echo "Ready: dashboard http://127.0.0.1:8091/stats"
 echo "Collector is online and can now receive matching platform tasks."

@@ -3,12 +3,11 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
-import os
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -75,11 +74,13 @@ class SearchDiscovery:
         novelty_counter: Callable[[list[str]], int] | None = None,
         page_batch_acquirer: Callable[..., dict[str, Any] | None] | None = None,
         page_result_recorder: Callable[..., bool] | None = None,
+        providers: tuple[str, ...] = ("wml", "wml_direct", "searxng"),
+        searxng_url: str = "http://127.0.0.1:8092",
+        deep_cache_seconds: int = 86400,
+        singleflight_acquirer: Callable[..., str | None] | None = None,
+        singleflight_releaser: Callable[..., None] | None = None,
     ):
         self.timeout = timeout
-        self.session = session or requests.Session()
-        self._provided_session = session is not None
-        self._thread_sessions = threading.local()
         self.proxy_pool = proxy_pool
         self.proxy_profile = proxy_profile
         self.language = language if language in {"en", "zh"} else "en"
@@ -109,18 +110,22 @@ class SearchDiscovery:
         self.page_result_recorder = page_result_recorder
         self._proxy_usage: dict[tuple[str, str], int] = {}
         self._proxy_usage_lock = threading.Lock()
-        self._proxy_sessions: dict[str, tuple[requests.Session, threading.Lock]] = {}
-        self._proxy_sessions_lock = threading.Lock()
-        self._browser_state = threading.local()
-
-    def _general_session(self) -> requests.Session:
-        if self._provided_session:
-            return self.session
-        value = getattr(self._thread_sessions, "session", None)
-        if value is None:
-            value = requests.Session()
-            self._thread_sessions.session = value
-        return value
+        allowed = {"searxng", "wml", "wml_direct", "curl", "curl_direct", "browser", "browser_direct"}
+        if not providers or any(provider not in allowed for provider in providers):
+            raise ValueError("invalid free Google providers")
+        self.providers = tuple(dict.fromkeys(providers))
+        if proxy_profile == "direct" and "wml_direct" in self.providers:
+            self.providers = tuple(provider for provider in self.providers if provider != "wml")
+        self.deep_cache_seconds = max(self.query_cache_seconds, deep_cache_seconds)
+        self.singleflight_acquirer = singleflight_acquirer
+        self.singleflight_releaser = singleflight_releaser
+        from .free_google import GoogleTransport
+        self.transport = GoogleTransport(timeout, self.language, searxng_url)
+        self.attempts: list[dict[str, Any]] = []
+        self._attempt_lock = threading.Lock()
+        self._local_next_request = 0.0
+        self._local_failures: dict[str, int] = {}
+        self._local_cooldowns: dict[str, float] = {}
 
     @staticmethod
     def _cache_key(source: str, query: str, locale: str, page: int = 1) -> str:
@@ -193,92 +198,8 @@ class SearchDiscovery:
                     results.append(SearchResult(href, title, ("google_web",)))
         return results
 
-    def _browser_resources(self):  # type: ignore[no-untyped-def]
-        resources = getattr(self._browser_state, "resources", None)
-        if resources is not None:
-            return resources
-        if not os.getenv("DISPLAY"):
-            raise GoogleBlocked("google_javascript_required")
-        from playwright.sync_api import sync_playwright
-
-        playwright = sync_playwright().start()
-        browser = playwright.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = browser.new_context(
-            locale="zh-CN" if self.language == "zh" else "en-SG",
-        )
-        resources = (playwright, browser, context)
-        self._browser_state.resources = resources
-        return resources
-
     def _close_browser(self) -> None:
-        resources = getattr(self._browser_state, "resources", None)
-        if resources is None:
-            return
-        self._browser_state.resources = None
-        playwright, browser, _ = resources
-        try:
-            browser.close()
-        finally:
-            playwright.stop()
-
-    def _discover_google_browser_page(self, query: str, page_number: int) -> list[SearchResult]:
-        """Render Google's JavaScript retry shell and resolve result redirect tokens."""
-        _, _, context = self._browser_resources()
-        page = context.new_page()
-        try:
-            params = {
-                "q": query,
-                "num": 10,
-                "start": (page_number - 1) * 10,
-                "filter": 0,
-                "hl": "zh-CN" if self.language == "zh" else "en",
-                "pws": 0,
-                "nfpr": 1,
-            }
-            page.goto(
-                "https://www.google.com/search?" + urlencode(params),
-                wait_until="commit",
-                timeout=self.timeout * 1000,
-            )
-            page.wait_for_selector(
-                "a:has(h3)", state="attached", timeout=min(self.timeout * 1000, 15_000)
-            )
-            blocked = self._google_block(type("BrowserResponse", (), {
-                "status_code": 200,
-                "url": page.url,
-                "content": page.content().encode(),
-            })())
-            if blocked:
-                raise blocked
-            found: dict[str, SearchResult] = {}
-            anchors = page.locator("a:has(h3)")
-            for index in range(min(anchors.count(), 30)):
-                anchor = anchors.nth(index)
-                href = str(anchor.get_attribute("href") or "")
-                title = str(anchor.locator("h3").first.inner_text() or "").strip()
-                if not href or not title:
-                    continue
-                absolute = urljoin(page.url, href)
-                host = (urlsplit(absolute).hostname or "").lower()
-                if host.endswith("google.com") and urlsplit(absolute).path == "/goto":
-                    try:
-                        redirect = context.request.get(
-                            absolute, max_redirects=0, timeout=self.timeout * 1000
-                        )
-                        absolute = str(redirect.headers.get("location") or "")
-                    except Exception:
-                        continue
-                host = (urlsplit(absolute).hostname or "").lower()
-                if absolute.startswith(("http://", "https://")) and not host.endswith("google.com"):
-                    found.setdefault(absolute, SearchResult(absolute, title, ("google_web",)))
-            if not found:
-                raise GoogleBlocked("google_browser_no_results")
-            return list(found.values())
-        finally:
-            page.close()
+        self.transport.close()
 
     @staticmethod
     def _google_block(response: requests.Response) -> GoogleBlocked | None:
@@ -295,145 +216,149 @@ class SearchDiscovery:
             return GoogleBlocked(f"google_http_{status}", status)
         return None
 
-    def _proxy_session(self, proxy_hash: str) -> tuple[requests.Session, threading.Lock]:
-        with self._proxy_sessions_lock:
-            return self._proxy_sessions.setdefault(proxy_hash, (requests.Session(), threading.Lock()))
-
-    def _retire_proxy_session(self, proxy_hash: str) -> None:
-        with self._proxy_sessions_lock:
-            value = self._proxy_sessions.pop(proxy_hash, None)
-        if value:
-            value[0].close()
-
-    def _google_web_get(self, query: str, page: int) -> requests.Response:
+    def _reserve_source(self, source: str) -> None:
         if self.source_slot_acquirer:
-            slot = self.source_slot_acquirer("google_web", self.google_web_initial_rps)
+            slot = self.source_slot_acquirer(source, self.google_web_initial_rps)
             if not slot.get("allowed"):
-                raise GoogleBlocked("google_web_circuit_open")
+                raise GoogleBlocked("google_web_circuit_open" if source == "google_web" else "google_provider_cooling")
             wait = float(slot.get("wait") or 0)
-            if wait > 0:
-                time.sleep(wait)
-        params = {
-            "q": query, "num": 10, "start": (page - 1) * 10, "filter": 0,
-            "hl": "zh-CN" if self.language == "zh" else "en", "pws": 0,
-            "nfpr": 1,
-        }
-        headers = {
-            "Accept-Language": (
-                "zh-CN,zh;q=0.9,en;q=0.5" if self.language == "zh" else "en-SG,en;q=0.8"
-            ),
-            "Cookie": "CONSENT=YES+cb.20220419-08-p0.en+FX+111; SOCS=CAESHAgBEhIaAB",
-        }
-        selected: tuple[str, str] | None = None
-        proxy_hash = ""
-        if self.proxy_pool and self.proxy_profile != "direct":
-            for _ in range(64):
-                candidate = self.proxy_pool.choose(
-                    self.proxy_profile, "www.google.com", sticky_seconds=0,
-                    sticky_key=f"google-web:{query}", full_pool=True,
-                )
-                if not candidate:
-                    break
-                candidate_hash = hashlib.sha256(candidate[1].encode()).hexdigest()
-                allowed, wait = (
-                    self.proxy_reserver(candidate_hash, self.locale, self.proxy_min_interval_seconds)
-                    if self.proxy_reserver else (True, 0.0)
-                )
-                if allowed:
-                    selected, proxy_hash = candidate, candidate_hash
-                    break
-                self.proxy_pool.defer(candidate[1], "www.google.com", min(max(wait, 0.1), 60))
+        elif source == "google_web":
+            with self._attempt_lock:
+                now = time.monotonic()
+                wait = max(0.0, self._local_next_request - now)
+                self._local_next_request = now + wait + 1 / self.google_web_initial_rps
+        else:
+            wait = 0
+        if wait > 0:
+            time.sleep(wait)
+
+    def _select_proxy(self, provider: str) -> tuple[str | None, str]:
+        if provider == "searxng" or provider.endswith("_direct") or self.proxy_profile == "direct":
+            return None, ""
+        if not self.proxy_pool:
+            raise GoogleBlocked("google_proxy_unavailable")
+        for _ in range(64):
+            selected = self.proxy_pool.choose(
+                self.proxy_profile, "www.google.com", sticky_seconds=120,
+                sticky_key=f"google:{threading.get_ident()}", full_pool=True,
+            )
             if not selected:
-                raise requests.ProxyError(f"{self.proxy_profile} Google proxy pool unavailable")
-        request_session, request_lock = self._proxy_session(proxy_hash) if selected else (self._general_session(), threading.Lock())
-        kwargs: dict[str, Any] = {"params": params, "headers": headers, "timeout": self.timeout}
-        if selected:
-            kwargs["proxies"] = {"http": selected[0], "https": selected[0]}
+                break
+            url, key = selected
+            if provider.startswith("browser") and not url.startswith("http://"):
+                self.proxy_pool.defer(key, "www.google.com", 60)
+                continue
+            proxy_hash = hashlib.sha256(key.encode()).hexdigest()
+            allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
+            if allowed:
+                return url, key
+            self.proxy_pool.defer(key, "www.google.com", min(max(wait, 0.1), self.proxy_cooldown_seconds))
+        raise GoogleBlocked("google_proxy_unavailable")
+
+    @staticmethod
+    def _error_code(exc: Exception) -> str:
+        if isinstance(exc, GoogleBlocked):
+            return exc.reason
+        name = type(exc).__name__.lower()
+        if "timeout" in name or getattr(exc, "code", None) == 28:
+            return "google_timeout"
+        if isinstance(exc, (ValueError, KeyError)):
+            return "google_invalid_response"
+        return "google_transport_error"
+
+    def _attempt(self, provider: str, query: str, page: int) -> list[SearchResult]:
+        source = f"google_{provider}"
+        with self._attempt_lock:
+            if self._local_cooldowns.get(provider, 0) > time.monotonic():
+                raise GoogleBlocked("google_provider_cooling")
+        self._reserve_source(source)
+        self._reserve_source("google_web")
+        proxy_url, proxy_key = self._select_proxy(provider)
+        proxy_hash = hashlib.sha256(proxy_key.encode()).hexdigest() if proxy_key else ""
+        if proxy_hash:
             with self._proxy_usage_lock:
                 key = (self.proxy_profile, proxy_hash)
                 self._proxy_usage[key] = self._proxy_usage.get(key, 0) + 1
+        started = time.monotonic()
+        results: list[SearchResult] = []
+        failure: Exception | None = None
         try:
-            with self.global_limiter, request_lock:
-                response = request_session.get("https://www.google.com/search", **kwargs)
-        except requests.RequestException:
-            if selected:
-                self.proxy_pool.report(selected[1], "www.google.com", failed=True)
-                if self.proxy_result_recorder:
-                    self.proxy_result_recorder(proxy_hash, success=False)
-            if self.source_result_recorder:
-                self.source_result_recorder(
-                    "google_web", success=False, maximum_rps=self.google_web_max_rps,
-                    captcha_threshold=self.captcha_threshold,
-                    source_cooldown_seconds=self.source_cooldown_seconds,
-                )
-            raise
-        blocked = self._google_block(response)
-        if selected:
-            self.proxy_pool.report(selected[1], "www.google.com", response.status_code)
-        if blocked:
-            if selected:
-                proxy_delay = 300 if blocked.reason == "google_consent" else self.proxy_cooldown_seconds
-                self.proxy_pool.defer(selected[1], "www.google.com", proxy_delay)
-                self._retire_proxy_session(proxy_hash)
+            with self.global_limiter:
+                results = self.transport.fetch(provider, query, page, proxy_url)
+            return results
+        except Exception as exc:
+            failure = exc
+            raise GoogleBlocked(self._error_code(exc), captcha=isinstance(exc, GoogleBlocked) and exc.captcha) from None
+        finally:
+            elapsed = time.monotonic() - started
+            code = self._error_code(failure) if failure else ""
+            captcha = isinstance(failure, GoogleBlocked) and failure.captcha
+            limited = captcha or code in {"google_http_403", "google_http_429", "google_javascript_required", "google_consent"}
+            with self._attempt_lock:
+                streak = self._local_failures.get(provider, 0) + 1 if failure else 0
+                self._local_failures[provider] = streak
+                if streak >= 3 or (captcha and not proxy_hash):
+                    self._local_cooldowns[provider] = time.monotonic() + self.source_cooldown_seconds
+                self.attempts.append({
+                    "provider": provider, "query": query, "page": page,
+                    "success": failure is None, "results": len(results),
+                    "seconds": round(elapsed, 3), "error": code,
+                })
+            if proxy_key and self.proxy_pool:
+                if failure:
+                    self.proxy_pool.defer(proxy_key, "www.google.com", self.proxy_cooldown_seconds if limited else 300)
                 if self.proxy_result_recorder:
                     self.proxy_result_recorder(
-                        proxy_hash, success=False, cooldown_seconds=proxy_delay
+                        proxy_hash, success=failure is None,
+                        cooldown_seconds=self.proxy_cooldown_seconds if limited else (300 if failure else 0),
                     )
             if self.source_result_recorder:
-                self.source_result_recorder(
-                    "google_web", success=False, limited=True, captcha=blocked.captcha,
-                    maximum_rps=self.google_web_max_rps,
-                    captcha_threshold=self.captcha_threshold,
-                    source_cooldown_seconds=self.source_cooldown_seconds,
-                )
-            response.close()
-            raise blocked
-        try:
-            response.raise_for_status()
-        except requests.RequestException:
-            if selected and self.proxy_result_recorder:
-                self.proxy_result_recorder(proxy_hash, success=False)
-            if self.source_result_recorder:
-                self.source_result_recorder(
-                    "google_web", success=False, maximum_rps=self.google_web_max_rps,
-                    captcha_threshold=self.captcha_threshold,
-                    source_cooldown_seconds=self.source_cooldown_seconds,
-                )
-            raise
-        if selected and self.proxy_result_recorder:
-            self.proxy_result_recorder(proxy_hash, success=True)
-        return response
+                novel = self.novelty_counter([row.url for row in results]) if self.novelty_counter and results else len(results)
+                for name in ("google_web", source):
+                    self.source_result_recorder(
+                        name, success=failure is None, limited=limited, captcha=captcha,
+                        result_count=len(results), novel_count=novel,
+                        maximum_rps=self.google_web_max_rps, captcha_threshold=self.captcha_threshold,
+                        source_cooldown_seconds=self.source_cooldown_seconds,
+                        error_code=code, elapsed_seconds=elapsed,
+                        shared_exit=not bool(proxy_hash),
+                    )
 
     def _discover_google_page(self, query: str, page: int) -> list[SearchResult]:
-        cache_key, cached = self._cached("google_web", query, self.locale, page)
+        cache_locale = self.locale + ":free-v1:" + ",".join(self.providers)
+        cache_key, cached = self._cached("google_web", query, cache_locale, page)
         if cached is not None:
             return cached
-        response: requests.Response | None = None
+        lease = None
+        if self.singleflight_acquirer:
+            lease = self.singleflight_acquirer(cache_key)
+            if not lease:
+                raise GoogleBlocked("google_query_inflight")
         try:
-            try:
-                response = self._google_web_get(query, page)
-            except GoogleBlocked as exc:
-                if exc.reason not in {
-                    "google_captcha", "google_consent", "google_http_403", "google_http_429",
-                }:
-                    raise
-                results = self._discover_google_browser_page(query, page)
-            else:
-                results = self._parse_google_html(response.content)
-                if not results and b"/httpservice/retry/enablejs" in response.content:
-                    results = self._discover_google_browser_page(query, page)
-            novel = self.novelty_counter([row.url for row in results]) if self.novelty_counter else len(results)
-            self._store_cache(cache_key, "google_web", query, self.locale, page, results, self.query_cache_seconds, novel, response)
+            # Another process may have filled the cache before our lease was acquired.
+            if lease:
+                _, cached = self._cached("google_web", query, cache_locale, page)
+                if cached is not None:
+                    return cached
+            errors = []
+            for provider in self.providers:
+                try:
+                    results = self._attempt(provider, query, page)
+                except GoogleBlocked as exc:
+                    errors.append(exc)
+                    if exc.reason == "google_web_circuit_open":
+                        raise
+                    continue
+                novel = self.novelty_counter([row.url for row in results]) if self.novelty_counter else len(results)
+                ttl = self.query_cache_seconds if page <= 3 else self.deep_cache_seconds
+                self._store_cache(cache_key, "google_web", query, cache_locale, page, results, ttl, novel)
+                return results
+            # Preserve actionable failure over a later skipped/cooling provider.
+            substantive = [exc for exc in errors if exc.reason != "google_provider_cooling"]
+            raise (substantive or errors)[-1]
         finally:
-            if response is not None:
-                response.close()
-        if self.source_result_recorder:
-            self.source_result_recorder(
-                "google_web", success=True, result_count=len(results), novel_count=novel,
-                maximum_rps=self.google_web_max_rps, captcha_threshold=self.captcha_threshold,
-                source_cooldown_seconds=self.source_cooldown_seconds,
-            )
-        return results
+            if lease and self.singleflight_releaser:
+                self.singleflight_releaser(cache_key, lease)
 
     def _discover(self, query: str, pages: int) -> tuple[list[SearchResult], list[str]]:
         found: dict[str, SearchResult] = {}

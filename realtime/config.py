@@ -94,6 +94,9 @@ class Config:
     )
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
     google_web_enabled: bool = _enabled("GOOGLE_WEB_ENABLED", True)
+    google_free_providers: tuple[str, ...] = _csv("GOOGLE_FREE_PROVIDERS", "wml,wml_direct,searxng")
+    searxng_url: str = os.getenv("SEARXNG_URL", "http://127.0.0.1:8092")
+    google_web_deep_cache_seconds: int = int(os.getenv("GOOGLE_WEB_DEEP_CACHE_SECONDS", "86400"))
     google_web_initial_rps: float = float(os.getenv("GOOGLE_WEB_INITIAL_RPS", "0.5"))
     google_web_max_rps: float = float(os.getenv("GOOGLE_WEB_MAX_RPS", "2"))
     google_web_burst: int = int(os.getenv("GOOGLE_WEB_BURST", "1"))
@@ -136,6 +139,9 @@ class Config:
     whale_heartbeat_seconds: int = int(os.getenv("WHALE_HEARTBEAT_SECONDS", "20"))
     whale_ingest_batch_size: int = int(os.getenv("WHALE_INGEST_BATCH_SIZE", "50"))
     continuous_whale_enabled: bool = _enabled("CONTINUOUS_WHALE_ENABLED", False)
+    continuous_date_slicing_enabled: bool = _enabled(
+        "CONTINUOUS_DATE_SLICING_ENABLED", False
+    )
     continuous_ai_keywords: tuple[str, ...] = _csv(
         "CONTINUOUS_AI_KEYWORDS",
         DEFAULT_CONTINUOUS_AI_KEYWORDS,
