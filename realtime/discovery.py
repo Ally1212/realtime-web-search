@@ -149,7 +149,9 @@ class SearchDiscovery:
             google_serp_evidence_dir=google_serp_evidence_dir,
         )
         self.serp_attempt_recorder = serp_attempt_recorder
-        self.proxy_provider_attempts = max(1, proxy_provider_attempts)
+        # Zero means exhaust every currently available rotating proxy before
+        # moving to a direct/shared-exit fallback.
+        self.proxy_provider_attempts = max(0, proxy_provider_attempts)
         self.attempts: list[dict[str, Any]] = []
         self._attempt_lock = threading.Lock()
         self._local_next_request = 0.0
@@ -270,7 +272,7 @@ class SearchDiscovery:
             return None, ""
         if not self.proxy_pool:
             raise GoogleBlocked("google_proxy_unavailable")
-        for _ in range(64):
+        for _ in range(max(1, self.proxy_pool.available_count(self.proxy_profile, "www.google.com"))):
             selected = self.proxy_pool.choose(
                 self.proxy_profile, "www.google.com", sticky_seconds=120,
                 sticky_key=f"google:{threading.get_ident()}", full_pool=True,
@@ -413,12 +415,15 @@ class SearchDiscovery:
             # as "no results".
             empty_seen = False
             for provider in self.providers:
-                attempts = self.proxy_provider_attempts if not (
+                proxy_provider = not (
                     provider == "searxng" or provider.endswith("_direct")
                     or self.proxy_profile == "direct"
-                ) else 1
+                )
+                attempts = self.proxy_provider_attempts if proxy_provider else 1
                 results = None
-                for _ in range(attempts):
+                attempt = 0
+                while attempts == 0 or attempt < attempts:
+                    attempt += 1
                     try:
                         results = self._attempt(provider, query, page)
                         break
@@ -426,9 +431,11 @@ class SearchDiscovery:
                         errors.append(exc)
                         if exc.reason == "google_web_circuit_open":
                             raise
+                        if exc.reason == "google_proxy_unavailable":
+                            break
                         if exc.reason not in {
                             "google_captcha", "google_http_403", "google_http_429",
-                            "google_consent", "google_proxy_unavailable",
+                            "google_consent",
                         }:
                             break
                 if results is None:

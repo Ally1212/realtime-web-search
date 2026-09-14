@@ -323,6 +323,19 @@ class ProxyPool:
                 )
             return self._url(profile, record), record.key
 
+    def available_count(self, profile: str, domain: str) -> int:
+        if profile == "direct":
+            return 0
+        now = time.monotonic()
+        with self._lock:
+            return sum(
+                max(
+                    self._cooldown.get((record.key, domain), 0),
+                    self._cooldown.get((record.key, "*"), 0),
+                ) <= now
+                for record in self._reload(profile)
+            )
+
     def defer(self, key: str, domain: str, seconds: float) -> None:
         """Temporarily remove one endpoint without treating it as a transport failure."""
         with self._lock:

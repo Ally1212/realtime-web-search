@@ -595,14 +595,17 @@ class CampaignStore:
                 rps = float(row["current_rps"])
                 state = "healthy" if success else "degraded"
                 circuit_until = row["circuit_until"]
-                streak = int(row["consecutive_failures"]) + 1 if not success else 0
+                # Failures from rotating exits belong to individual proxy
+                # health and must not accumulate into a shared-source streak.
+                streak = (
+                    int(row["consecutive_failures"]) + 1 if not success else 0
+                ) if shared_exit else 0
                 provider = source != "google_web"
                 # Rotating-proxy failures quarantine the individual proxy.
                 # Only a shared exit may stop an entire provider/source.
                 unhealthy = shared_exit and (
-                    streak >= (3 if provider else 10) or (
-                        requests >= 20 and successes / requests < 0.2
-                    )
+                    streak >= (3 if provider else 10)
+                    or (provider and requests >= 20 and successes / requests < 0.2)
                 )
                 if unhealthy or (provider and captcha and shared_exit):
                     rps = max(0.05, min(0.25, rps / 2))

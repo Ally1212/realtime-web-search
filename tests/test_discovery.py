@@ -145,6 +145,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_rotating_proxy_provider_retries_with_another_exit(self):
         pool = Mock()
+        pool.available_count.return_value = 3
         pool.choose.side_effect = [
             ("http://proxy-1.example:80", "proxy-1"),
             ("http://proxy-2.example:80", "proxy-2"),
@@ -166,6 +167,36 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(d._discover_google_page("AI", 1), expected)
         self.assertEqual(d.transport.fetch.call_count, 3)
         self.assertNotIn("wml", d._local_cooldowns)
+
+    def test_exhausts_proxy_pool_before_direct_fallback(self):
+        pool = Mock()
+        pool.available_count.return_value = 3
+        pool.choose.side_effect = [
+            ("http://proxy-1.example:80", "proxy-1"),
+            ("http://proxy-2.example:80", "proxy-2"),
+            ("http://proxy-3.example:80", "proxy-3"),
+            None,
+        ]
+        expected = [SearchResult("https://example.com/ai", "AI", ("google_web",))]
+        d = SearchDiscovery(
+            providers=("wml", "wml_direct"), proxy_pool=pool,
+            proxy_profile="private", proxy_provider_attempts=0,
+            proxy_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+        )
+        d.transport.fetch = Mock(side_effect=[
+            GoogleBlocked("google_captcha", captcha=True),
+            GoogleBlocked("google_captcha", captcha=True),
+            GoogleBlocked("google_captcha", captcha=True),
+            expected,
+        ])
+
+        self.assertEqual(d._discover_google_page("AI", 1), expected)
+        self.assertEqual(d.transport.fetch.call_count, 4)
+        self.assertEqual(
+            [call.args[0] for call in d.transport.fetch.call_args_list],
+            ["wml", "wml", "wml", "wml_direct"],
+        )
 
     def test_circuit_open_does_not_attempt_transport(self):
         d = SearchDiscovery(source_slot_acquirer=Mock(return_value={"allowed": False}))
@@ -203,6 +234,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_proxy_identifier_is_hashed_for_browser_too(self):
         import hashlib
         pool, recorder = Mock(), Mock()
+        pool.available_count.return_value = 1
         pool.choose.return_value = ("http://user:password@proxy.example:80", "proxy-key")
         d = SearchDiscovery(providers=("browser",), proxy_pool=pool, proxy_profile="private",
             proxy_result_recorder=recorder, source_slot_acquirer=Mock(return_value={"allowed": True}))

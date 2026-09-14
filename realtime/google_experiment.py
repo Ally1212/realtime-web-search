@@ -343,7 +343,7 @@ class Runner:
                 source_slot_acquirer=self.slot, source_result_recorder=self.production.record_discovery_result,
                 proxy_reserver=self.production.reserve_google_proxy, proxy_result_recorder=self.production.record_google_proxy_result,
                 google_web_initial_rps=1.0, google_web_max_rps=2.0,
-                proxy_provider_attempts=8)
+                proxy_provider_attempts=0)
         return self.clients[language]
 
     def search(self, row):
