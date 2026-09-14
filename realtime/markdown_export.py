@@ -189,6 +189,16 @@ def run_markdown_export(args) -> None:
         client = SearchDiscovery(
             timeout=20, proxy_pool=pool, proxy_profile=args.profile, language=language,
             providers=config.google_free_providers, searxng_url=config.searxng_url,
+            persistent_browser_enabled=config.persistent_browser_enabled,
+            persistent_browser_profile_root=str(config.persistent_browser_profile_root),
+            persistent_browser_max_contexts=config.persistent_browser_max_contexts,
+            persistent_browser_request_interval_seconds=config.persistent_browser_request_interval_seconds,
+            persistent_browser_max_requests_per_context=config.persistent_browser_max_requests_per_context,
+            persistent_browser_max_context_lifetime_seconds=config.persistent_browser_max_context_lifetime_seconds,
+            persistent_browser_failure_threshold=config.persistent_browser_failure_threshold,
+            google_serp_save_html=config.google_serp_save_html,
+            google_serp_evidence_dir=str(config.google_serp_evidence_dir),
+            serp_attempt_recorder=store.record_google_serp_attempt,
             source_slot_acquirer=store.acquire_discovery_slot,
             source_result_recorder=store.record_discovery_result,
             proxy_reserver=store.reserve_google_proxy,
@@ -226,7 +236,7 @@ def run_markdown_export(args) -> None:
                 print(json.dumps({"stage": "search", "language": language, "page": page,
                                   "results": len(results), "error": error, "seconds": row["seconds"]}), flush=True)
         finally:
-            client._close_browser()
+            client.close()
     report["search_seconds"] = round(time.monotonic() - started, 3)
     fetcher = LiveFetcher(config.user_agent, timeout=20, use_trafilatura=config.trafilatura_enabled)
 

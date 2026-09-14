@@ -117,6 +117,27 @@ class Config:
     google_web_captcha_threshold: float = float(
         os.getenv("GOOGLE_WEB_CAPTCHA_THRESHOLD", "0.02")
     )
+    persistent_browser_enabled: bool = _enabled("PERSISTENT_BROWSER_ENABLED", False)
+    persistent_browser_profile_root: Path = Path(
+        os.getenv("PERSISTENT_BROWSER_PROFILE_ROOT", "state/browser-profiles")
+    )
+    persistent_browser_max_contexts: int = int(os.getenv("PERSISTENT_BROWSER_MAX_CONTEXTS", "4"))
+    persistent_browser_request_interval_seconds: int = int(
+        os.getenv("PERSISTENT_BROWSER_REQUEST_INTERVAL_SECONDS", "30")
+    )
+    persistent_browser_max_requests_per_context: int = int(
+        os.getenv("PERSISTENT_BROWSER_MAX_REQUESTS_PER_CONTEXT", "100")
+    )
+    persistent_browser_max_context_lifetime_seconds: int = int(
+        os.getenv("PERSISTENT_BROWSER_MAX_CONTEXT_LIFETIME_SECONDS", "21600")
+    )
+    persistent_browser_failure_threshold: int = int(
+        os.getenv("PERSISTENT_BROWSER_FAILURE_THRESHOLD", "3")
+    )
+    google_serp_save_html: bool = _enabled("GOOGLE_SERP_SAVE_HTML", False)
+    google_serp_evidence_dir: Path = Path(
+        os.getenv("GOOGLE_SERP_EVIDENCE_DIR", "state/serp-evidence")
+    )
     trafilatura_enabled: bool = _enabled("TRAFILATURA_ENABLED")
     robots_bypass_domains: tuple[str, ...] = tuple(
         value.strip().lower()
@@ -165,3 +186,12 @@ class Config:
     persistent_max_crawls: int = int(os.getenv("PERSISTENT_MAX_CRAWLS", "12"))
     outbox_flush_seconds: float = float(os.getenv("OUTBOX_FLUSH_SECONDS", "1"))
     outbox_max_pending: int = int(os.getenv("OUTBOX_MAX_PENDING", "5000"))
+
+    def __post_init__(self) -> None:
+        # Enabled persistent Chrome is always tried first; when disabled the
+        # historical wml -> wml_direct -> searxng order is untouched.
+        if self.persistent_browser_enabled and "persistent_browser" not in self.google_free_providers:
+            object.__setattr__(
+                self, "google_free_providers",
+                ("persistent_browser", *self.google_free_providers),
+            )

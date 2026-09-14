@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import signal
 import subprocess
 import sys
@@ -34,13 +35,48 @@ def explicit_empty(content: bytes) -> bool:
 
 
 class GoogleTransport:
-    def __init__(self, timeout: int, language: str, searxng_url: str):
+    def __init__(
+        self, timeout: int, language: str, searxng_url: str,
+        *, persistent_browser_enabled: bool = False,
+        persistent_browser_profile_root: str = "state/browser-profiles",
+        persistent_browser_max_contexts: int = 4,
+        persistent_browser_request_interval_seconds: int = 30,
+        persistent_browser_max_requests_per_context: int = 100,
+        persistent_browser_max_context_lifetime_seconds: int = 21600,
+        persistent_browser_failure_threshold: int = 3,
+        google_serp_save_html: bool = False,
+        google_serp_evidence_dir: str = "state/serp-evidence",
+    ):
         self.timeout = timeout
         self.language = language
         self.searxng_url = searxng_url.rstrip("/")
         self.local = threading.local()
+        self.local.last_evidence = {}
+        self.persistent_browser_enabled = persistent_browser_enabled
+        self.persistent_browser_profile_root = Path(persistent_browser_profile_root)
+        self.persistent_browser_max_contexts = max(1, persistent_browser_max_contexts)
+        self.persistent_browser_request_interval_seconds = max(0, persistent_browser_request_interval_seconds)
+        self.persistent_browser_max_requests_per_context = max(1, persistent_browser_max_requests_per_context)
+        self.persistent_browser_max_context_lifetime_seconds = max(1, persistent_browser_max_context_lifetime_seconds)
+        self.persistent_browser_failure_threshold = max(1, persistent_browser_failure_threshold)
+        self.google_serp_save_html = google_serp_save_html
+        self.google_serp_evidence_dir = Path(google_serp_evidence_dir)
+        # Persistent contexts are shared across discovery threads so one proxy
+        # always maps to one browser profile. Each context serializes its own
+        # requests through a dedicated lock.
+        self._persistent: dict[str, dict] = {}
+        self._persistent_guard = threading.Lock()
+        self._persistent_restarts = 0
 
-    def fetch(self, provider: str, query: str, page: int, proxy_url: str | None) -> list[SearchResult]:
+    @property
+    def last_evidence(self) -> dict:
+        return getattr(self.local, "last_evidence", {}) or {}
+
+    def fetch(
+        self, provider: str, query: str, page: int, proxy_url: str | None,
+        *, proxy_key: str | None = None,
+    ) -> list[SearchResult]:
+        self.local.last_evidence = {}
         if provider == "searxng":
             return self.searxng(query, page)
         if provider.startswith("wml"):
@@ -49,7 +85,44 @@ class GoogleTransport:
             return self.curl(query, page, proxy_url)
         if provider.startswith("browser"):
             return self.browser(query, page, proxy_url)
+        if provider == "persistent_browser":
+            return self.persistent_browser(query, page, proxy_url, proxy_key)
         raise ValueError("unknown free Google provider")
+
+    def _evidence(self, content: bytes = b"", **values) -> None:
+        # Content may be str from Playwright or a stub object in tests; only
+        # real bytes are hashed/saved so evidence never breaks the fetch path.
+        if isinstance(content, bytes):
+            raw = content
+        elif isinstance(content, str):
+            raw = content.encode()
+        else:
+            raw = b""
+        digest = hashlib.sha256(raw).hexdigest() if raw else None
+        evidence = {"raw_sha256": digest, "raw_html_path": None, **values}
+        if raw and self.google_serp_save_html:
+            evidence["raw_html_path"] = self._save_serp_html(digest, raw)
+        self.local.last_evidence = evidence
+
+    def _save_serp_html(self, digest: str | None, raw: bytes) -> str | None:
+        if not digest:
+            return None
+        # Test-mode full-page evidence. Files stay local, 0600, and never
+        # contain proxy credentials (only the rendered Google page).
+        root = self.google_serp_evidence_dir
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            root.chmod(0o700)
+        except OSError:
+            pass
+        path = root / f"{digest}.html"
+        if not path.exists():
+            path.write_bytes(raw)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
+        return str(path)
 
     def searxng(self, query: str, page: int) -> list[SearchResult]:
         if not self.searxng_url:
@@ -57,13 +130,16 @@ class GoogleTransport:
         # This service is internal; never send proxy credentials or use a public instance.
         with requests.Session() as session:
             session.trust_env = False
-            response = session.get(self.searxng_url + "/search", params={
+            params = {
                 "q": query, "engines": "google", "categories": "general",
                 "format": "json", "language": "zh-CN" if self.language == "zh" else "en",
                 "pageno": page, "safesearch": 0,
-            }, timeout=self.timeout)
+            }
+            request_url = self.searxng_url + "/search?" + urlencode(params)
+            response = session.get(self.searxng_url + "/search", params=params, timeout=self.timeout)
             try:
                 response.raise_for_status()
+                raw = response.content
                 payload = response.json()
                 if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
                     raise GoogleBlocked("searxng_invalid_response")
@@ -83,7 +159,9 @@ class GoogleTransport:
                 # SearXNG's Google parser cannot distinguish a layout regression from
                 # a genuine empty SERP. Never cache that ambiguity as a successful page.
                 if not results:
+                    self._evidence(raw, http_status=response.status_code, classification="parse_failure", request_url=request_url)
                     raise GoogleBlocked("searxng_empty_unverified")
+                self._evidence(raw, http_status=response.status_code, classification="results", request_url=request_url)
                 return list(results.values())
             finally:
                 response.close()
@@ -109,20 +187,28 @@ class GoogleTransport:
         if wml:
             params["sca_esv"] = "1"
             headers["User-Agent"] = "Nokia6230/2.0 (05.50) Profile/MIDP-2.0 Configuration/CLDC-1.1"
+        # The evidence URL identifies the Google request; proxy credentials never appear in it.
+        request_url = "https://www.google.com/" + ("wml/search" if wml else "search") + "?" + urlencode(params)
         response = session.get("https://www.google.com/" + ("wml/search" if wml else "search"),
                                params=params, proxy=proxy_url, timeout=self.timeout, headers=headers)
         try:
+            raw = response.content
             blocked = SearchDiscovery._google_block(response)
             if blocked:
+                self._evidence(raw, http_status=response.status_code, classification="captcha" if blocked.captcha else "http_error", request_url=request_url)
                 raise blocked
             response.raise_for_status()
-            results = self.parse_wml(response.content) if wml else SearchDiscovery._parse_google_html(response.content)
+            results = self.parse_wml(raw) if wml else SearchDiscovery._parse_google_html(raw)
             if results:
+                self._evidence(raw, http_status=response.status_code, classification="results", request_url=request_url)
                 return [row for row in results if public_result(row.url)]
-            if explicit_empty(response.content):
+            if explicit_empty(raw):
+                self._evidence(raw, http_status=response.status_code, classification="empty", request_url=request_url)
                 return []
-            if b"enablejs" in response.content or b"enable javascript" in response.content.lower():
+            if b"enablejs" in raw or b"enable javascript" in raw.lower():
+                self._evidence(raw, http_status=response.status_code, classification="javascript_verification", request_url=request_url)
                 raise GoogleBlocked("google_javascript_required")
+            self._evidence(raw, http_status=response.status_code, classification="parse_failure", request_url=request_url)
             raise GoogleBlocked("google_unrecognized_page")
         finally:
             response.close()
@@ -168,6 +254,13 @@ class GoogleTransport:
         if process.returncode:
             raise GoogleBlocked("google_browser_runtime_error")
         return [SearchResult(row["url"], row["title"], ("google_web",)) for row in result["results"]]
+
+    def persistent_browser(
+        self, query: str, page_number: int, proxy_url: str | None, proxy_key: str | None,
+    ) -> list[SearchResult]:
+        if not self.persistent_browser_enabled:
+            raise GoogleBlocked("persistent_browser_disabled")
+        return self._persistent_browser_page(query, page_number, proxy_url, proxy_key)
 
     @staticmethod
     def _kill_browser_process(process):
@@ -229,11 +322,12 @@ class GoogleTransport:
             resources = self.local.browser = (proxy_url, runtime, browser, context)
         page = resources[3].new_page()
         deadline = time.monotonic() + self.timeout
+        request_url = "https://www.google.com/search?" + urlencode({
+            "q": query, "start": (page_number - 1) * 10, "num": 10,
+            "hl": "zh-CN" if self.language == "zh" else "en", "pws": 0,
+        })
         try:
-            response = page.goto("https://www.google.com/search?" + urlencode({
-                "q": query, "start": (page_number - 1) * 10, "num": 10,
-                "hl": "zh-CN" if self.language == "zh" else "en", "pws": 0,
-            }), wait_until="domcontentloaded", timeout=self.timeout * 1000)
+            response = page.goto(request_url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
             status = response.status if response else 200
             while True:
                 content = page.content().encode()
@@ -241,6 +335,7 @@ class GoogleTransport:
                     "url": page.url, "status_code": status, "content": content,
                 })())
                 if blocked:
+                    self._evidence(content, http_status=status, classification="captcha" if blocked.captcha else "http_error", request_url=request_url)
                     raise blocked
                 results = {}
                 anchors = page.eval_on_selector_all("a:has(h3)", "nodes => nodes.map(a => ({href: a.getAttribute('href'), title: a.querySelector('h3').textContent}))")
@@ -254,11 +349,14 @@ class GoogleTransport:
                     if title and public_result(url):
                         results[url] = SearchResult(url, title, ("google_web",))
                 if results:
+                    self._evidence(content, http_status=status, classification="results", headless=not bool(os.getenv("DISPLAY")), request_url=request_url)
                     return list(results.values())
                 if explicit_empty(content):
+                    self._evidence(content, http_status=status, classification="empty", headless=not bool(os.getenv("DISPLAY")), request_url=request_url)
                     return []
                 if time.monotonic() >= deadline:
                     reason = "google_javascript_required" if b"enablejs" in content else "google_browser_no_results"
+                    self._evidence(content, http_status=status, classification="javascript_verification" if "javascript" in reason else "parse_failure", headless=not bool(os.getenv("DISPLAY")), request_url=request_url)
                     raise GoogleBlocked(reason)
                 page.wait_for_timeout(250)
         except GoogleBlocked:
@@ -279,6 +377,207 @@ class GoogleTransport:
             self.close_browser_page(page)
 
     @staticmethod
+    def _proxy_config(proxy_url: str | None) -> dict | None:
+        if not proxy_url:
+            return None
+        parsed = urlsplit(proxy_url)
+        proxy = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+        if parsed.username:
+            proxy["username"] = unquote(parsed.username)
+        if parsed.password:
+            proxy["password"] = unquote(parsed.password)
+        return proxy
+
+    def _new_persistent_context(self, proxy_hash: str, proxy_url: str | None) -> dict:
+        from playwright.sync_api import sync_playwright
+        self.persistent_browser_profile_root.mkdir(parents=True, exist_ok=True)
+        try:
+            self.persistent_browser_profile_root.chmod(0o700)
+        except OSError:
+            pass
+        profile = self.persistent_browser_profile_root / proxy_hash
+        profile.mkdir(parents=True, exist_ok=True)
+        try:
+            profile.chmod(0o700)
+        except OSError:
+            pass
+        runtime = sync_playwright().start()
+        try:
+            context = runtime.chromium.launch_persistent_context(
+                str(profile), headless=not bool(os.getenv("DISPLAY")),
+                proxy=self._proxy_config(proxy_url),
+                locale="zh-CN" if self.language == "zh" else "en-SG",
+                timeout=self.timeout * 1000,
+            )
+        except Exception:
+            runtime.stop()
+            raise
+        return {
+            "runtime": runtime, "context": context, "proxy_url": proxy_url,
+            "created": time.monotonic(), "last_request": 0.0,
+            "requests": 0, "failures": 0, "lock": threading.Lock(),
+        }
+
+    def _close_persistent_resource(self, resource: dict) -> None:
+        try:
+            resource["context"].close()
+        finally:
+            resource["runtime"].stop()
+
+    def _persistent_expired(self, resource: dict, now: float) -> bool:
+        return (
+            resource["requests"] >= self.persistent_browser_max_requests_per_context
+            or now - resource["created"] >= self.persistent_browser_max_context_lifetime_seconds
+            or resource["failures"] >= self.persistent_browser_failure_threshold
+        )
+
+    def _drop_persistent(self, proxy_hash: str, resource: dict) -> None:
+        with self._persistent_guard:
+            if self._persistent.get(proxy_hash) is resource:
+                self._persistent.pop(proxy_hash, None)
+                self._persistent_restarts += 1
+        try:
+            self._close_persistent_resource(resource)
+        except Exception:
+            pass
+
+    def _acquire_persistent(self, proxy_hash: str, proxy_url: str | None) -> dict:
+        with self._persistent_guard:
+            resource = self._persistent.get(proxy_hash)
+        if resource and self._persistent_expired(resource, time.monotonic()):
+            self._drop_persistent(proxy_hash, resource)
+            resource = None
+        if resource is None:
+            candidate = self._new_persistent_context(proxy_hash, proxy_url)
+            with self._persistent_guard:
+                resource = self._persistent.get(proxy_hash)
+                if resource is None:
+                    while len(self._persistent) >= self.persistent_browser_max_contexts:
+                        oldest = min(self._persistent, key=lambda key: self._persistent[key]["last_request"])
+                        victim = self._persistent[oldest]
+                        if not victim["lock"].acquire(blocking=False):
+                            break
+                        try:
+                            self._persistent.pop(oldest, None)
+                            self._persistent_restarts += 1
+                        finally:
+                            victim["lock"].release()
+                        try:
+                            self._close_persistent_resource(victim)
+                        except Exception:
+                            pass
+                    self._persistent[proxy_hash] = candidate
+                    self._persistent_restarts += 1
+                    resource = candidate
+            if resource is not candidate:
+                try:
+                    self._close_persistent_resource(candidate)
+                except Exception:
+                    pass
+        return resource
+
+    def persistent_browser_stats(self) -> dict:
+        with self._persistent_guard:
+            contexts = [
+                {"proxy_hash": key, "requests": resource["requests"],
+                 "failures": resource["failures"],
+                 "age_seconds": round(time.monotonic() - resource["created"], 1)}
+                for key, resource in self._persistent.items()
+            ]
+        return {
+            "enabled": self.persistent_browser_enabled,
+            "headless": not bool(os.getenv("DISPLAY")),
+            "contexts": len(contexts), "restarts": self._persistent_restarts,
+            "profiles": contexts,
+        }
+
+    def _persistent_browser_page(
+        self, query: str, page_number: int, proxy_url: str | None, proxy_key: str | None,
+    ) -> list[SearchResult]:
+        proxy_hash = hashlib.sha256((proxy_key or proxy_url or "direct").encode()).hexdigest()
+        while True:
+            resource = self._acquire_persistent(proxy_hash, proxy_url)
+            # One in-flight request per context so the 30s interval is guaranteed
+            # even when several discovery threads share the same proxy.
+            with resource["lock"]:
+                if self._persistent.get(proxy_hash) is resource:
+                    break
+        return self._persistent_request(resource, proxy_hash, query, page_number)
+
+    def _persistent_request(
+        self, resource: dict, proxy_hash: str, query: str, page_number: int,
+    ) -> list[SearchResult]:
+        from .discovery import SearchDiscovery
+        with resource["lock"]:
+            wait = max(0.0, resource["last_request"] + self.persistent_browser_request_interval_seconds - time.monotonic())
+            if wait:
+                time.sleep(wait)
+            resource["last_request"] = time.monotonic()
+            resource["requests"] += 1
+            page = resource["context"].new_page()
+            deadline = time.monotonic() + self.timeout
+            headless = not bool(os.getenv("DISPLAY"))
+            request_url = "https://www.google.com/search?" + urlencode({
+                "q": query, "start": (page_number - 1) * 10, "num": 10,
+                "hl": "zh-CN" if self.language == "zh" else "en", "pws": 0,
+            })
+            try:
+                response = page.goto(request_url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
+                status = response.status if response else 200
+                while True:
+                    content = page.content().encode()
+                    blocked = SearchDiscovery._google_block(type("Response", (), {
+                        "url": page.url, "status_code": status, "content": content,
+                    })())
+                    if blocked:
+                        resource["failures"] += 1
+                        self._evidence(content, http_status=status, classification="captcha" if blocked.captcha else "http_error", headless=headless, request_url=request_url)
+                        raise blocked
+                    anchors = page.eval_on_selector_all(
+                        "a:has(h3)",
+                        "nodes => nodes.map(a => ({href: a.getAttribute('href'), title: a.querySelector('h3').textContent}))",
+                    )
+                    results = {}
+                    for anchor in anchors[:30]:
+                        raw = anchor.get("href") or ""
+                        url = urljoin(page.url, raw)
+                        if raw.startswith("/url?"):
+                            args = parse_qs(urlsplit(raw).query)
+                            url = (args.get("q") or args.get("url") or [""])[0]
+                        title = str(anchor.get("title") or "").strip()
+                        if title and public_result(url):
+                            results[url] = SearchResult(url, title, ("google_web",))
+                    if results:
+                        resource["failures"] = 0
+                        self._evidence(content, http_status=status, classification="results", headless=headless, request_url=request_url)
+                        return list(results.values())
+                    if explicit_empty(content):
+                        resource["failures"] = 0
+                        self._evidence(content, http_status=status, classification="empty", headless=headless, request_url=request_url)
+                        return []
+                    if time.monotonic() >= deadline:
+                        resource["failures"] += 1
+                        self._evidence(content, http_status=status, classification="javascript_verification" if b"enablejs" in content.lower() else "parse_failure", headless=headless, request_url=request_url)
+                        raise GoogleBlocked("google_javascript_required" if b"enablejs" in content.lower() else "google_browser_no_results")
+                    page.wait_for_timeout(250)
+            except GoogleBlocked:
+                raise
+            except Exception as exc:
+                resource["failures"] += 1
+                # A crashed/closed context is dropped immediately so the next
+                # request rebuilds it; other proxies' contexts are untouched.
+                if "closed" in str(exc).lower() or "crash" in str(exc).lower():
+                    resource["failures"] = self.persistent_browser_failure_threshold
+                try:
+                    content = page.content().encode()
+                except Exception:
+                    content = b""
+                self._evidence(content, http_status=None, classification="timeout", headless=headless, request_url=request_url)
+                raise
+            finally:
+                self.close_browser_page(page)
+
+    @staticmethod
     def close_browser_page(page):
         if not page.is_closed():
             page.close()
@@ -292,8 +591,22 @@ class GoogleTransport:
             finally:
                 resources[1].stop()
 
-    def close(self):
+    def close_thread(self):
+        # Per-discover cleanup of resources owned by the calling thread only.
+        # Shared persistent contexts deliberately survive so cookies and
+        # sessions carry across queries.
         self.close_browser()
         for session in getattr(self.local, "sessions", {}).values():
             session.close()
         self.local.sessions = {}
+
+    def close(self):
+        self.close_thread()
+        with self._persistent_guard:
+            resources = list(self._persistent.values())
+            self._persistent = {}
+        for resource in resources:
+            try:
+                self._close_persistent_resource(resource)
+            except Exception:
+                pass

@@ -79,6 +79,16 @@ class SearchDiscovery:
         deep_cache_seconds: int = 86400,
         singleflight_acquirer: Callable[..., str | None] | None = None,
         singleflight_releaser: Callable[..., None] | None = None,
+        persistent_browser_enabled: bool = False,
+        persistent_browser_profile_root: str = "state/browser-profiles",
+        persistent_browser_max_contexts: int = 4,
+        persistent_browser_request_interval_seconds: int = 30,
+        persistent_browser_max_requests_per_context: int = 100,
+        persistent_browser_max_context_lifetime_seconds: int = 21600,
+        persistent_browser_failure_threshold: int = 3,
+        google_serp_save_html: bool = False,
+        google_serp_evidence_dir: str = "state/serp-evidence",
+        serp_attempt_recorder: Callable[..., None] | None = None,
     ):
         self.timeout = timeout
         self.proxy_pool = proxy_pool
@@ -110,9 +120,14 @@ class SearchDiscovery:
         self.page_result_recorder = page_result_recorder
         self._proxy_usage: dict[tuple[str, str], int] = {}
         self._proxy_usage_lock = threading.Lock()
-        allowed = {"searxng", "wml", "wml_direct", "curl", "curl_direct", "browser", "browser_direct"}
+        allowed = {
+            "searxng", "wml", "wml_direct", "curl", "curl_direct",
+            "browser", "browser_direct", "persistent_browser",
+        }
         if not providers or any(provider not in allowed for provider in providers):
             raise ValueError("invalid free Google providers")
+        if "persistent_browser" in providers and not persistent_browser_enabled:
+            raise ValueError("persistent_browser provider requires PERSISTENT_BROWSER_ENABLED=true")
         self.providers = tuple(dict.fromkeys(providers))
         if proxy_profile == "direct" and "wml_direct" in self.providers:
             self.providers = tuple(provider for provider in self.providers if provider != "wml")
@@ -120,7 +135,19 @@ class SearchDiscovery:
         self.singleflight_acquirer = singleflight_acquirer
         self.singleflight_releaser = singleflight_releaser
         from .free_google import GoogleTransport
-        self.transport = GoogleTransport(timeout, self.language, searxng_url)
+        self.transport = GoogleTransport(
+            timeout, self.language, searxng_url,
+            persistent_browser_enabled=persistent_browser_enabled,
+            persistent_browser_profile_root=persistent_browser_profile_root,
+            persistent_browser_max_contexts=persistent_browser_max_contexts,
+            persistent_browser_request_interval_seconds=persistent_browser_request_interval_seconds,
+            persistent_browser_max_requests_per_context=persistent_browser_max_requests_per_context,
+            persistent_browser_max_context_lifetime_seconds=persistent_browser_max_context_lifetime_seconds,
+            persistent_browser_failure_threshold=persistent_browser_failure_threshold,
+            google_serp_save_html=google_serp_save_html,
+            google_serp_evidence_dir=google_serp_evidence_dir,
+        )
+        self.serp_attempt_recorder = serp_attempt_recorder
         self.attempts: list[dict[str, Any]] = []
         self._attempt_lock = threading.Lock()
         self._local_next_request = 0.0
@@ -199,6 +226,10 @@ class SearchDiscovery:
         return results
 
     def _close_browser(self) -> None:
+        self.transport.close_thread()
+
+    def close(self) -> None:
+        # Full shutdown, including shared persistent browser contexts.
         self.transport.close()
 
     @staticmethod
@@ -284,7 +315,7 @@ class SearchDiscovery:
         failure: Exception | None = None
         try:
             with self.global_limiter:
-                results = self.transport.fetch(provider, query, page, proxy_url)
+                results = self.transport.fetch(provider, query, page, proxy_url, proxy_key=proxy_key)
             return results
         except Exception as exc:
             failure = exc
@@ -294,6 +325,12 @@ class SearchDiscovery:
             code = self._error_code(failure) if failure else ""
             captcha = isinstance(failure, GoogleBlocked) and failure.captcha
             limited = captcha or code in {"google_http_403", "google_http_429", "google_javascript_required", "google_consent"}
+            evidence = dict(self.transport.last_evidence)
+            classification = evidence.get("classification") or (
+                ("results" if results else "empty") if failure is None
+                else "timeout" if code == "google_timeout"
+                else "http_error" if code.startswith("google_http_") else "error"
+            )
             with self._attempt_lock:
                 streak = self._local_failures.get(provider, 0) + 1 if failure else 0
                 self._local_failures[provider] = streak
@@ -303,7 +340,29 @@ class SearchDiscovery:
                     "provider": provider, "query": query, "page": page,
                     "success": failure is None, "results": len(results),
                     "seconds": round(elapsed, 3), "error": code,
+                    "proxy_hash": proxy_hash,
+                    "http_status": evidence.get("http_status"),
+                    "page_classification": classification,
+                    "raw_sha256": evidence.get("raw_sha256"),
+                    "raw_html_path": evidence.get("raw_html_path"),
+                    "request_url": evidence.get("request_url"),
+                    "headless": evidence.get("headless"),
                 })
+            if self.serp_attempt_recorder:
+                try:
+                    self.serp_attempt_recorder(
+                        provider=provider, query=query, page=page,
+                        proxy_key_hash=proxy_hash or None,
+                        request_url=evidence.get("request_url"),
+                        http_status=evidence.get("http_status"),
+                        result_count=len(results), elapsed_seconds=round(elapsed, 3),
+                        classification=classification, error_code=code or None,
+                        raw_sha256=evidence.get("raw_sha256"),
+                        raw_html_path=evidence.get("raw_html_path"),
+                        headless=evidence.get("headless"),
+                    )
+                except Exception:
+                    pass
             if proxy_key and self.proxy_pool:
                 if failure:
                     self.proxy_pool.defer(proxy_key, "www.google.com", self.proxy_cooldown_seconds if limited else 300)
@@ -311,6 +370,10 @@ class SearchDiscovery:
                     self.proxy_result_recorder(
                         proxy_hash, success=failure is None,
                         cooldown_seconds=self.proxy_cooldown_seconds if limited else (300 if failure else 0),
+                        error_code=code,
+                        elapsed_seconds=elapsed,
+                        result_count=len(results),
+                        http_status=evidence.get("http_status"),
                     )
             if self.source_result_recorder:
                 novel = self.novelty_counter([row.url for row in results]) if self.novelty_counter and results else len(results)
@@ -341,6 +404,10 @@ class SearchDiscovery:
                 if cached is not None:
                     return cached
             errors = []
+            # An empty page is confirmed by at most one backup channel before
+            # being cached; a parse failure raises instead and is never cached
+            # as "no results".
+            empty_seen = False
             for provider in self.providers:
                 try:
                     results = self._attempt(provider, query, page)
@@ -348,6 +415,9 @@ class SearchDiscovery:
                     errors.append(exc)
                     if exc.reason == "google_web_circuit_open":
                         raise
+                    continue
+                if not results and not empty_seen and provider != self.providers[-1]:
+                    empty_seen = True
                     continue
                 novel = self.novelty_counter([row.url for row in results]) if self.novelty_counter else len(results)
                 ttl = self.query_cache_seconds if page <= 3 else self.deep_cache_seconds

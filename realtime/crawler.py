@@ -238,6 +238,7 @@ class FocusedSpider(scrapy.Spider):
         self.proxy_profile = str(campaign["proxy_profile"])
         self.robots_bypass_domains = self.config.robots_bypass_domains
         self.accepted = 0
+        self._search_discovery: SearchDiscovery | None = None
         self.starting_daily_count = self.store.daily_count(campaign_id)
         self.pending_accepts = 0
         self.closing_for_target = False
@@ -282,6 +283,11 @@ class FocusedSpider(scrapy.Spider):
         if self._counter_loop and self._counter_loop.running:
             self._counter_loop.stop()
         self._flush_counters()
+        if self._search_discovery is not None:
+            try:
+                self._search_discovery.close()
+            except Exception as exc:
+                self.logger.error("search discovery close failed: %s", type(exc).__name__)
 
     async def start(self):  # type: ignore[no-untyped-def]
         self._counter_loop = LoopingCall(self._flush_counters)
@@ -334,10 +340,21 @@ class FocusedSpider(scrapy.Spider):
             page_result_recorder=self.store.record_google_page_result,
             providers=self.config.google_free_providers,
             searxng_url=self.config.searxng_url,
+            persistent_browser_enabled=self.config.persistent_browser_enabled,
+            persistent_browser_profile_root=str(self.config.persistent_browser_profile_root),
+            persistent_browser_max_contexts=self.config.persistent_browser_max_contexts,
+            persistent_browser_request_interval_seconds=self.config.persistent_browser_request_interval_seconds,
+            persistent_browser_max_requests_per_context=self.config.persistent_browser_max_requests_per_context,
+            persistent_browser_max_context_lifetime_seconds=self.config.persistent_browser_max_context_lifetime_seconds,
+            persistent_browser_failure_threshold=self.config.persistent_browser_failure_threshold,
+            google_serp_save_html=self.config.google_serp_save_html,
+            google_serp_evidence_dir=str(self.config.google_serp_evidence_dir),
+            serp_attempt_recorder=self.store.record_google_serp_attempt,
             deep_cache_seconds=self.config.google_web_deep_cache_seconds,
             singleflight_acquirer=self.store.acquire_query_lease,
             singleflight_releaser=self.store.release_query_lease,
         )
+        self._search_discovery = discovery
         queries = self.terms
         if whale_task and dict(whale_task.get("payload") or {}).get("continuous"):
             # Send the full catalog query, including event modifiers. Aliases

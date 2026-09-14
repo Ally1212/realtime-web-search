@@ -262,6 +262,14 @@ CREATE TABLE IF NOT EXISTS google_proxy_sessions (
   locale text NOT NULL DEFAULT '',
   successes bigint NOT NULL DEFAULT 0,
   failures bigint NOT NULL DEFAULT 0,
+  captcha_count bigint NOT NULL DEFAULT 0,
+  javascript_verification_count bigint NOT NULL DEFAULT 0,
+  http_error_count bigint NOT NULL DEFAULT 0,
+  timeout_count bigint NOT NULL DEFAULT 0,
+  consecutive_failures bigint NOT NULL DEFAULT 0,
+  latency_seconds_total double precision NOT NULL DEFAULT 0,
+  latency_count bigint NOT NULL DEFAULT 0,
+  last_error text,
   last_used_at timestamptz,
   cooldown_until timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -289,11 +297,42 @@ CREATE TABLE IF NOT EXISTS google_page_frontier (
 );
 CREATE INDEX IF NOT EXISTS google_page_frontier_due
   ON google_page_frontier(state,next_run_at,lease_expires_at);
+CREATE TABLE IF NOT EXISTS google_serp_attempts (
+  id bigserial PRIMARY KEY,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  provider text NOT NULL,
+  query text NOT NULL,
+  page integer NOT NULL,
+  proxy_key_hash char(64),
+  request_url text,
+  http_status integer,
+  result_count integer NOT NULL DEFAULT 0,
+  elapsed_seconds double precision,
+  classification text NOT NULL DEFAULT '',
+  error_code text,
+  raw_sha256 char(64),
+  raw_html_path text,
+  headless boolean
+);
+CREATE INDEX IF NOT EXISTS google_serp_attempts_created
+  ON google_serp_attempts(created_at DESC);
+CREATE INDEX IF NOT EXISTS google_serp_attempts_proxy
+  ON google_serp_attempts(proxy_key_hash,created_at DESC);
+CREATE INDEX IF NOT EXISTS google_serp_attempts_classification
+  ON google_serp_attempts(classification,created_at DESC);
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS consecutive_failures bigint NOT NULL DEFAULT 0;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS latency_seconds_total double precision NOT NULL DEFAULT 0;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_error text;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS captcha_count bigint NOT NULL DEFAULT 0;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS javascript_verification_count bigint NOT NULL DEFAULT 0;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS http_error_count bigint NOT NULL DEFAULT 0;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS timeout_count bigint NOT NULL DEFAULT 0;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS consecutive_failures bigint NOT NULL DEFAULT 0;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS latency_seconds_total double precision NOT NULL DEFAULT 0;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS latency_count bigint NOT NULL DEFAULT 0;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS last_error text;
 ALTER TABLE google_page_frontier ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
 CREATE TABLE IF NOT EXISTS discovery_query_leases (
   cache_key char(64) PRIMARY KEY,
@@ -627,6 +666,11 @@ class CampaignStore:
                     "SELECT * FROM google_proxy_sessions WHERE proxy_key_hash=%s FOR UPDATE",
                     (proxy_hash,),
                 ).fetchone()
+                # Quarantine: a proxy with a long-term low Google success rate
+                # stops participating in scheduling until the window resets.
+                samples = int(row["successes"] or 0) + int(row["failures"] or 0)
+                if samples >= 20 and int(row["successes"] or 0) / samples < 0.2:
+                    return False, 3600.0
                 available_at = row["cooldown_until"] or now
                 if row["last_used_at"]:
                     available_at = max(
@@ -641,20 +685,60 @@ class CampaignStore:
                 )
         return True, 0.0
 
-    def record_google_proxy_result(
-        self, proxy_hash: str, *, success: bool, cooldown_seconds: int = 0,
+    def record_google_serp_attempt(
+        self, *, provider: str, query: str, page: int,
+        proxy_key_hash: str | None, request_url: str | None,
+        http_status: int | None, result_count: int, elapsed_seconds: float,
+        classification: str, error_code: str | None, raw_sha256: str | None,
+        raw_html_path: str | None, headless: bool | None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
-                "INSERT INTO google_proxy_sessions(proxy_key_hash,successes,failures,cooldown_until) "
-                "VALUES(%s,%s,%s,CASE WHEN %s>0 THEN now()+(%s*interval '1 second') END) "
-                "ON CONFLICT(proxy_key_hash) DO UPDATE SET successes=google_proxy_sessions.successes+%s,"
-                "failures=google_proxy_sessions.failures+%s,cooldown_until=CASE WHEN %s>0 "
-                "THEN now()+(%s*interval '1 second') ELSE google_proxy_sessions.cooldown_until END,"
-                "updated_at=now()",
+                "INSERT INTO google_serp_attempts(provider,query,page,proxy_key_hash,"
+                "request_url,http_status,result_count,elapsed_seconds,classification,"
+                "error_code,raw_sha256,raw_html_path,headless) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
-                    proxy_hash, int(success), int(not success), cooldown_seconds, cooldown_seconds,
-                    int(success), int(not success), cooldown_seconds, cooldown_seconds,
+                    provider, query, page, proxy_key_hash, request_url, http_status,
+                    result_count, elapsed_seconds, classification, error_code,
+                    raw_sha256, raw_html_path, headless,
+                ),
+            )
+
+    def record_google_proxy_result(
+        self, proxy_hash: str, *, success: bool, cooldown_seconds: int = 0,
+        error_code: str = "", elapsed_seconds: float = 0, result_count: int = 0,
+        http_status: int | None = None,
+    ) -> None:
+        captcha = error_code == "google_captcha"
+        javascript = error_code == "google_javascript_required"
+        http_error = error_code in {"google_http_403", "google_http_429"}
+        timeout = error_code == "google_timeout"
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO google_proxy_sessions(proxy_key_hash,successes,failures,"
+                "captcha_count,javascript_verification_count,http_error_count,timeout_count,"
+                "consecutive_failures,latency_seconds_total,latency_count,last_error,cooldown_until) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,"
+                "CASE WHEN %s>0 THEN now()+(%s*interval '1 second') END) "
+                "ON CONFLICT(proxy_key_hash) DO UPDATE SET successes=google_proxy_sessions.successes+%s,"
+                "failures=google_proxy_sessions.failures+%s,"
+                "captcha_count=google_proxy_sessions.captcha_count+%s,"
+                "javascript_verification_count=google_proxy_sessions.javascript_verification_count+%s,"
+                "http_error_count=google_proxy_sessions.http_error_count+%s,"
+                "timeout_count=google_proxy_sessions.timeout_count+%s,"
+                "consecutive_failures=CASE WHEN %s THEN 0 ELSE google_proxy_sessions.consecutive_failures+1 END,"
+                "latency_seconds_total=google_proxy_sessions.latency_seconds_total+%s,"
+                "latency_count=google_proxy_sessions.latency_count+1,last_error=%s,"
+                "cooldown_until=CASE WHEN %s>0 THEN now()+(%s*interval '1 second') "
+                "ELSE google_proxy_sessions.cooldown_until END,updated_at=now()",
+                (
+                    proxy_hash, int(success), int(not success), int(captcha), int(javascript),
+                    int(http_error), int(timeout), 0 if success else 1,
+                    max(0.0, elapsed_seconds), error_code or None, cooldown_seconds, cooldown_seconds,
+                    int(success), int(not success), int(captcha), int(javascript),
+                    int(http_error), int(timeout), success, max(0.0, elapsed_seconds),
+                    error_code or None, cooldown_seconds, cooldown_seconds,
                 ),
             )
 
@@ -1593,9 +1677,46 @@ class CampaignStore:
                 "count(*) FILTER (WHERE (cooldown_until IS NULL OR cooldown_until<=now()) "
                 "AND last_success_at>=now()-interval '1 hour') AS healthy,"
                 "count(*) FILTER (WHERE last_success_at IS NULL OR last_success_at<now()-interval '1 hour') AS unverified,"
-                "count(*) FILTER (WHERE last_used_at>=now()-interval '5 minutes') AS active "
+                "count(*) FILTER (WHERE successes+failures>=20 "
+                "AND successes::double precision/(successes+failures)<0.2) AS quarantined,"
+                "count(*) FILTER (WHERE last_used_at>=now()-interval '5 minutes') AS active,"
+                "coalesce(sum(successes),0) AS successes,coalesce(sum(failures),0) AS failures,"
+                "coalesce(sum(captcha_count),0) AS captchas,"
+                "coalesce(sum(javascript_verification_count),0) AS javascript_verifications,"
+                "coalesce(sum(http_error_count),0) AS http_errors,"
+                "coalesce(sum(timeout_count),0) AS timeouts,"
+                "coalesce(sum(consecutive_failures),0) AS consecutive_failures,"
+                "coalesce(sum(latency_seconds_total),0) AS latency_seconds_total,"
+                "coalesce(sum(latency_count),0) AS latency_count "
                 "FROM google_proxy_sessions"
             ).fetchone()
+            try:
+                google_serp_channels = connection.execute(
+                    "SELECT provider,count(*) AS attempts,"
+                    "count(*) FILTER (WHERE classification='results') AS successes,"
+                    "count(*) FILTER (WHERE classification='empty') AS empties,"
+                    "count(*) FILTER (WHERE classification='captcha') AS captchas,"
+                    "count(*) FILTER (WHERE classification='javascript_verification') AS js_verifications,"
+                    "count(*) FILTER (WHERE classification='parse_failure') AS parse_failures,"
+                    "count(*) FILTER (WHERE classification='timeout') AS timeouts,"
+                    "coalesce(sum(result_count),0) AS results_total,"
+                    "percentile_cont(0.5) WITHIN GROUP (ORDER BY elapsed_seconds) AS p50_seconds,"
+                    "percentile_cont(0.95) WITHIN GROUP (ORDER BY elapsed_seconds) AS p95_seconds,"
+                    "max(created_at) FILTER (WHERE classification='results') AS last_success_at "
+                    "FROM google_serp_attempts WHERE created_at>=now()-interval '24 hours' "
+                    "GROUP BY provider ORDER BY provider"
+                ).fetchall()
+                google_serp_proxies = connection.execute(
+                    "SELECT proxy_key_hash,count(*) AS attempts,"
+                    "count(*) FILTER (WHERE classification='results') AS successes,"
+                    "percentile_cont(0.95) WITHIN GROUP (ORDER BY elapsed_seconds) AS p95_seconds,"
+                    "max(created_at) FILTER (WHERE classification='results') AS last_success_at "
+                    "FROM google_serp_attempts "
+                    "WHERE created_at>=now()-interval '24 hours' AND proxy_key_hash IS NOT NULL "
+                    "GROUP BY proxy_key_hash ORDER BY attempts DESC LIMIT 50"
+                ).fetchall()
+            except Exception:
+                google_serp_channels, google_serp_proxies = [], []
             google_frontier = connection.execute(
                 "SELECT count(*) AS queries,"
                 "count(*) FILTER (WHERE state='pending') AS pending,"
@@ -1715,6 +1836,10 @@ class CampaignStore:
             "google_page_frontier": {
                 "summary": google_frontier,
                 "tasks": google_frontier_tasks,
+            },
+            "google_serp": {
+                "channels": google_serp_channels,
+                "proxies": google_serp_proxies,
             },
         }
 
