@@ -89,6 +89,7 @@ class SearchDiscovery:
         google_serp_save_html: bool = False,
         google_serp_evidence_dir: str = "state/serp-evidence",
         serp_attempt_recorder: Callable[..., None] | None = None,
+        proxy_provider_attempts: int = 1,
     ):
         self.timeout = timeout
         self.proxy_pool = proxy_pool
@@ -148,6 +149,7 @@ class SearchDiscovery:
             google_serp_evidence_dir=google_serp_evidence_dir,
         )
         self.serp_attempt_recorder = serp_attempt_recorder
+        self.proxy_provider_attempts = max(1, proxy_provider_attempts)
         self.attempts: list[dict[str, Any]] = []
         self._attempt_lock = threading.Lock()
         self._local_next_request = 0.0
@@ -334,7 +336,9 @@ class SearchDiscovery:
             with self._attempt_lock:
                 streak = self._local_failures.get(provider, 0) + 1 if failure else 0
                 self._local_failures[provider] = streak
-                if streak >= 3 or (captcha and not proxy_hash):
+                # A failed rotating proxy is quarantined below; it must not
+                # cool the whole provider and prevent trying another exit.
+                if not proxy_hash and (streak >= 3 or captcha):
                     self._local_cooldowns[provider] = time.monotonic() + self.source_cooldown_seconds
                 self.attempts.append({
                     "provider": provider, "query": query, "page": page,
@@ -409,12 +413,25 @@ class SearchDiscovery:
             # as "no results".
             empty_seen = False
             for provider in self.providers:
-                try:
-                    results = self._attempt(provider, query, page)
-                except GoogleBlocked as exc:
-                    errors.append(exc)
-                    if exc.reason == "google_web_circuit_open":
-                        raise
+                attempts = self.proxy_provider_attempts if not (
+                    provider == "searxng" or provider.endswith("_direct")
+                    or self.proxy_profile == "direct"
+                ) else 1
+                results = None
+                for _ in range(attempts):
+                    try:
+                        results = self._attempt(provider, query, page)
+                        break
+                    except GoogleBlocked as exc:
+                        errors.append(exc)
+                        if exc.reason == "google_web_circuit_open":
+                            raise
+                        if exc.reason not in {
+                            "google_captcha", "google_http_403", "google_http_429",
+                            "google_consent", "google_proxy_unavailable",
+                        }:
+                            break
+                if results is None:
                     continue
                 if not results and not empty_seen and provider != self.providers[-1]:
                     empty_seen = True

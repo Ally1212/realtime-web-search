@@ -42,9 +42,12 @@ class DiscoveryRuntimeTests(unittest.TestCase):
         self.store.release_query_lease(key, second)
 
     def test_one_proxy_captcha_does_not_disable_the_entire_pool(self):
-        self.store.acquire_discovery_slot(self.source, .5)
-        self.store.record_discovery_result(self.source, success=False, captcha=True, shared_exit=False)
-        self.assertTrue(self.store.acquire_discovery_slot(self.source, .5)["allowed"])
+        for _ in range(4):
+            self.store.acquire_discovery_slot(self.source, .5)
+            self.store.record_discovery_result(
+                self.source, success=False, captcha=True, shared_exit=False,
+            )
+            self.assertTrue(self.store.acquire_discovery_slot(self.source, .5)["allowed"])
         self.store.record_discovery_result(self.source, success=True, result_count=10)
         self.assertTrue(self.store.acquire_discovery_slot(self.source, .5)["allowed"])
 

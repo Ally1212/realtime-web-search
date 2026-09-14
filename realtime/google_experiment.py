@@ -321,13 +321,13 @@ class Runner:
     def slot(self, source, initial_rps):
         if time.time() >= self.store.get('deadline') or self.store.get('state') != 'running':
             return {'allowed': False}
-        slot = self.production.acquire_discovery_slot(source, min(initial_rps, .5))
+        slot = self.production.acquire_discovery_slot(source, min(initial_rps, 2.0))
         if source == 'google_web' and not slot.get('allowed'):
             self.store.set('search_cooling_until', time.time() + max(1, float(slot.get('wait') or 60)))
         if source == 'google_web' and slot.get('allowed'):
             now = time.monotonic()
             wait = max(float(slot.get('wait', 0)), self.next_request-now, 0)
-            self.next_request = now + wait + 2
+            self.next_request = now + wait + .5
             if time.time() + wait >= self.store.get('deadline'):
                 return {'allowed': False}
             slot['wait'] = wait
@@ -342,7 +342,8 @@ class Runner:
                 providers=('wml','wml_direct','searxng'), searxng_url=self.config.searxng_url,
                 source_slot_acquirer=self.slot, source_result_recorder=self.production.record_discovery_result,
                 proxy_reserver=self.production.reserve_google_proxy, proxy_result_recorder=self.production.record_google_proxy_result,
-                google_web_initial_rps=.5, google_web_max_rps=.5)
+                google_web_initial_rps=1.0, google_web_max_rps=2.0,
+                proxy_provider_attempts=8)
         return self.clients[language]
 
     def search(self, row):
@@ -358,6 +359,8 @@ class Runner:
                 results = [{'url': normalize_url(r.url), 'raw_url': r.url, 'title': r.title} for r in client._discover_google_page(row['query'], row['page'])]
             except GoogleBlocked as exc:
                 error = exc.reason
+                if error == 'google_provider_cooling':
+                    self.store.set('search_cooling_until', time.time() + 60)
             attempts = client.attempts[before:]
         search_id = self.store.search(row, row['page'], started, results, attempts, error, bool(cached))
         if not self.remote_only:

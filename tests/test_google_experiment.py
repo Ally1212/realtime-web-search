@@ -224,12 +224,12 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(result['error'],'body_hard_deadline')
         self.assertIsNone(result['document'])
 
-    def test_local_rate_cap_and_global_cooling_are_both_respected(self):
+    def test_local_two_rps_cap_and_global_cooling_are_both_respected(self):
         production=Mock()
         production.acquire_discovery_slot.return_value={'allowed':True,'wait':0}
         runner=Runner(self.store,Config(),production,self.root/'export')
         runner.slot('google_web',2)
-        self.assertGreater(runner.slot('google_web',2)['wait'],1.9)
+        self.assertGreater(runner.slot('google_web',2)['wait'],.4)
         production.acquire_discovery_slot.return_value={'allowed':False,'wait':1800}
         self.assertFalse(runner.slot('google_web',.5)['allowed'])
         self.assertGreater(self.store.get('search_cooling_until'),time.time()+1799)

@@ -597,8 +597,12 @@ class CampaignStore:
                 circuit_until = row["circuit_until"]
                 streak = int(row["consecutive_failures"]) + 1 if not success else 0
                 provider = source != "google_web"
-                unhealthy = streak >= (3 if provider else 10) or (
-                    requests >= 20 and successes / requests < 0.2
+                # Rotating-proxy failures quarantine the individual proxy.
+                # Only a shared exit may stop an entire provider/source.
+                unhealthy = shared_exit and (
+                    streak >= (3 if provider else 10) or (
+                        requests >= 20 and successes / requests < 0.2
+                    )
                 )
                 if unhealthy or (provider and captcha and shared_exit):
                     rps = max(0.05, min(0.25, rps / 2))

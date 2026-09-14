@@ -143,6 +143,30 @@ class DiscoveryTests(unittest.TestCase):
                 d._discover_google_page("AI", 1)
         self.assertEqual(d.transport.fetch.call_count, 3)
 
+    def test_rotating_proxy_provider_retries_with_another_exit(self):
+        pool = Mock()
+        pool.choose.side_effect = [
+            ("http://proxy-1.example:80", "proxy-1"),
+            ("http://proxy-2.example:80", "proxy-2"),
+            ("http://proxy-3.example:80", "proxy-3"),
+        ]
+        expected = [SearchResult("https://example.com/ai", "AI", ("google_web",))]
+        d = SearchDiscovery(
+            providers=("wml",), proxy_pool=pool, proxy_profile="private",
+            proxy_provider_attempts=3,
+            proxy_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+        )
+        d.transport.fetch = Mock(side_effect=[
+            GoogleBlocked("google_captcha", captcha=True),
+            GoogleBlocked("google_captcha", captcha=True),
+            expected,
+        ])
+
+        self.assertEqual(d._discover_google_page("AI", 1), expected)
+        self.assertEqual(d.transport.fetch.call_count, 3)
+        self.assertNotIn("wml", d._local_cooldowns)
+
     def test_circuit_open_does_not_attempt_transport(self):
         d = SearchDiscovery(source_slot_acquirer=Mock(return_value={"allowed": False}))
         d.transport.fetch = Mock()
