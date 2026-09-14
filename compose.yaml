@@ -66,6 +66,9 @@ services:
       - "127.0.0.1:8091:8091"
     volumes:
       - ./state:/app/state
+      # SQLite WAL requires native filesystem locking; a macOS bind mount can
+      # corrupt the experiment ledger under sustained writes.
+      - experiments-data:/app/state/experiments
       - ./realtime:/app/realtime:ro
     depends_on:
       postgres:
@@ -253,3 +256,4 @@ services:
 volumes:
   postgres-data:
   valkey-data:
+  experiments-data:
