@@ -12,3 +12,7 @@ venv/
 
 # Local crawler state
 state/
+
+# Playwright local run artifacts
+.playwright-cli/
+output/playwright/
