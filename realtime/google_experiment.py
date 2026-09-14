@@ -33,6 +33,8 @@ FAMILIES = ('topic', 'event', 'site', 'recent')
 EXCLUDE = ' -site:youtube.com -site:youtu.be'
 FINAL_STATES = {'complete', 'storage_stopped', 'stopped'}
 SUPPORTED_LANGUAGES = ('zh', 'en')
+BODY_WORKERS = 12
+SEARCH_BACKLOG_LIMIT = 300
 
 
 def iso(at: float) -> str:
@@ -428,7 +430,7 @@ class Runner:
 
     def run(self):
         futures = {}
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=BODY_WORKERS)
         last_sample = last_sync = 0.0
         last_tick = self.store.get('heartbeat', time.time())
         family_index = int(self.store.get('family_index', 0))
@@ -482,13 +484,13 @@ class Runner:
                     if now >= self.store.get('site_due', 0) and not self.store.get('preflight'):
                         selected = site_queries(self.store)
                         self.store.set('site_due', now + (21600 if selected else 60))
-                    for row in self.store.due_urls(4-len(futures), now):
+                    for row in self.store.due_urls(BODY_WORKERS-len(futures), now):
                         lock = self.domain_locks.setdefault(urlsplit(row['url']).hostname, threading.BoundedSemaphore(2))
                         self.store.db.execute("UPDATE urls SET state='fetching' WHERE url=?", (row['url'],))
                         self.store.db.commit()
                         futures[executor.submit(fetch_one, dict(row), lock)] = row['url']
                     backlog = self.store.db.execute("SELECT count(*) FROM urls WHERE state='pending'").fetchone()[0]
-                    if backlog < 100 and not preflight_done and now >= self.store.get('search_cooling_until',0):
+                    if backlog < SEARCH_BACKLOG_LIMIT and not preflight_done and now >= self.store.get('search_cooling_until',0):
                         for offset in range(4):
                             index = (family_index+offset) % 4
                             row = self.store.due_query(FAMILIES[index], now)

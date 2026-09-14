@@ -561,11 +561,25 @@ class CampaignStore:
                         "window_started_at=now(),requests_window=0,successes_window=0,errors_window=0,"
                         "limited_window=0,captcha_window=0,consecutive_failures=0 WHERE source=%s", (rps, state, source),
                     )
+                requests = int(row["requests_window"])
+                successes = int(row["successes_window"])
+                healthy_window = (
+                    state == "healthy" and requests >= 10
+                    and successes / max(requests, 1) >= 0.9
+                    and int(row["captcha_window"]) == 0
+                    and int(row["consecutive_failures"]) == 0
+                )
+                if healthy_window:
+                    # A circuit may have reduced the durable rate far below
+                    # the caller's configured starting rate. Recover promptly
+                    # after a proven healthy window instead of waiting 30 min.
+                    rps = max(rps, min(max(initial_rps, 0.01), 2.0))
                 next_at = max(row["next_request_at"], now)
                 wait = max(0.0, (next_at - now).total_seconds())
                 connection.execute(
-                    "UPDATE discovery_source_runtime SET next_request_at=%s,updated_at=now() WHERE source=%s",
-                    (next_at + timedelta(seconds=1.0 / rps), source),
+                    "UPDATE discovery_source_runtime SET next_request_at=%s,current_rps=%s,"
+                    "updated_at=now() WHERE source=%s",
+                    (next_at + timedelta(seconds=1.0 / rps), rps, source),
                 )
         return {"allowed": True, "wait": wait, "state": state, "current_rps": rps}
 

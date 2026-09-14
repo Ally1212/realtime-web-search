@@ -51,6 +51,17 @@ class DiscoveryRuntimeTests(unittest.TestCase):
         self.store.record_discovery_result(self.source, success=True, result_count=10)
         self.assertTrue(self.store.acquire_discovery_slot(self.source, .5)["allowed"])
 
+    def test_healthy_window_recovers_requested_starting_rate(self):
+        with self.store.connect() as connection:
+            connection.execute(
+                "INSERT INTO discovery_source_runtime(source,state,current_rps,requests_window,"
+                "successes_window,captcha_window,consecutive_failures) "
+                "VALUES(%s,'healthy',0.125,10,10,0,0)", (self.source,),
+            )
+        slot = self.store.acquire_discovery_slot(self.source, 1.0)
+        self.assertTrue(slot["allowed"])
+        self.assertEqual(slot["current_rps"], 1.0)
+
     def test_proxy_health_requires_actual_search_success(self):
         key = uuid4().hex.ljust(64, "0")
         self.store.record_google_proxy_result(key, success=False, cooldown_seconds=300)
