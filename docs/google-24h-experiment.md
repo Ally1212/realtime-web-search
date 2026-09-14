@@ -7,6 +7,8 @@
 ## 实现与限制
 
 - `benchmark-google start`：独立 SQLite、进程锁、Google 查询缓存、正文版本和 Outbox。开始后连续 24 小时，不跨午夜重置；重启、暂停、冷却不延长时间。
+- `--languages zh` 可创建仅使用简体中文（Google locale `zh-CN`）的隔离实验；默认 `zh,en` 保持中英文模式。语言集合在首次启动时写入实验状态，中断恢复不会改变。
+- `--whale --remote-only` 只在 Whale 待投递期间临时保留正文；接收、幂等重复、永久拒绝或缺少发布时间后立即清除本地正文与 Outbox Payload。本地仅保留 URL、哈希、状态和计数，不生成正文 Markdown。
 - 四组公平轮询：原 AI 主题；真实事件查询；从合格结果选取最多 20 个站点各 5 个主题；近一天/七天日期查询。所有查询与分页响应落盘。前 3 页每小时、深页每 6 小时到期，每个查询最多 11 页。
 - 不启动旧 `collector`/`local-worker`，不认领 Whale 外部任务，不冲刷旧 Outbox。只复用 PostgreSQL 中的 Google 全局配额和代理健康记录。
 - 正文 4 并发、单个请求域名最多 2、独立子进程 65 秒硬截止；robots/public-address/5 MB 保护复用 LiveFetcher。HTML 之外仅保留失败记录，不下载视频字幕。

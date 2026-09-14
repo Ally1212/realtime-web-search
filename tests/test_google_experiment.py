@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from realtime.config import Config
 from realtime.experiment_store import ExperimentStore, digest
-from realtime.google_experiment import Runner, command, experiment_message, export_report, fetch_one, publication_metadata, quality, seed_queries, site_queries
+from realtime.google_experiment import Runner, command, experiment_message, export_report, fetch_one, normalize_languages, publication_metadata, quality, seed_queries, site_queries
 
 
 def document(url='https://example.org/ai', text=None):
@@ -57,6 +57,33 @@ class ExperimentTests(unittest.TestCase):
         before = self.store.db.execute('SELECT count(*) FROM schedule').fetchone()[0]
         seed_queries(self.store,Config(),time.time())
         self.assertEqual(before,self.store.db.execute('SELECT count(*) FROM schedule').fetchone()[0])
+
+    def test_chinese_only_seed_excludes_all_english_queries(self):
+        self.store.db.execute('DELETE FROM schedule')
+        self.store.db.execute('DELETE FROM queries')
+        self.store.db.commit()
+        seed_queries(self.store, Config(), time.time(), languages=('zh',))
+        rows = list(self.store.db.execute('SELECT language,query,family FROM queries'))
+        self.assertTrue(rows)
+        self.assertEqual({row['language'] for row in rows}, {'zh'})
+        self.assertTrue(any(row['family'] == 'topic' for row in rows))
+        self.assertTrue(any(row['family'] == 'event' for row in rows))
+        self.assertTrue(any(row['family'] == 'recent' for row in rows))
+
+    def test_chinese_only_preflight_seeds_one_chinese_query(self):
+        seed_queries(self.store, Config(), time.time(), preflight=True, languages=('zh',))
+        rows = list(self.store.db.execute('SELECT language,query FROM queries'))
+        self.assertEqual(len(rows), 2)  # setUp query plus the isolated preflight query
+        seeded = [row for row in rows if row['query'] != 'AI']
+        self.assertEqual(len(seeded), 1)
+        self.assertEqual(seeded[0]['language'], 'zh')
+        self.assertEqual(self.store.get('preflight_search_target'), 1)
+
+    def test_language_validation(self):
+        self.assertEqual(normalize_languages('zh'), ('zh',))
+        self.assertEqual(normalize_languages('zh,en,zh'), ('zh', 'en'))
+        with self.assertRaises(ValueError):
+            normalize_languages('ja')
 
     def test_quality_excludes_false_ai_substring_shells_and_short_text(self):
         self.assertIn('no_ai_context', quality(dict(document(text='Daily mail rain ' * 100), title='Daily mail')))
@@ -138,6 +165,38 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(self.store.db.execute('SELECT status FROM outbox').fetchone()[0],'blocked_missing_publication')
         self.assertEqual(self.store.counts()['new'],1)
         runner.whale.bulk_ingest.assert_not_called()
+
+    def test_remote_only_scrubs_bodies_after_queue_and_payload_after_receipt(self):
+        self.store.set('whale', True)
+        self.store.set('remote_only', True)
+        self.discover()
+        with patch('realtime.google_experiment.WhaleClient', return_value=Mock()):
+            runner = Runner(self.store, Config(), Mock(), self.root/'export')
+        doc = dict(document(), published_at='2026-09-01T10:00:00+08:00')
+        runner.save_body({'document': doc, 'requested_url': doc['url'], 'status': 'success', 'seconds': 1})
+        row = self.store.db.execute('SELECT document FROM documents').fetchone()
+        outbox = self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
+        self.assertEqual(row['document'], 'null')
+        self.assertEqual(outbox['status'], 'pending')
+        self.assertIn(doc['content'], outbox['payload'])
+        self.assertFalse((self.root/'export/documents').exists())
+        runner.whale.bulk_ingest.return_value = [{'receipt_status': 'accepted'}]
+        runner.flush_whale()
+        outbox = self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
+        self.assertEqual(outbox['status'], 'accepted')
+        self.assertIsNone(outbox['payload'])
+
+    def test_remote_only_discards_body_without_publication_date(self):
+        self.store.set('whale', True)
+        self.store.set('remote_only', True)
+        self.discover()
+        with patch('realtime.google_experiment.WhaleClient', return_value=Mock()):
+            runner = Runner(self.store, Config(), Mock(), self.root/'export')
+        runner.save_body({'document': document(), 'requested_url': document()['url'], 'status': 'success', 'seconds': 1})
+        self.assertEqual(self.store.db.execute('SELECT document FROM documents').fetchone()[0], 'null')
+        row = self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
+        self.assertIsNone(row['payload'])
+        self.assertEqual(row['status'], 'blocked_missing_publication')
 
     def test_pausing_does_not_change_deadline(self):
         deadline=self.store.get('deadline')

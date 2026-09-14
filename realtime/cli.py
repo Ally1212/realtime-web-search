@@ -40,7 +40,15 @@ def main() -> None:
     experiment.add_argument("--directory", required=True, help="Persistent experiment state directory")
     experiment.add_argument("--output", default="/export", help="Empty Markdown export directory for a new run")
     experiment.add_argument("--hours", type=float, default=24)
+    experiment.add_argument(
+        "--languages", default="zh,en",
+        help="Comma-separated experiment languages: zh,en (default: zh,en)",
+    )
     experiment.add_argument("--whale", action="store_true")
+    experiment.add_argument(
+        "--remote-only", action="store_true",
+        help="Keep document bodies only while pending Whale delivery; requires --whale",
+    )
     experiment.add_argument("--preflight", action="store_true", help="Bounded two-page pilot, not a 24h result")
     experiment.add_argument("--baseline-run", action="append", default=[])
     experiment.add_argument("--baseline-export", action="append", default=[])

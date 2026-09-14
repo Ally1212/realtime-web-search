@@ -32,10 +32,21 @@ from .whale_collector import WhaleClient, whale_message
 FAMILIES = ('topic', 'event', 'site', 'recent')
 EXCLUDE = ' -site:youtube.com -site:youtu.be'
 FINAL_STATES = {'complete', 'storage_stopped', 'stopped'}
+SUPPORTED_LANGUAGES = ('zh', 'en')
 
 
 def iso(at: float) -> str:
     return datetime.fromtimestamp(at, timezone.utc).isoformat()
+
+
+def normalize_languages(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    if value is None:
+        return SUPPORTED_LANGUAGES
+    raw = value.split(',') if isinstance(value, str) else value
+    languages = tuple(dict.fromkeys(str(item).strip().lower() for item in raw if str(item).strip()))
+    if not languages or any(language not in SUPPORTED_LANGUAGES for language in languages):
+        raise ValueError('languages must contain zh and/or en')
+    return languages
 
 
 def quality(document: dict | None) -> list[str]:
@@ -98,20 +109,32 @@ class DatedFetcher(LiveFetcher):
         return response, raw
 
 
-def seed_queries(store: ExperimentStore, config: Config, now: float, preflight: bool = False):
-    topics = [s for s in base_keyword_specs() if s.key.endswith(':topic')]
+def seed_queries(
+    store: ExperimentStore, config: Config, now: float, preflight: bool = False,
+    languages: tuple[str, ...] = SUPPORTED_LANGUAGES,
+):
+    languages = normalize_languages(languages)
+    topics = [
+        spec for spec in base_keyword_specs()
+        if spec.key.endswith(':topic') and spec.language in languages
+    ]
     if preflight:
         for query, language in (('AI agents release open source update', 'en'), ('人工智能智能体 发布 开源 更新', 'zh')):
-            store.add_query('event', query + EXCLUDE, language, query, pages=1)
+            if language in languages:
+                store.add_query('event', query + EXCLUDE, language, query, pages=1)
+        store.set('preflight_search_target', len(languages))
         store.set('catalog_seeded', True)
         return
     if not store.get('catalog_seeded'):
         for spec in base_keyword_specs():
+            if spec.language not in languages:
+                continue
             family = 'topic' if spec.key.endswith(':topic') else 'event'
             store.add_query(family, spec.query + (EXCLUDE if family == 'event' else ''), spec.language, spec.aliases[0])
         for query in config.continuous_ai_keywords:
             language = 'zh' if re.search('[\u3400-\u9fff]', query) else 'en'
-            store.add_query('topic', query, language, query)
+            if language in languages:
+                store.add_query('topic', query, language, query)
         store.set('catalog_seeded', True)
     today = datetime.fromtimestamp(now, timezone.utc).date()
     if store.get('recent_date') != str(today):
@@ -288,6 +311,7 @@ class Runner:
         self.clients = {}
         self.pool = ProxyPool(config)
         self.whale = WhaleClient(config) if store.get('whale') else None
+        self.remote_only = bool(store.get('remote_only'))
         self.registered = False
         self.next_whale = 0
         self.next_request = 0.0
@@ -336,7 +360,8 @@ class Runner:
                 error = exc.reason
             attempts = client.attempts[before:]
         search_id = self.store.search(row, row['page'], started, results, attempts, error, bool(cached))
-        export_search(self.store, self.output, search_id)
+        if not self.remote_only:
+            export_search(self.store, self.output, search_id)
 
     def save_body(self, record):
         doc = record.get('document')
@@ -346,8 +371,13 @@ class Runner:
             message = experiment_message(doc, self.store.get('id'), rows[0]['query'], sorted({r['family'] for r in rows}), self.config)
             with self.store.db:
                 self.store.db.execute('INSERT OR IGNORE INTO outbox(document_id,payload,status) VALUES(?,?,?)',
-                                      (document_id, json.dumps(message, ensure_ascii=False), 'pending' if doc.get('published_at') else 'blocked_missing_publication'))
-        export_document(self.store, self.output, document_id)
+                                      (document_id, json.dumps(message, ensure_ascii=False) if doc.get('published_at') else None,
+                                       'pending' if doc.get('published_at') else 'blocked_missing_publication'))
+        if self.remote_only:
+            with self.store.db:
+                self.store.db.execute("UPDATE documents SET document='null' WHERE id=?", (document_id,))
+        else:
+            export_document(self.store, self.output, document_id)
 
     def flush_whale(self):
         if not self.whale or time.time() < self.next_whale:
@@ -373,6 +403,8 @@ class Runner:
                         delay = min(300, 5 * 2 ** min(row['attempts'], 6))
                         self.store.db.execute("UPDATE outbox SET status=?,attempts=attempts+1,next_attempt=?,error=? WHERE document_id=?",
                             ('rejected' if permanent else 'pending', time.time()+delay, f'{type(exc).__name__}:HTTP{http}', row['document_id']))
+                        if permanent and self.remote_only:
+                            self.store.db.execute('UPDATE outbox SET payload=NULL WHERE document_id=?', (row['document_id'],))
                 self.store.set('whale_last_error', f'{type(exc).__name__}:HTTP{http}')
                 return
             with self.store.db:
@@ -381,6 +413,8 @@ class Runner:
                     state = 'accepted' if status in {'queued','accepted'} else 'duplicate' if status == 'duplicate' else 'rejected'
                     self.store.db.execute('UPDATE outbox SET status=?,finished=?,attempts=attempts+1,error=? WHERE document_id=?',
                         (state, time.time(), '' if state != 'rejected' else 'receipt_rejected', row['document_id']))
+                    if self.remote_only:
+                        self.store.db.execute('UPDATE outbox SET payload=NULL WHERE document_id=?', (row['document_id'],))
         except Exception as exc:
             self.registered = False
             self.store.set('whale_last_error', type(exc).__name__)
@@ -414,7 +448,8 @@ class Runner:
                     if future.done():
                         self.save_body(future.result())
                         del futures[future]
-                preflight_done = self.store.get('preflight') and self.store.db.execute('SELECT count(*) FROM searches').fetchone()[0] >= 2
+                preflight_target = int(self.store.get('preflight_search_target', 2))
+                preflight_done = self.store.get('preflight') and self.store.db.execute('SELECT count(*) FROM searches').fetchone()[0] >= preflight_target
                 pending = self.store.db.execute("SELECT count(*) FROM urls WHERE state='pending'").fetchone()[0]
                 complete_early = preflight_done and not pending and not futures
                 if drain_until is not None or now >= self.store.get('deadline') or self.stop or state in FINAL_STATES or complete_early:
@@ -437,7 +472,10 @@ class Runner:
                             last_sync = now-1740
                     today = str(datetime.fromtimestamp(now, timezone.utc).date())
                     if not self.store.get('catalog_seeded') or (not self.store.get('preflight') and self.store.get('recent_date') != today):
-                        seed_queries(self.store, self.config, now, self.store.get('preflight'))
+                        seed_queries(
+                            self.store, self.config, now, self.store.get('preflight'),
+                            normalize_languages(self.store.get('languages')),
+                        )
                     if now >= self.store.get('site_due', 0) and not self.store.get('preflight'):
                         selected = site_queries(self.store)
                         self.store.set('site_due', now + (21600 if selected else 60))
@@ -461,7 +499,8 @@ class Runner:
                     metrics = self.store.counts()
                     with self.store.db:
                         self.store.db.execute('INSERT OR REPLACE INTO samples VALUES(?,?)', (now, json.dumps(metrics)))
-                    export_report(self.store, self.output)
+                    if not self.remote_only:
+                        export_report(self.store, self.output)
                     print(json.dumps({'experiment': self.store.get('id'), 'state': self.store.get('state'),
                                       'new': metrics.get('new',0), 'requests': metrics['google_requests'],
                                       'whale_accepted': metrics.get('whale_accepted',0)}, ensure_ascii=False), flush=True)
@@ -482,7 +521,8 @@ class Runner:
             self.store.set('finished_at', time.time())
             with self.store.db:
                 self.store.db.execute('INSERT OR REPLACE INTO samples VALUES(?,?)', (time.time(), json.dumps(self.store.counts())))
-            export_report(self.store, self.output, full=True)
+            if not self.remote_only:
+                export_report(self.store, self.output, full=True)
 
 
 def command(args):
@@ -498,6 +538,7 @@ def command(args):
         return
     if args.action == 'status':
         print(json.dumps({'id': store.get('id'), 'state': store.get('state'), 'deadline': iso(store.get('deadline')),
+                          'languages': list(normalize_languages(store.get('languages'))),
                           'heartbeat_age_seconds': round(time.time()-store.get('heartbeat',0),1),
                           'whale_last_error': store.get('whale_last_error'), **store.counts()}, ensure_ascii=False, indent=2))
         store.db.close()
@@ -509,6 +550,10 @@ def command(args):
         return
     if args.hours <= 0 or args.hours > 24:
         raise ValueError('hours must be >0 and <=24')
+    requested_languages = normalize_languages(getattr(args, 'languages', None))
+    remote_only = bool(getattr(args, 'remote_only', False))
+    if remote_only and not args.whale:
+        raise ValueError('--remote-only requires --whale')
     output.mkdir(parents=True, exist_ok=True)
     lock = (directory / 'runner.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -522,7 +567,9 @@ def command(args):
         store.set('id', 'google-experiment-' + directory.name)
         store.set('output', str(output))
         store.set('whale', bool(args.whale))
+        store.set('remote_only', remote_only)
         store.set('preflight', bool(args.preflight))
+        store.set('languages', list(requested_languages))
         store.set('state', 'initializing')
     if not store.get('baseline_ready'):
         import_baselines(store, production, args)
