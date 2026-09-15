@@ -99,6 +99,7 @@ class Config:
     openserp_request_timeout_seconds: int = int(
         os.getenv("OPENSERP_REQUEST_TIMEOUT_SECONDS", "60")
     )
+    openserp_proxy_relay_host: str = os.getenv("OPENSERP_PROXY_RELAY_HOST", "")
     searxng_url: str = os.getenv("SEARXNG_URL", "http://127.0.0.1:8092")
     google_web_deep_cache_seconds: int = int(os.getenv("GOOGLE_WEB_DEEP_CACHE_SECONDS", "86400"))
     google_web_initial_rps: float = float(os.getenv("GOOGLE_WEB_INITIAL_RPS", "0.5"))

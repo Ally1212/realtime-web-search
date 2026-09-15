@@ -26,6 +26,9 @@ HTTP/SOCKS 别名仍合并为一个出口。pipeline 的所有搜索线程共享
 由于带认证的代理需要独立 Chrome，OpenSERP 冷启动会串行创建浏览器；客户端使用 60 秒超时
 覆盖并发冷启动队列。通过完整响应契约的出口进入进程内优先集，按 30 秒主机间隔复用；一旦
 出现 429、CAPTCHA 或网络失败即移出优先集并进入原有退避。
+私有 HTTP 代理先经过内部 `proxy-relay` 去除传给浏览器的认证信息，再由 relay 注入上游
+Basic Auth。OpenSERP 因此可以用同一个 Chrome 的隔离 Context 承载全部出口，避免 80 个
+认证 IP 触发 Chrome 进程反复冷启动；物理出口键、30 秒间隔和 PostgreSQL 冷却账本保持不变。
 
 当前暂停的 `million-yield-v5-20260915` 保留原账本，不迁移 provider，也不会自动恢复。
 新实验必须使用新目录，并把历史 URL/正文指纹作为基线；不继承旧任务 pending URL 或计数。

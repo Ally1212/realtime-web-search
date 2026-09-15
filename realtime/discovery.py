@@ -318,6 +318,8 @@ class SearchDiscovery:
             else:
                 allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
             if allowed:
+                if provider == "openserp":
+                    url = self.proxy_pool.openserp_proxy_url(self.proxy_profile, key) or url
                 return url, key
             minimum_wait = wait if minimum_wait is None else min(minimum_wait, wait)
             self.proxy_pool.defer(key, "www.google.com", min(max(wait, 0.1), self.proxy_cooldown_seconds))

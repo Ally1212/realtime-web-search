@@ -238,6 +238,28 @@ class ProxySynchronizer:
             return len(records)
 
 
+def proxy_relay_ports(
+    records: list[ProxyRecord], *, port_start: int = 20000, port_count: int = 30000,
+) -> dict[str, int]:
+    """Assign stable local ports to HTTP endpoints without exposing credentials."""
+    if not (1 <= port_start <= 65535) or port_count <= 0 or port_start + port_count > 65536:
+        raise ValueError("invalid proxy relay port range")
+    keys = sorted({record.key for record in records if record.protocol == "http"})
+    if len(keys) > port_count:
+        raise ValueError("proxy relay port range is exhausted")
+    assigned: dict[str, int] = {}
+    used: set[int] = set()
+    for key in keys:
+        offset = int(hashlib.sha256(key.encode()).hexdigest()[:8], 16) % port_count
+        for step in range(port_count):
+            port = port_start + ((offset + step) % port_count)
+            if port not in used:
+                assigned[key] = port
+                used.add(port)
+                break
+    return assigned
+
+
 class ProxyPool:
     """Reads atomically published proxy caches and keeps failures process-local."""
 
@@ -391,6 +413,16 @@ class ProxyPool:
         """Prefer an endpoint after a contract-valid search response."""
         with self._lock:
             self._successful.add((key, domain))
+
+    def openserp_proxy_url(self, profile: str, key: str) -> str | None:
+        """Return the credential-free relay URL for one authenticated HTTP exit."""
+        host = str(getattr(self.config, "openserp_proxy_relay_host", "") or "").strip()
+        if profile != "private" or not host:
+            return None
+        _, records = self.cache.load(profile)
+        ports = proxy_relay_ports(records)
+        port = ports.get(key)
+        return f"http://{host}:{port}" if port else None
 
     def defer(self, key: str, domain: str, seconds: float) -> None:
         """Temporarily remove one endpoint without treating it as a transport failure."""

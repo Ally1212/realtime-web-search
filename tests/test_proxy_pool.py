@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from realtime.proxy_pool import (
     ProxyApiClient, ProxyApiError, ProxyCache, ProxyRecord, ProxySynchronizer, ProxyPool,
+    proxy_relay_ports,
 )
 
 
@@ -25,6 +26,32 @@ def config(directory: str = "/tmp"):
 
 
 class ProxyApiTests(unittest.TestCase):
+    def test_proxy_relay_ports_are_unique_stable_and_http_only(self):
+        records = [
+            ProxyRecord('192.0.2.2', 8080, 'http'),
+            ProxyRecord('192.0.2.1', 8080, 'http'),
+            ProxyRecord('192.0.2.1', 1080, 'socks5'),
+        ]
+        first = proxy_relay_ports(records, port_start=20000, port_count=100)
+        second = proxy_relay_ports(list(reversed(records)), port_start=20000, port_count=100)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 2)
+        self.assertEqual(len(set(first.values())), 2)
+        self.assertTrue(all(20000 <= port < 20100 for port in first.values()))
+
+    def test_openserp_relay_url_hides_upstream_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = ProxyRecord('192.0.2.1', 8080, 'http')
+            cache = ProxyCache(Path(directory))
+            cache.publish('private', [record], None)
+            cfg = config(directory)
+            cfg.openserp_proxy_relay_host = 'proxy-relay'
+            cfg.proxy_username = 'secret-user'
+            cfg.proxy_password = 'secret-password'
+            url = ProxyPool(cfg).openserp_proxy_url('private', record.key)
+            self.assertRegex(url or '', r'^http://proxy-relay:\d+$')
+            self.assertNotIn('secret', url or '')
+
     def test_google_defer_applies_to_other_protocols_without_shortening_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
             records = [ProxyRecord('192.0.2.1', 8080, 'http'), ProxyRecord('192.0.2.1', 1080, 'socks5')]
