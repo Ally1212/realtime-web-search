@@ -97,7 +97,7 @@ class Config:
     google_free_providers: tuple[str, ...] = _csv("GOOGLE_FREE_PROVIDERS", "openserp")
     openserp_url: str = os.getenv("OPENSERP_URL", "http://127.0.0.1:7000")
     openserp_request_timeout_seconds: int = int(
-        os.getenv("OPENSERP_REQUEST_TIMEOUT_SECONDS", "25")
+        os.getenv("OPENSERP_REQUEST_TIMEOUT_SECONDS", "60")
     )
     searxng_url: str = os.getenv("SEARXNG_URL", "http://127.0.0.1:8092")
     google_web_deep_cache_seconds: int = int(os.getenv("GOOGLE_WEB_DEEP_CACHE_SECONDS", "86400"))

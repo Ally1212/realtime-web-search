@@ -250,6 +250,7 @@ class ProxyPool:
         self._mtime: dict[str, float] = {}
         self._expires_at: dict[str, float] = {}
         self._last_used: dict[str, float] = {}
+        self._successful: set[tuple[str, str]] = set()
         self._lock = threading.Lock()
 
     def google_identity(self, key: str) -> tuple[str, list[str]]:
@@ -343,8 +344,10 @@ class ProxyPool:
             if full_pool:
                 # Cycle through the complete healthy pool; randomize only ties
                 # so concurrent crawler processes do not all start on one IP.
-                oldest = min(self._last_used.get(item.key, 0) for item in eligible)
-                top = [item for item in eligible if self._last_used.get(item.key, 0) == oldest]
+                proven = [item for item in eligible if (item.key, domain) in self._successful]
+                candidates = proven or eligible
+                oldest = min(self._last_used.get(item.key, 0) for item in candidates)
+                top = [item for item in candidates if self._last_used.get(item.key, 0) == oldest]
             else:
                 top = eligible[: max(1, min(self.config.proxy_selection_window, len(eligible)))]
             record = random.choice(top)
@@ -384,11 +387,17 @@ class ProxyPool:
             ]
         return min(waits) if waits else 300.0
 
+    def mark_success(self, key: str, domain: str) -> None:
+        """Prefer an endpoint after a contract-valid search response."""
+        with self._lock:
+            self._successful.add((key, domain))
+
     def defer(self, key: str, domain: str, seconds: float) -> None:
         """Temporarily remove one endpoint without treating it as a transport failure."""
         with self._lock:
             until = time.monotonic() + max(0.0, seconds)
             self._cooldown[(key, domain)] = max(self._cooldown.get((key, domain), 0), until)
+            self._successful.discard((key, domain))
             if domain == 'google.com' or domain.endswith('.google.com'):
                 host = key.rsplit(':', 1)[0].strip('[]').lower().rstrip('.')
                 group = ('google-host:' + host, domain)

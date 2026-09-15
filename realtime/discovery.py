@@ -441,6 +441,8 @@ class SearchDiscovery:
                     else 0 if service_failure else 300 if failure else 0)
                 if failure and proxy_delay:
                     self.proxy_pool.defer(proxy_key, "www.google.com", proxy_delay)
+                elif failure is None:
+                    self.proxy_pool.mark_success(proxy_key, "www.google.com")
                 if self.proxy_result_recorder and not service_failure:
                     self.proxy_result_recorder(
                         proxy_hash, success=failure is None,
