@@ -75,7 +75,9 @@ class SearchDiscovery:
         novelty_counter: Callable[[list[str]], int] | None = None,
         page_batch_acquirer: Callable[..., dict[str, Any] | None] | None = None,
         page_result_recorder: Callable[..., bool] | None = None,
-        providers: tuple[str, ...] = ("wml", "wml_direct", "searxng"),
+        providers: tuple[str, ...] = ("openserp",),
+        openserp_url: str = "http://127.0.0.1:7000",
+        openserp_request_timeout_seconds: int = 25,
         searxng_url: str = "http://127.0.0.1:8092",
         deep_cache_seconds: int = 86400,
         singleflight_acquirer: Callable[..., str | None] | None = None,
@@ -124,7 +126,7 @@ class SearchDiscovery:
         self._proxy_usage: dict[tuple[str, str], int] = {}
         self._proxy_usage_lock = threading.Lock()
         allowed = {
-            "searxng", "wml", "wml_direct", "curl", "curl_direct",
+            "openserp", "searxng", "wml", "wml_direct", "curl", "curl_direct",
             "browser", "browser_direct", "persistent_browser",
         }
         if not providers or any(provider not in allowed for provider in providers):
@@ -140,6 +142,8 @@ class SearchDiscovery:
         from .free_google import GoogleTransport
         self.transport = GoogleTransport(
             timeout, self.language, searxng_url,
+            openserp_url=openserp_url,
+            openserp_request_timeout_seconds=openserp_request_timeout_seconds,
             persistent_browser_enabled=persistent_browser_enabled,
             persistent_browser_profile_root=persistent_browser_profile_root,
             persistent_browser_max_contexts=persistent_browser_max_contexts,
@@ -282,7 +286,7 @@ class SearchDiscovery:
             if not selected:
                 break
             url, key = selected
-            if provider.startswith("browser") and not url.startswith("http://"):
+            if (provider.startswith("browser") or provider == "openserp") and not url.startswith(("http://", "https://")):
                 self.proxy_pool.defer(key, "www.google.com", 60)
                 continue
             proxy_hash = hashlib.sha256(key.encode()).hexdigest()
@@ -336,6 +340,11 @@ class SearchDiscovery:
             captcha = isinstance(failure, GoogleBlocked) and failure.captcha
             limited = captcha or code in {"google_http_403", "google_http_429", "google_javascript_required", "google_consent"}
             evidence = dict(self.transport.last_evidence)
+            service_failure = code in {
+                "openserp_unavailable", "openserp_not_configured",
+                "openserp_invalid_response", "openserp_parser_failure",
+                "openserp_engine_error", "openserp_bad_request",
+            } or code.startswith("openserp_http_")
             classification = evidence.get("classification") or (
                 ("results" if results else "empty") if failure is None
                 else "timeout" if code == "google_timeout"
@@ -346,9 +355,9 @@ class SearchDiscovery:
                 self._local_failures[provider] = streak
                 # A failed rotating proxy is quarantined below; it must not
                 # cool the whole provider and prevent trying another exit.
-                if not proxy_hash and (streak >= 3 or captcha):
+                if service_failure or (not proxy_hash and (streak >= 3 or captcha)):
                     self._local_cooldowns[provider] = time.monotonic() + self.source_cooldown_seconds
-                self.attempts.append({
+                attempt_record = {
                     "provider": provider, "query": query, "page": page,
                     "success": failure is None, "results": len(results),
                     "seconds": round(elapsed, 3), "error": code,
@@ -359,7 +368,13 @@ class SearchDiscovery:
                     "raw_html_path": evidence.get("raw_html_path"),
                     "request_url": evidence.get("request_url"),
                     "headless": evidence.get("headless"),
-                })
+                    "upstream_request_id": evidence.get("upstream_request_id"),
+                    "upstream_version": evidence.get("upstream_version"),
+                    "upstream_attempts": evidence.get("upstream_attempts"),
+                    "upstream_cache_status": evidence.get("upstream_cache_status"),
+                    "network_bytes": evidence.get("network_bytes"),
+                }
+                self.attempts.append(attempt_record)
             if self.serp_attempt_recorder:
                 try:
                     self.serp_attempt_recorder(
@@ -372,6 +387,11 @@ class SearchDiscovery:
                         raw_sha256=evidence.get("raw_sha256"),
                         raw_html_path=evidence.get("raw_html_path"),
                         headless=evidence.get("headless"),
+                        upstream_request_id=evidence.get("upstream_request_id"),
+                        upstream_version=evidence.get("upstream_version"),
+                        upstream_attempts=evidence.get("upstream_attempts"),
+                        upstream_cache_status=evidence.get("upstream_cache_status"),
+                        network_bytes=evidence.get("network_bytes"),
                     )
                 except Exception:
                     pass
@@ -379,12 +399,18 @@ class SearchDiscovery:
                 # A valid HTTP 200 envelope with an unknown result layout does
                 # not establish a broken exit. Keep the page failed, but avoid
                 # quarantining healthy exits for five minutes on sparse queries.
+                proxy_failure = limited or code in {
+                    "openserp_proxy_connect", "openserp_proxy_auth",
+                    "openserp_proxy_timeout", "openserp_proxy_unavailable",
+                    "google_timeout", "google_transport_error",
+                }
                 parse_only_failure = code == 'google_unrecognized_page' and evidence.get('http_status') == 200
                 proxy_delay = self.proxy_cooldown_seconds if limited else (
-                    max(30, self.proxy_min_interval_seconds) if parse_only_failure else 300 if failure else 0)
-                if failure:
+                    300 if proxy_failure else max(30, self.proxy_min_interval_seconds) if parse_only_failure
+                    else 0 if service_failure else 300 if failure else 0)
+                if failure and proxy_delay:
                     self.proxy_pool.defer(proxy_key, "www.google.com", proxy_delay)
-                if self.proxy_result_recorder:
+                if self.proxy_result_recorder and not service_failure:
                     self.proxy_result_recorder(
                         proxy_hash, success=failure is None,
                         cooldown_seconds=proxy_delay,
@@ -406,7 +432,7 @@ class SearchDiscovery:
                     )
 
     def _discover_google_page(self, query: str, page: int) -> list[SearchResult]:
-        cache_locale = self.locale + ":free-v1:" + ",".join(self.providers)
+        cache_locale = self.locale + ":free-v2:" + ",".join(self.providers)
         cache_key, cached = self._cached("google_web", query, cache_locale, page)
         if cached is not None:
             return cached
@@ -447,7 +473,9 @@ class SearchDiscovery:
                             break
                         if exc.reason not in {
                             "google_captcha", "google_http_403", "google_http_429",
-                            "google_consent",
+                            "google_consent", "google_timeout", "openserp_proxy_connect",
+                            "openserp_proxy_auth", "openserp_proxy_timeout",
+                            "openserp_proxy_unavailable",
                         }:
                             break
                 if results is None:

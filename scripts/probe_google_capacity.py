@@ -46,7 +46,9 @@ def main():
         term = '(人工智能 OR AI OR 大模型 OR ChatGPT OR 机器学习)' if index % 2 else '人工智能'
         query = f'site:{sites[(index//2)%len(sites)]} {term} after:2026-08-01 before:2026-09-01'
         client = SearchDiscovery(
-            timeout=15, providers=('wml',), proxy_pool=pool, proxy_profile=args.profile,
+            timeout=15, providers=('openserp',), proxy_pool=pool, proxy_profile=args.profile,
+            openserp_url=config.openserp_url,
+            openserp_request_timeout_seconds=config.openserp_request_timeout_seconds,
             language='zh', proxy_provider_attempts=0,
             source_slot_acquirer=production.acquire_discovery_slot,
             source_result_recorder=production.record_discovery_result,
@@ -55,7 +57,7 @@ def main():
             serp_attempt_recorder=production.record_google_serp_attempt)
         result = dict(index=index, query=query)
         try:
-            rows = client._attempt('wml', query, 1)
+            rows = client._attempt('openserp', query, 1)
             result['urls'] = [r.url for r in rows]
         except Exception as exc:
             result['error'] = getattr(exc, 'reason', type(exc).__name__)

@@ -368,7 +368,10 @@ class Runner:
             limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
             self.clients[language] = SearchDiscovery(
                 timeout=20, proxy_pool=self.pool, proxy_profile=self.store.get('proxy_profile', 'private'), language=language,
-                providers=tuple(self.store.get('google_providers', ['wml','wml_direct','searxng'])), searxng_url=self.config.searxng_url,
+                providers=tuple(self.store.get('google_providers', ['openserp'])),
+                openserp_url=self.config.openserp_url,
+                openserp_request_timeout_seconds=self.config.openserp_request_timeout_seconds,
+                searxng_url=self.config.searxng_url,
                 source_slot_acquirer=self.slot, source_result_recorder=self.production.record_discovery_result,
                 proxy_reserver=self.production.reserve_google_proxy, proxy_group_reserver=self.production.reserve_google_proxy_group, proxy_result_recorder=self.production.record_google_proxy_result,
                 google_web_initial_rps=limit if limit > 2 else 1.0, google_web_max_rps=limit,
@@ -619,7 +622,7 @@ def command(args):
         store.set('body_max_rss_mib', getattr(args, 'body_max_rss_mib', 192))
         store.set('search_workers', getattr(args, 'search_workers', 3))
         store.set('proxy_profile', getattr(args, 'proxy_profile', 'private'))
-        store.set('google_providers', getattr(args, 'google_providers', ['wml','wml_direct','searxng']))
+        store.set('google_providers', getattr(args, 'google_providers', ['openserp']))
         store.set('search_rps', getattr(args, 'search_rps', 2.0))
         store.set('storage_budget_gib', getattr(args, 'storage_budget_gib', 10))
         store.set('query_plan', getattr(args, 'query_plan', 'balanced'))

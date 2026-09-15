@@ -339,6 +339,8 @@ class FocusedSpider(scrapy.Spider):
             ),
             page_result_recorder=self.store.record_google_page_result,
             providers=self.config.google_free_providers,
+            openserp_url=self.config.openserp_url,
+            openserp_request_timeout_seconds=self.config.openserp_request_timeout_seconds,
             searxng_url=self.config.searxng_url,
             persistent_browser_enabled=self.config.persistent_browser_enabled,
             persistent_browser_profile_root=str(self.config.persistent_browser_profile_root),

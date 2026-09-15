@@ -1,4 +1,4 @@
-"""Free Google transports. SearXNG is an independent, Google-only service."""
+"""Google transports with OpenSERP as the production entry point."""
 from __future__ import annotations
 
 import os
@@ -7,6 +7,7 @@ import hashlib
 import signal
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 import threading
 import time
@@ -38,6 +39,8 @@ class GoogleTransport:
     def __init__(
         self, timeout: int, language: str, searxng_url: str,
         *, persistent_browser_enabled: bool = False,
+        openserp_url: str = "http://127.0.0.1:7000",
+        openserp_request_timeout_seconds: int = 25,
         persistent_browser_profile_root: str = "state/browser-profiles",
         persistent_browser_max_contexts: int = 4,
         persistent_browser_request_interval_seconds: int = 30,
@@ -50,6 +53,8 @@ class GoogleTransport:
         self.timeout = timeout
         self.language = language
         self.searxng_url = searxng_url.rstrip("/")
+        self.openserp_url = openserp_url.rstrip("/")
+        self.openserp_request_timeout_seconds = max(1, openserp_request_timeout_seconds)
         self.local = threading.local()
         self.local.last_evidence = {}
         self.persistent_browser_enabled = persistent_browser_enabled
@@ -77,6 +82,8 @@ class GoogleTransport:
         *, proxy_key: str | None = None,
     ) -> list[SearchResult]:
         self.local.last_evidence = {}
+        if provider == "openserp":
+            return self.openserp(query, page, proxy_url, proxy_key)
         if provider == "searxng":
             return self.searxng(query, page)
         if provider.startswith("wml"):
@@ -88,6 +95,171 @@ class GoogleTransport:
         if provider == "persistent_browser":
             return self.persistent_browser(query, page, proxy_url, proxy_key)
         raise ValueError("unknown free Google provider")
+
+    @staticmethod
+    def _positive_int(value: object) -> int | None:
+        try:
+            parsed = int(str(value))
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    def _openserp_evidence(
+        self, response: requests.Response | None, raw: bytes, classification: str,
+        request_url: str, payload: object = None,
+    ) -> None:
+        headers = response.headers if response is not None else {}
+        meta = payload.get("meta") if isinstance(payload, dict) else None
+        header_request_id = str(headers.get("X-Request-ID") or "").strip()
+        body_request_id = str(meta.get("request_id") or "").strip() if isinstance(meta, dict) else ""
+        self._evidence(
+            raw,
+            http_status=response.status_code if response is not None else None,
+            classification=classification,
+            request_url=request_url,
+            headless=True,
+            upstream_request_id=header_request_id or body_request_id or None,
+            upstream_version=(str(meta.get("version") or "").strip() or None) if isinstance(meta, dict) else None,
+            upstream_attempts=(self._positive_int(headers.get("X-Proxy-Attempts")) or 1) if response is not None else None,
+            upstream_cache_status=str(headers.get("X-Cache") or "").strip().upper() or None,
+            network_bytes=self._positive_int(headers.get("X-Network-Bytes")),
+        )
+
+    @staticmethod
+    def _openserp_error(status: int, payload: object) -> GoogleBlocked:
+        error = str(payload.get("error") or "").strip().lower() if isinstance(payload, dict) else ""
+        reason = str(payload.get("reason") or "").strip().lower() if isinstance(payload, dict) else ""
+        code = error or reason
+        if status == 429:
+            return GoogleBlocked(
+                "google_captcha" if code == "captcha_detected" else "google_http_429",
+                status,
+                captcha=code == "captcha_detected",
+            )
+        if status == 403:
+            return GoogleBlocked("google_http_403", status)
+        if status == 504 or code == "search_timeout":
+            return GoogleBlocked("google_timeout", status)
+        if code in {"proxy_connect", "proxy_auth", "proxy_timeout", "proxy_unavailable"}:
+            return GoogleBlocked(f"openserp_{code}", status)
+        if status == 502 and code == "parser_failure":
+            return GoogleBlocked("openserp_parser_failure", status)
+        if status == 400:
+            return GoogleBlocked("openserp_bad_request", status)
+        if status == 503:
+            return GoogleBlocked("openserp_unavailable", status)
+        if status == 502:
+            return GoogleBlocked("openserp_engine_error", status)
+        return GoogleBlocked(f"openserp_http_{status}", status)
+
+    def openserp(
+        self, query: str, page: int, proxy_url: str | None, proxy_key: str | None,
+    ) -> list[SearchResult]:
+        if not self.openserp_url:
+            raise GoogleBlocked("openserp_not_configured")
+        session = getattr(self.local, "openserp_session", None)
+        if session is None:
+            session = requests.Session()
+            session.trust_env = False
+            self.local.openserp_session = session
+        params = {
+            "text": query,
+            "start": (page - 1) * 10,
+            "limit": 10,
+            "lang": "ZH" if self.language == "zh" else "EN",
+            "region": "US",
+            "format": "json",
+            "features": "false",
+            "extract": 0,
+        }
+        request_url = self.openserp_url + "/google/search?" + urlencode(params)
+        request_id = str(uuid.uuid4())
+        headers = {"Accept": "application/json", "X-Request-ID": request_id}
+        if proxy_url:
+            headers["X-Proxy-URL"] = proxy_url
+            headers["X-Proxy-Session-ID"] = hashlib.sha256(
+                (proxy_key or proxy_url).encode()
+            ).hexdigest()
+        else:
+            headers["X-Use-Proxy"] = "direct"
+        response: requests.Response | None = None
+        raw = b""
+        payload: object = None
+        try:
+            response = session.get(
+                self.openserp_url + "/google/search",
+                params=params,
+                headers=headers,
+                timeout=self.openserp_request_timeout_seconds,
+            )
+            raw = response.content
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if response.status_code != 200:
+                failure = self._openserp_error(response.status_code, payload)
+                self._openserp_evidence(
+                    response, raw,
+                    "captcha" if failure.captcha else "timeout" if failure.reason == "google_timeout" else "error",
+                    request_url, payload,
+                )
+                raise failure
+            if not isinstance(payload, dict):
+                raise GoogleBlocked("openserp_invalid_response", 200)
+            query_meta = payload.get("query")
+            meta = payload.get("meta")
+            pagination = payload.get("pagination")
+            rows = payload.get("results")
+            requested = query_meta.get("engines_requested") if isinstance(query_meta, dict) else None
+            failed = meta.get("engines_failed") if isinstance(meta, dict) else None
+            proxy_attempts = self._positive_int(response.headers.get("X-Proxy-Attempts")) or 1
+            cache_status = str(response.headers.get("X-Cache") or "").strip().upper()
+            if (
+                not isinstance(query_meta, dict)
+                or query_meta.get("text") != query
+                or requested != ["google"]
+                or not isinstance(meta, dict)
+                or failed != []
+                or str(meta.get("request_id") or "").strip() != request_id
+                or str(response.headers.get("X-Request-ID") or "").strip() != request_id
+                or not str(meta.get("version") or "").strip()
+                or not isinstance(rows, list)
+                or not isinstance(pagination, dict)
+                or not isinstance(pagination.get("page"), int)
+                or not isinstance(pagination.get("has_more"), bool)
+                or not isinstance(pagination.get("next_start"), int)
+                or pagination.get("page") != page
+                or bool(response.headers.get("X-Fallback-Engine"))
+                or proxy_attempts != 1
+                or cache_status == "HIT"
+            ):
+                raise GoogleBlocked("openserp_invalid_response", 200)
+            results: dict[str, SearchResult] = {}
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("engine") or "").lower() != "google":
+                    raise GoogleBlocked("openserp_invalid_response", 200)
+                if str(item.get("type") or "").lower() != "organic":
+                    continue
+                url = str(item.get("url") or "").strip()
+                title = str(item.get("title") or "").strip()
+                if title and public_result(url) and url not in results:
+                    results[url] = SearchResult(url, title, ("google_web",))
+            classification = "results" if results else "empty"
+            self._openserp_evidence(response, raw, classification, request_url, payload)
+            return list(results.values())
+        except GoogleBlocked:
+            if not self.last_evidence:
+                self._openserp_evidence(response, raw, "parse_failure", request_url, payload)
+            raise
+        except requests.RequestException:
+            self._openserp_evidence(response, raw, "service_error", request_url, payload)
+            raise GoogleBlocked("openserp_unavailable") from None
+        finally:
+            if response is not None:
+                response.close()
 
     def _evidence(self, content: bytes = b"", **values) -> None:
         # Content may be str from Playwright or a stub object in tests; only
@@ -599,6 +771,10 @@ class GoogleTransport:
         for session in getattr(self.local, "sessions", {}).values():
             session.close()
         self.local.sessions = {}
+        openserp_session = getattr(self.local, "openserp_session", None)
+        self.local.openserp_session = None
+        if openserp_session is not None:
+            openserp_session.close()
 
     def close(self):
         self.close_thread()

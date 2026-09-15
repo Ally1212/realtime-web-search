@@ -94,7 +94,11 @@ class Config:
     )
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
     google_web_enabled: bool = _enabled("GOOGLE_WEB_ENABLED", True)
-    google_free_providers: tuple[str, ...] = _csv("GOOGLE_FREE_PROVIDERS", "wml,wml_direct,searxng")
+    google_free_providers: tuple[str, ...] = _csv("GOOGLE_FREE_PROVIDERS", "openserp")
+    openserp_url: str = os.getenv("OPENSERP_URL", "http://127.0.0.1:7000")
+    openserp_request_timeout_seconds: int = int(
+        os.getenv("OPENSERP_REQUEST_TIMEOUT_SECONDS", "25")
+    )
     searxng_url: str = os.getenv("SEARXNG_URL", "http://127.0.0.1:8092")
     google_web_deep_cache_seconds: int = int(os.getenv("GOOGLE_WEB_DEEP_CACHE_SECONDS", "86400"))
     google_web_initial_rps: float = float(os.getenv("GOOGLE_WEB_INITIAL_RPS", "0.5"))
@@ -188,10 +192,5 @@ class Config:
     outbox_max_pending: int = int(os.getenv("OUTBOX_MAX_PENDING", "5000"))
 
     def __post_init__(self) -> None:
-        # Enabled persistent Chrome is always tried first; when disabled the
-        # historical wml -> wml_direct -> searxng order is untouched.
-        if self.persistent_browser_enabled and "persistent_browser" not in self.google_free_providers:
-            object.__setattr__(
-                self, "google_free_providers",
-                ("persistent_browser", *self.google_free_providers),
-            )
+        if "openserp" not in self.google_free_providers:
+            raise ValueError("GOOGLE_FREE_PROVIDERS must contain openserp")

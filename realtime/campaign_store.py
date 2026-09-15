@@ -333,6 +333,11 @@ ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS last_success_at times
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS captcha_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS javascript_verification_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS http_error_count bigint NOT NULL DEFAULT 0;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS upstream_request_id text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS upstream_version text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS upstream_attempts integer;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS upstream_cache_status text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS network_bytes bigint;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS timeout_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS consecutive_failures bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS limited_failure_streak bigint NOT NULL DEFAULT 0;
@@ -761,17 +766,25 @@ class CampaignStore:
         http_status: int | None, result_count: int, elapsed_seconds: float,
         classification: str, error_code: str | None, raw_sha256: str | None,
         raw_html_path: str | None, headless: bool | None,
+        upstream_request_id: str | None = None,
+        upstream_version: str | None = None,
+        upstream_attempts: int | None = None,
+        upstream_cache_status: str | None = None,
+        network_bytes: int | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO google_serp_attempts(provider,query,page,proxy_key_hash,"
                 "request_url,http_status,result_count,elapsed_seconds,classification,"
-                "error_code,raw_sha256,raw_html_path,headless) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "error_code,raw_sha256,raw_html_path,headless,upstream_request_id,"
+                "upstream_version,upstream_attempts,upstream_cache_status,network_bytes) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     provider, query, page, proxy_key_hash, request_url, http_status,
                     result_count, elapsed_seconds, classification, error_code,
-                    raw_sha256, raw_html_path, headless,
+                    raw_sha256, raw_html_path, headless, upstream_request_id,
+                    upstream_version, upstream_attempts, upstream_cache_status,
+                    network_bytes,
                 ),
             )
 

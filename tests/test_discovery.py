@@ -5,6 +5,46 @@ from realtime.discovery import GoogleBlocked, SearchDiscovery, SearchResult
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_openserp_service_failure_cools_provider_without_penalizing_proxy(self):
+        pool, recorder = Mock(), Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ("http://proxy.example:80", "proxy-key")
+        pool.google_identity.return_value = ("group", ["alias"])
+        d = SearchDiscovery(
+            providers=("openserp",), proxy_pool=pool, proxy_profile="private",
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            proxy_result_recorder=recorder,
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+        )
+        d.transport.fetch = Mock(side_effect=GoogleBlocked("openserp_unavailable"))
+        with self.assertRaisesRegex(GoogleBlocked, "openserp_unavailable"):
+            d._discover_google_page("AI", 1)
+        pool.defer.assert_not_called()
+        recorder.assert_not_called()
+        self.assertIn("openserp", d._local_cooldowns)
+
+    def test_openserp_proxy_failure_rotates_to_next_exit(self):
+        pool = Mock()
+        pool.available_count.return_value = 2
+        pool.choose.side_effect = [
+            ("http://proxy-1.example:80", "proxy-1"),
+            ("http://proxy-2.example:80", "proxy-2"),
+        ]
+        pool.google_identity.side_effect = [("group-1", ["alias-1"]), ("group-2", ["alias-2"])]
+        expected = [SearchResult("https://example.com/ai", "AI", ("google_web",))]
+        d = SearchDiscovery(
+            providers=("openserp",), proxy_pool=pool, proxy_profile="private",
+            proxy_provider_attempts=2,
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+        )
+        d.transport.fetch = Mock(side_effect=[
+            GoogleBlocked("openserp_proxy_connect"), expected,
+        ])
+        self.assertEqual(d._discover_google_page("AI", 1), expected)
+        self.assertEqual(d.transport.fetch.call_count, 2)
+        pool.defer.assert_called_once_with("proxy-1", "www.google.com", 300)
+
     def test_http_200_parse_failure_does_not_quarantine_exit_or_cache_empty_result(self):
         for code, status, cooldown in [('google_unrecognized_page', 200, 30),
                                        ('google_unrecognized_page', None, 300),

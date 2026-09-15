@@ -1,11 +1,12 @@
 # Realtime Web Search
 
-面向关键词的持续网页采集系统。只使用 Google 搜索发现 URL，免费 Google 轻量页面、SearXNG、curl_cffi 和浏览器自动切换；Scrapy 并发抓取，并按正文指纹去重。本地模式保存正文并在网站展示；Whale 模式通过 Outbox 上传。
+面向关键词的持续网页采集系统。OpenSERP 是唯一的 Google 搜索发现入口；Scrapy 并发抓取正文，并按正文指纹去重。本地模式保存正文并在网站展示；Whale 模式通过 Outbox 上传。
 
 ## 组件
 
 - Scrapy：异步抓取、重试、限速和持久队列。
-- Google Web：唯一搜索发现源；跨进程全局限速、查询缓存、代理会话隔离和 CAPTCHA 熔断。
+- OpenSERP：固定版本的自托管 Google SERP 请求与解析服务，不使用多引擎或正文提取。
+- Google Web 调度：跨进程全局限速、查询缓存、代理会话隔离和 CAPTCHA 熔断。
 - Trafilatura：提取主要正文；提取失败时自动回退 BeautifulSoup。
 - PostgreSQL：Campaign、正文指纹、关键词关联和 30 天事件记录。
 - Valkey：Campaign 调度队列。
@@ -18,14 +19,14 @@
 
 高吞吐实验使用持久化流水线，将搜索、正文抓取和上传解耦。查询页、URL 状态、失败原因、冷却时间和回执都写入账本，重启后可以继续；正文工作进程复用站点会话，并按域名公平调度，避免单一站点占满并发。
 
-Google 请求共享全局速率和代理主机级状态。同一主机的 HTTP/SOCKS 端点视为同一出口，避免通过换协议绕过冷却。CAPTCHA、HTTP 403/429 默认从 5 分钟开始，连续受限时按 5、10、20、30 分钟退避；成功会重置失败阶梯，但不会清除尚未到期的隔离。5 分钟是激进运行起点，实际稳定速率仍需按出口成功率和最终 Whale 新增接收持续评估。
+Google 请求由项目选择代理、控制速率并逐次记账，再交给 OpenSERP 的 Chromium 执行和解析。同一主机的 HTTP/SOCKS 端点视为同一出口，避免通过换协议绕过冷却。OpenSERP 内部缓存和重试关闭，确保一条审计对应一次真实尝试。CAPTCHA、HTTP 403/429 默认从 5 分钟开始，连续受限时按 5、10、20、30 分钟退避。
 
 ## 启动
 
 ```bash
 cp .env.example .env
 # 如需私有代理，在 .env 中填写代理 API key、共享代理用户名和密码
-docker compose up -d --build postgres valkey searxng web local-worker
+docker compose up -d --build postgres valkey openserp web local-worker
 ```
 
 打开 <http://localhost:8091>，输入关键词即可创建本地采集任务。每个搜索批次固定覆盖 Google Web 前 11 页，过滤重复链接、抓取正文并保存在 PostgreSQL；页面每 2 秒显示最新结果。`local-worker` 强制设置 `WHALE_ENABLED=false`，不会创建 Whale Outbox 消息，也不会上传 Whale。
@@ -136,23 +137,18 @@ docker compose run --rm collector benchmark \
 
 ### 免费 AI 搜索与测速
 
-无需搜索 API Key。默认 `GOOGLE_FREE_PROVIDERS=wml,wml_direct,searxng`：
-已有代理的 Google 轻量页面优先，其次直连、SearXNG 的 Google 引擎。
-直连任务会自动合并两个相同出口的轻量通道。
-实测失败的标准页面与 Chromium 不参与默认重试；仍可显式配置 `curl`、`browser`
-使用任务代理，或 `curl_direct`、`browser_direct` 指定直连进行诊断。
-浏览器在独立子进程中执行，超过请求超时加 5 秒便终止自身进程树，避免卡住持续任务。
-SearXNG 固定版本且只绑定本机 8092 端口；JSON 接口不使用公共实例。
-这些通道均来自 Google，但轻量页面的排名与桌面 Google 可能不同。
+无需搜索 API Key。默认且唯一的生产提供器为 `GOOGLE_FREE_PROVIDERS=openserp`。
+OpenSERP 固定镜像版本、只使用 `/google/search`，禁用缓存、内部重试、端点回退、
+多引擎和正文提取。项目继续负责代理轮换、限速、冷却、查询缓存和完整审计。
 
 ```bash
-docker compose up -d searxng
+docker compose up -d openserp
 docker compose --profile whale run --rm --no-deps --entrypoint sh collector -c \
   'Xvfb :99 -screen 0 1280x900x24 >/tmp/xvfb.log 2>&1 & exec python -m realtime.cli benchmark-free'
 ```
 
 默认测试 20 个中英文 AI 查询的第 1、3、11 页，0.5 RPS，正文抽样 20 条。
-`--providers wml_direct` 可单测主通道；`--profile private` 可对比已有代理；
+`--providers openserp` 单测生产通道；`--profile private` 使用已有代理；
 `--query 'AI agents' --pages 1,2,3,4,5,6,7,8,9,10,11` 可测试连续分页。
 不调用收费服务，不创建 Whale 测试任务或上传测试正文。
 结果写入 `state/benchmarks/free-google-时间.json`，最新完整报告在

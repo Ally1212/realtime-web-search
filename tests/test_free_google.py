@@ -6,6 +6,91 @@ from realtime.free_google import GoogleTransport
 
 
 class FreeGoogleTests(unittest.TestCase):
+    @staticmethod
+    def _openserp_response(session, *, results=None, page=3):
+        response = session.get.return_value
+        response.status_code = 200
+        response.content = b'{"openserp":"response"}'
+        response.headers = {
+            "X-Cache": "BYPASS", "X-Network-Bytes": "321",
+        }
+
+        def payload():
+            request_id = session.get.call_args.kwargs["headers"]["X-Request-ID"]
+            response.headers["X-Request-ID"] = request_id
+            return {
+                "query": {"text": "人工智能", "engines_requested": ["google"]},
+                "meta": {"request_id": request_id, "version": "2.2", "engines_failed": []},
+                "results": results if results is not None else [{
+                    "type": "organic", "engine": "google", "title": "AI 研究",
+                    "url": "https://example.com/ai",
+                }],
+                "pagination": {"page": page, "has_more": True, "next_start": 30},
+            }
+
+        response.json.side_effect = payload
+        return response
+
+    def test_openserp_maps_query_proxy_and_audit_metadata(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        response = self._openserp_response(session)
+        with patch("realtime.free_google.requests.Session", return_value=session):
+            transport = GoogleTransport(
+                5, "zh", "", openserp_url="http://openserp:7000",
+                openserp_request_timeout_seconds=25,
+            )
+            results = transport.openserp(
+                "人工智能", 3, "http://user:secret@proxy.example:80", "proxy-key",
+            )
+        request = session.get.call_args
+        self.assertEqual(request.kwargs["params"]["start"], 20)
+        self.assertEqual(request.kwargs["params"]["lang"], "ZH")
+        self.assertEqual(request.kwargs["params"]["region"], "US")
+        self.assertEqual(request.kwargs["params"]["extract"], 0)
+        self.assertEqual(request.kwargs["headers"]["X-Proxy-URL"], "http://user:secret@proxy.example:80")
+        self.assertEqual(len(request.kwargs["headers"]["X-Proxy-Session-ID"]), 64)
+        self.assertEqual([row.url for row in results], ["https://example.com/ai"])
+        self.assertEqual(transport.last_evidence["upstream_version"], "2.2")
+        self.assertEqual(transport.last_evidence["upstream_attempts"], 1)
+        self.assertEqual(transport.last_evidence["upstream_cache_status"], "BYPASS")
+        self.assertEqual(transport.last_evidence["network_bytes"], 321)
+        self.assertNotIn("secret", str(transport.last_evidence))
+        response.close.assert_called_once()
+
+    def test_openserp_rejects_fallback_cached_or_wrong_engine_envelopes(self):
+        for mutation in ("fallback", "cache", "engine"):
+            with self.subTest(mutation=mutation):
+                session = MagicMock()
+                results = [{
+                    "type": "organic", "engine": "bing" if mutation == "engine" else "google",
+                    "title": "AI", "url": "https://example.com/ai",
+                }]
+                response = self._openserp_response(session, results=results)
+                if mutation == "fallback":
+                    response.headers["X-Fallback-Engine"] = "bing"
+                elif mutation == "cache":
+                    response.headers["X-Cache"] = "HIT"
+                with patch("realtime.free_google.requests.Session", return_value=session):
+                    with self.assertRaisesRegex(GoogleBlocked, "openserp_invalid_response"):
+                        GoogleTransport(5, "zh", "").openserp("人工智能", 3, None, None)
+
+    def test_openserp_maps_captcha_without_exposing_error_body(self):
+        session = MagicMock()
+        response = session.get.return_value
+        response.status_code = 429
+        response.content = b'{"error":"captcha_detected","message":"do not store"}'
+        response.headers = {"X-Request-ID": "request-1", "X-Network-Bytes": "50"}
+        response.json.return_value = {"error": "captcha_detected", "message": "do not store"}
+        with patch("realtime.free_google.requests.Session", return_value=session):
+            transport = GoogleTransport(5, "en", "")
+            with self.assertRaises(GoogleBlocked) as error:
+                transport.openserp("AI", 1, None, None)
+        self.assertEqual(error.exception.reason, "google_captcha")
+        self.assertTrue(error.exception.captcha)
+        self.assertEqual(transport.last_evidence["classification"], "captcha")
+        self.assertNotIn("do not store", str(transport.last_evidence))
+
     def test_browser_watchdog_bounds_failure_and_keeps_credentials_out_of_argv(self):
         import subprocess
         process = Mock()

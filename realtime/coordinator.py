@@ -30,7 +30,12 @@ class CrawlCoordinator:
         counts = {"fetched": 0, "indexed": 0, "failed": 0, "blocked": 0}
         self.store.update_job(job_id, status="running")
         try:
-            discovery = SearchDiscovery(self.config.request_timeout)
+            discovery = SearchDiscovery(
+                self.config.request_timeout,
+                providers=self.config.google_free_providers,
+                openserp_url=self.config.openserp_url,
+                openserp_request_timeout_seconds=self.config.openserp_request_timeout_seconds,
+            )
             results, engine_errors = discovery.discover(query, pages)
             self.store.update_job(
                 job_id, discovered=len(results),

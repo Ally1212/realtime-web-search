@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--search-workers', type=int, default=4)
     parser.add_argument('--search-rps', type=float, default=2.0)
     parser.add_argument('--proxy-profile', choices=['private', 'public_google'], default='private')
-    parser.add_argument('--google-providers', nargs='+', choices=['wml','wml_direct','searxng'], default=['wml','wml_direct','searxng'])
+    parser.add_argument('--google-providers', nargs='+', choices=['openserp'], default=['openserp'])
     parser.add_argument('--storage-budget-gib', type=float, default=10)
     parser.add_argument('--baseline', action='append', required=True)
     parser.add_argument('--environment-container', default='realtime-google-pipeline-2h-20260915')

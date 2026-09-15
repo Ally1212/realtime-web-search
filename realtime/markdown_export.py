@@ -188,7 +188,10 @@ def run_markdown_export(args) -> None:
     for language in languages:
         client = SearchDiscovery(
             timeout=20, proxy_pool=pool, proxy_profile=args.profile, language=language,
-            providers=config.google_free_providers, searxng_url=config.searxng_url,
+            providers=config.google_free_providers,
+            openserp_url=config.openserp_url,
+            openserp_request_timeout_seconds=config.openserp_request_timeout_seconds,
+            searxng_url=config.searxng_url,
             persistent_browser_enabled=config.persistent_browser_enabled,
             persistent_browser_profile_root=str(config.persistent_browser_profile_root),
             persistent_browser_max_contexts=config.persistent_browser_max_contexts,

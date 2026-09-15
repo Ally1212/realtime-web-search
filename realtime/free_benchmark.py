@@ -103,6 +103,8 @@ def run_free_benchmark(args) -> None:
     for provider in (() if previous else providers):
         clients = {language: SearchDiscovery(
             timeout=args.timeout, providers=(provider,), language=language,
+            openserp_url=config.openserp_url,
+            openserp_request_timeout_seconds=config.openserp_request_timeout_seconds,
             searxng_url=config.searxng_url, proxy_profile=args.profile,
             proxy_pool=ProxyPool(config) if args.profile != "direct" else None,
             source_slot_acquirer=slot, source_cooldown_seconds=1800,
