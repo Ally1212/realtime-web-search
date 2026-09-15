@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import signal
 import subprocess
 import sys
@@ -14,10 +15,11 @@ import threading
 import time
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
 
 from .campaign_store import CampaignStore
 from .config import Config
@@ -70,12 +72,19 @@ def quality(document: dict | None) -> list[str]:
     return sorted(set(warnings))
 
 
-def publication_metadata(raw: bytes) -> tuple[str | None, str | None]:
+def publication_metadata(raw: bytes, *, parser: str = 'html.parser') -> tuple[str | None, str | None]:
     """Only explicit publication fields with timezone; never infer from crawl time."""
-    soup = BeautifulSoup(raw, 'html.parser')
+    soup = BeautifulSoup(raw, parser, parse_only=SoupStrainer(['meta', 'time', 'script']))
     candidates = []
     for tag in soup.select('meta[property="article:published_time"],meta[itemprop="datePublished"],time[itemprop="datePublished"]'):
         candidates.append((tag.get('content') or tag.get('datetime'), 'html:datePublished'))
+    for tag in soup.select('meta[name],meta[property],time[pubdate][datetime]'):
+        field = (tag.get('name') or tag.get('property') or '').casefold()
+        if field in {'pubdate', 'publishdate', 'publish_date', 'publication_date', 'datepublished',
+                     'dc.date.issued', 'dcterms.issued', 'parsely-pub-date', 'sailthru.date'}:
+            candidates.append((tag.get('content'), 'html:' + field))
+        elif tag.name == 'time':
+            candidates.append((tag.get('datetime'), 'html:time.pubdate'))
     def walk(value):
         if isinstance(value, dict):
             kind = value.get('@type', '')
@@ -91,12 +100,16 @@ def publication_metadata(raw: bytes) -> tuple[str | None, str | None]:
             walk(json.loads(tag.string or tag.get_text() or ''))
         except (ValueError, RecursionError):
             continue
+    soup.decompose()
     for value, source in candidates:
         try:
-            parsed = datetime.fromisoformat(str(value).replace('Z','+00:00'))
+            try:
+                parsed = datetime.fromisoformat(str(value).replace('Z','+00:00'))
+            except ValueError:
+                parsed = parsedate_to_datetime(str(value))
             if parsed.tzinfo is not None and parsed.timestamp() <= time.time()+86400:
                 return parsed.isoformat(), source
-        except (ValueError, OverflowError):
+        except (ValueError, OverflowError, TypeError):
             continue
     return None, None
 
@@ -107,7 +120,7 @@ class DatedFetcher(LiveFetcher):
     def _request(self, url, accepted):
         response, raw = super()._request(url, accepted)
         if response.status_code < 400 and 'html' in response.headers.get('Content-Type','').lower():
-            self.publication = publication_metadata(raw)
+            self.publication = publication_metadata(raw, parser='lxml' if self.lean_metadata else 'html.parser')
         return response, raw
 
 
@@ -218,6 +231,15 @@ def import_baselines(store: ExperimentStore, production: CampaignStore, args):
         rows = connection.execute('SELECT url,content_hash FROM pages').fetchall()
     store.baseline((normalize_url(r['url']) for r in rows), (r['content_hash'] for r in rows))
     for directory in args.baseline_run:
+        if getattr(args, 'executor', 'legacy') == 'pipeline':
+            path = (Path(directory) / 'experiment.sqlite3').resolve()
+            other = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+            try:
+                rows = other.execute("SELECT url,canonical,hash FROM documents WHERE quality='[]' AND hash<>''").fetchall()
+                store.baseline((normalize_url(url) for row in rows for url in row[:2] if url), (row[2] for row in rows))
+            finally:
+                other.close()
+            continue
         other = ExperimentStore(Path(directory))
         store.baseline((r[0] for r in other.db.execute('SELECT url FROM urls')),
                        (r[0] for r in other.db.execute("SELECT hash FROM documents WHERE hash<>''")))
@@ -323,13 +345,17 @@ class Runner:
     def slot(self, source, initial_rps):
         if time.time() >= self.store.get('deadline') or self.store.get('state') != 'running':
             return {'allowed': False}
-        slot = self.production.acquire_discovery_slot(source, min(initial_rps, 2.0))
+        limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
+        if limit == 2:
+            slot = self.production.acquire_discovery_slot(source, min(initial_rps, limit))
+        else:
+            slot = self.production.acquire_discovery_slot(source, min(initial_rps, limit), maximum_rps=limit)
         if source == 'google_web' and not slot.get('allowed'):
             self.store.set('search_cooling_until', time.time() + max(1, float(slot.get('wait') or 60)))
         if source == 'google_web' and slot.get('allowed'):
             now = time.monotonic()
             wait = max(float(slot.get('wait', 0)), self.next_request-now, 0)
-            self.next_request = now + wait + .5
+            self.next_request = now + wait + 1/limit
             if time.time() + wait >= self.store.get('deadline'):
                 return {'allowed': False}
             slot['wait'] = wait
@@ -339,12 +365,15 @@ class Runner:
 
     def client(self, language):
         if language not in self.clients:
+            limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
             self.clients[language] = SearchDiscovery(
-                timeout=20, proxy_pool=self.pool, proxy_profile='private', language=language,
-                providers=('wml','wml_direct','searxng'), searxng_url=self.config.searxng_url,
+                timeout=20, proxy_pool=self.pool, proxy_profile=self.store.get('proxy_profile', 'private'), language=language,
+                providers=tuple(self.store.get('google_providers', ['wml','wml_direct','searxng'])), searxng_url=self.config.searxng_url,
                 source_slot_acquirer=self.slot, source_result_recorder=self.production.record_discovery_result,
-                proxy_reserver=self.production.reserve_google_proxy, proxy_result_recorder=self.production.record_google_proxy_result,
-                google_web_initial_rps=1.0, google_web_max_rps=2.0,
+                proxy_reserver=self.production.reserve_google_proxy, proxy_group_reserver=self.production.reserve_google_proxy_group, proxy_result_recorder=self.production.record_google_proxy_result,
+                google_web_initial_rps=limit if limit > 2 else 1.0, google_web_max_rps=limit,
+                proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
+                source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
                 proxy_provider_attempts=0)
         return self.clients[language]
 
@@ -361,9 +390,11 @@ class Runner:
                 results = [{'url': normalize_url(r.url), 'raw_url': r.url, 'title': r.title} for r in client._discover_google_page(row['query'], row['page'])]
             except GoogleBlocked as exc:
                 error = exc.reason
-                if error == 'google_provider_cooling':
-                    self.store.set('search_cooling_until', time.time() + 60)
             attempts = client.attempts[before:]
+            # An empty response from a healthy primary may need confirmation
+            # from a cooling fallback. Delay that page, not unrelated searches.
+            if error == 'google_provider_cooling' and not any(a.get('success') for a in attempts):
+                self.store.set('search_cooling_until', time.time() + 60)
         search_id = self.store.search(row, row['page'], started, results, attempts, error, bool(cached))
         if not self.remote_only:
             export_search(self.store, self.output, search_id)
@@ -387,13 +418,15 @@ class Runner:
     def flush_whale(self):
         if not self.whale or time.time() < self.next_whale:
             return
-        self.next_whale = time.time() + 20
+        self.next_whale = time.time() + self.store.get('upload_interval', 20)
         try:
             if not self.registered:
                 self.whale.register()
                 self.registered = True
-            self.whale.heartbeat(1)
-            rows = self.store.db.execute("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=? LIMIT 25", (time.time(),)).fetchall()
+            if time.time() >= getattr(self, 'next_heartbeat', 0):
+                self.whale.heartbeat(1)
+                self.next_heartbeat = time.time() + 20
+            rows = self.store.db.execute("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=? LIMIT ?", (time.time(), self.store.get('upload_batch_size', 25))).fetchall()
             if not rows:
                 return
             try:
@@ -420,13 +453,15 @@ class Runner:
                         (state, time.time(), '' if state != 'rejected' else 'receipt_rejected', row['document_id']))
                     if self.remote_only:
                         self.store.db.execute('UPDATE outbox SET payload=NULL WHERE document_id=?', (row['document_id'],))
+            self.store.set('whale_last_error', None)
         except Exception as exc:
             self.registered = False
             self.store.set('whale_last_error', type(exc).__name__)
 
     def storage_ok(self):
-        used = sum(p.stat().st_size for root in (self.output, self.store.path.parent) for p in root.rglob('*') if p.is_file())
-        return used < 10 * 1024**3 and shutil.disk_usage(self.output).free >= 2 * 1024**3
+        paths = {p.resolve() for root in (self.output, self.store.path.parent) for p in root.rglob('*') if p.is_file()}
+        used = sum(p.stat().st_size for p in paths)
+        return used < self.store.get('storage_budget_gib', 10) * 1024**3 and shutil.disk_usage(self.output).free >= 2 * 1024**3
 
     def run(self):
         futures = {}
@@ -468,13 +503,13 @@ class Runner:
                     if (not futures and not outbox) or time.time() >= drain_until:
                         break
                 elif state == 'running':
-                    if now-last_sync >= 1800:
+                    if now-last_sync >= 300:
                         try:
-                            ProxySynchronizer(self.config).sync('private')
+                            ProxySynchronizer(self.config).sync(self.store.get('proxy_profile', 'private'))
                             last_sync = now
                         except Exception as exc:
                             self.store.set('proxy_last_error', type(exc).__name__)
-                            last_sync = now-1740
+                            last_sync = now-240
                     today = str(datetime.fromtimestamp(now, timezone.utc).date())
                     if not self.store.get('catalog_seeded') or (not self.store.get('preflight') and self.store.get('recent_date') != today):
                         seed_queries(
@@ -555,6 +590,10 @@ def command(args):
         return
     if args.hours <= 0 or args.hours > 24:
         raise ValueError('hours must be >0 and <=24')
+    if not 0 < getattr(args, 'search_rps', 2) <= 8:
+        raise ValueError('search_rps must be >0 and <=8')
+    if not 0 < getattr(args, 'storage_budget_gib', 10) <= 128:
+        raise ValueError('storage_budget_gib must be >0 and <=128')
     requested_languages = normalize_languages(getattr(args, 'languages', None))
     remote_only = bool(getattr(args, 'remote_only', False))
     if remote_only and not args.whale:
@@ -565,7 +604,7 @@ def command(args):
     config = Config()
     if args.whale and not config.whale_collector_api_key:
         raise ValueError('Whale credentials are missing')
-    production = CampaignStore(config.database_url, initialize=False)
+    production = CampaignStore(config.database_url)
     if not store.get('id'):
         if any(output.iterdir()):
             raise ValueError('new experiment requires an empty output directory')
@@ -575,6 +614,16 @@ def command(args):
         store.set('remote_only', remote_only)
         store.set('preflight', bool(args.preflight))
         store.set('languages', list(requested_languages))
+        store.set('executor', getattr(args, 'executor', 'legacy'))
+        store.set('body_workers', getattr(args, 'body_workers', 24))
+        store.set('body_max_rss_mib', getattr(args, 'body_max_rss_mib', 192))
+        store.set('search_workers', getattr(args, 'search_workers', 3))
+        store.set('proxy_profile', getattr(args, 'proxy_profile', 'private'))
+        store.set('google_providers', getattr(args, 'google_providers', ['wml','wml_direct','searxng']))
+        store.set('search_rps', getattr(args, 'search_rps', 2.0))
+        store.set('storage_budget_gib', getattr(args, 'storage_budget_gib', 10))
+        store.set('query_plan', getattr(args, 'query_plan', 'balanced'))
+        store.set('baseline_run_paths', list(args.baseline_run))
         store.set('state', 'initializing')
     if not store.get('baseline_ready'):
         import_baselines(store, production, args)
@@ -590,7 +639,11 @@ def command(args):
     if store.get('state') == 'interrupted':
         store.set('state', 'running')
     try:
-        Runner(store, config, production, output).run()
+        if store.get('executor') == 'pipeline':
+            from .fast_experiment import PipelineRunner
+            PipelineRunner(store, config, production, output).run()
+        else:
+            Runner(store, config, production, output).run()
     finally:
         production.pool.close()
         store.db.close()

@@ -1,4 +1,5 @@
 import tempfile
+import hashlib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,46 @@ def config(directory: str = "/tmp"):
 
 
 class ProxyApiTests(unittest.TestCase):
+    def test_google_defer_applies_to_other_protocols_without_shortening_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            records = [ProxyRecord('192.0.2.1', 8080, 'http'), ProxyRecord('192.0.2.1', 1080, 'socks5')]
+            cache = ProxyCache(Path(directory))
+            cache.publish('private', records, None)
+            pool = ProxyPool(config(directory))
+            with patch.object(ProxyRecord, 'fresh', return_value=True), patch('realtime.proxy_pool.time.monotonic', return_value=100):
+                self.assertEqual(pool.available_count('private', 'www.google.com'), 2)
+                pool.defer(records[0].key, 'www.google.com', 300)
+                pool.defer(records[1].key, 'www.google.com', 30)
+                self.assertEqual(pool.available_count('private', 'www.google.com'), 0)
+            with patch.object(ProxyRecord, 'fresh', return_value=True), patch('realtime.proxy_pool.time.monotonic', return_value=150):
+                self.assertEqual(pool.available_count('private', 'www.google.com'), 0)
+                self.assertEqual(pool.available_count('private', 'example.com'), 2)
+
+    def test_google_identity_includes_stale_cross_profile_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ProxyCache(Path(directory))
+            http = ProxyRecord('192.0.2.1', 8080, 'http')
+            socks = ProxyRecord('192.0.2.1', 1080, 'socks5')
+            cache.publish('private', [http], None)
+            cache.publish('public_google', [socks], None)
+            pool = ProxyPool(config(directory))
+            a = pool.google_identity(http.key)
+            self.assertEqual(a, pool.google_identity(socks.key))
+            self.assertEqual(set(a[1]), {hashlib.sha256(r.key.encode()).hexdigest() for r in [http, socks]})
+            self.assertNotEqual(a[0], pool.google_identity('192.0.2.2:8080/http')[0])
+
+    def test_google_public_profile_keeps_https_threat_and_freshness_filters(self):
+        response = Mock(status_code=200, headers={})
+        response.json.return_value = {'data': [], 'meta': {}}
+        session = Mock()
+        session.get.return_value = response
+        ProxyApiClient(config(), session).fetch_all('public_google')
+        params = session.get.call_args.kwargs['params']
+        self.assertEqual(params['supports_https'], 'true')
+        self.assertEqual(params['threat_free'], 'true')
+        self.assertEqual(params['fresh_within'], '30')
+        self.assertNotIn('min_quality', params)
+
     def test_unchanged_cache_cannot_keep_expired_records_alive(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg = config(directory)

@@ -61,7 +61,7 @@ class SearchDiscovery:
         google_web_pages_per_batch: int = 3,
         query_cache_seconds: int = 21600,
         proxy_min_interval_seconds: int = 30,
-        proxy_cooldown_seconds: int = 21600,
+        proxy_cooldown_seconds: int = 300,
         source_cooldown_seconds: int = 1800,
         captcha_threshold: float = 0.02,
         web_query_eligible: bool = True,
@@ -70,6 +70,7 @@ class SearchDiscovery:
         source_slot_acquirer: Callable[[str, float], dict[str, Any]] | None = None,
         source_result_recorder: Callable[..., None] | None = None,
         proxy_reserver: Callable[[str, str, int], tuple[bool, float]] | None = None,
+        proxy_group_reserver: Callable[..., tuple[bool, float]] | None = None,
         proxy_result_recorder: Callable[..., None] | None = None,
         novelty_counter: Callable[[list[str]], int] | None = None,
         page_batch_acquirer: Callable[..., dict[str, Any] | None] | None = None,
@@ -115,6 +116,7 @@ class SearchDiscovery:
         self.source_slot_acquirer = source_slot_acquirer
         self.source_result_recorder = source_result_recorder
         self.proxy_reserver = proxy_reserver
+        self.proxy_group_reserver = proxy_group_reserver
         self.proxy_result_recorder = proxy_result_recorder
         self.novelty_counter = novelty_counter
         self.page_batch_acquirer = page_batch_acquirer
@@ -284,7 +286,11 @@ class SearchDiscovery:
                 self.proxy_pool.defer(key, "www.google.com", 60)
                 continue
             proxy_hash = hashlib.sha256(key.encode()).hexdigest()
-            allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
+            if self.proxy_group_reserver:
+                group, aliases = self.proxy_pool.google_identity(key)
+                allowed, wait = self.proxy_group_reserver(group, aliases, self.locale, self.proxy_min_interval_seconds)
+            else:
+                allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
             if allowed:
                 return url, key
             self.proxy_pool.defer(key, "www.google.com", min(max(wait, 0.1), self.proxy_cooldown_seconds))
@@ -370,12 +376,18 @@ class SearchDiscovery:
                 except Exception:
                     pass
             if proxy_key and self.proxy_pool:
+                # A valid HTTP 200 envelope with an unknown result layout does
+                # not establish a broken exit. Keep the page failed, but avoid
+                # quarantining healthy exits for five minutes on sparse queries.
+                parse_only_failure = code == 'google_unrecognized_page' and evidence.get('http_status') == 200
+                proxy_delay = self.proxy_cooldown_seconds if limited else (
+                    max(30, self.proxy_min_interval_seconds) if parse_only_failure else 300 if failure else 0)
                 if failure:
-                    self.proxy_pool.defer(proxy_key, "www.google.com", self.proxy_cooldown_seconds if limited else 300)
+                    self.proxy_pool.defer(proxy_key, "www.google.com", proxy_delay)
                 if self.proxy_result_recorder:
                     self.proxy_result_recorder(
                         proxy_hash, success=failure is None,
-                        cooldown_seconds=self.proxy_cooldown_seconds if limited else (300 if failure else 0),
+                        cooldown_seconds=proxy_delay,
                         error_code=code,
                         elapsed_seconds=elapsed,
                         result_count=len(results),

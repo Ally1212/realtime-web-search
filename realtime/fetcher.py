@@ -5,6 +5,7 @@ import json
 import socket
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -12,7 +13,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
 from trafilatura import bare_extraction
 
 
@@ -135,8 +136,10 @@ def _fallback_extract_text(raw: bytes, url: str) -> tuple[str, str]:
     return (title or url)[:300], text
 
 
-def _json_ld_article(raw: bytes, url: str) -> tuple[str, str] | None:
-    soup = BeautifulSoup(raw, "html.parser")
+def _json_ld_article(raw: bytes, url: str, *, parser: str = 'html.parser') -> tuple[str, str] | None:
+    soup = BeautifulSoup(raw, parser, parse_only=SoupStrainer('script', attrs={'type': 'application/ld+json'}))
+    scripts = [node.string or node.get_text() or '' for node in soup.select('script[type="application/ld+json"]')]
+    soup.decompose()
 
     def objects(value: object):  # type: ignore[no-untyped-def]
         if isinstance(value, dict):
@@ -147,9 +150,9 @@ def _json_ld_article(raw: bytes, url: str) -> tuple[str, str] | None:
             for child in value:
                 yield from objects(child)
 
-    for node in soup.select('script[type="application/ld+json"]'):
+    for script in scripts:
         try:
-            payload = json.loads(node.string or node.get_text() or "")
+            payload = json.loads(script)
         except (ValueError, TypeError):
             continue
         for item in objects(payload):
@@ -161,23 +164,48 @@ def _json_ld_article(raw: bytes, url: str) -> tuple[str, str] | None:
     return None
 
 
-def extract_text(raw: bytes, url: str, use_trafilatura: bool = True) -> tuple[str, str]:
-    structured = _json_ld_article(raw, url)
+def _title_only_metadata(raw: bytes):
+    """Use Trafilatura's exact title precedence without unused metadata work."""
+    from trafilatura.metadata import examine_meta, extract_meta_json, extract_title
+    from trafilatura.utils import load_html
+    tree = load_html(raw)
+    if tree is None:
+        raise ValueError('unparseable HTML')
+    metadata = examine_meta(tree)
+    try:
+        metadata = extract_meta_json(tree, metadata)
+    except Exception:
+        pass  # Matches extract_metadata()'s JSON metadata fallback.
+    if not metadata.title:
+        metadata.title = extract_title(tree)
+    metadata.clean_and_trim()
+    return tree, metadata.title
+
+
+def extract_text(raw: bytes, url: str, use_trafilatura: bool = True, *, lean_metadata: bool = False) -> tuple[str, str]:
+    structured = _json_ld_article(raw, url, parser='lxml' if lean_metadata else 'html.parser')
     if structured:
         return structured
     if use_trafilatura:
         try:
+            prepared, prepared_title, title_only = raw, None, False
+            if lean_metadata:
+                try:
+                    prepared, prepared_title = _title_only_metadata(raw)
+                    title_only = True
+                except Exception:
+                    pass  # Fall back to the original metadata path if its API changes.
             document = bare_extraction(
-                raw,
+                prepared,
                 url=url,
                 include_comments=False,
                 include_tables=True,
                 favor_precision=True,
                 deduplicate=True,
-                with_metadata=True,
+                with_metadata=not title_only,
             )
             if document:
-                title = " ".join(str(document.title or "").split())
+                title = " ".join(str((prepared_title if title_only else document.title) or "").split())
                 text = " ".join(str(document.text or "").split())[:MAX_TEXT_CHARS]
                 if len(text) >= 100:
                     return (title or url)[:300], text
@@ -187,7 +215,7 @@ def extract_text(raw: bytes, url: str, use_trafilatura: bool = True) -> tuple[st
 
 
 class LiveFetcher:
-    def __init__(self, user_agent: str, timeout: int = 20, use_trafilatura: bool = True):
+    def __init__(self, user_agent: str, timeout: int = 20, use_trafilatura: bool = True, *, reuse_sessions: bool = False, lean_metadata: bool = False):
         self.user_agent = user_agent
         self.timeout = timeout
         self.use_trafilatura = use_trafilatura
@@ -195,10 +223,33 @@ class LiveFetcher:
         self._robots_lock = threading.Lock()
         self._host_locks: dict[str, threading.Lock] = {}
         self._last_request: dict[str, float] = {}
+        self.reuse_sessions = reuse_sessions
+        self.lean_metadata = lean_metadata
+        self._sessions: OrderedDict[str, requests.Session] = OrderedDict()
+        self._robots_expiry: dict[str, float] = {}
+
+    def close(self) -> None:
+        for session in self._sessions.values():
+            session.close()
+        self._sessions.clear()
+
+    def _session(self, url: str) -> requests.Session:
+        if not self.reuse_sessions:
+            return requests.Session()
+        parsed = urlsplit(url)
+        origin = f'{parsed.scheme}://{parsed.netloc}'
+        session = self._sessions.get(origin)
+        if session is None:
+            if len(self._sessions) >= 64:
+                _, old = self._sessions.popitem(last=False)
+                old.close()
+            session = self._sessions[origin] = requests.Session()
+        self._sessions.move_to_end(origin)
+        return session
 
     def _request(self, url: str, accepted: tuple[str, ...]) -> tuple[requests.Response, bytes]:
         current = normalize_url(url)
-        session = requests.Session()
+        session = self._session(current)
         for _ in range(6):
             if not is_public_url(current):
                 raise ValueError("目标不是公网 HTTP/HTTPS 地址")
@@ -215,6 +266,8 @@ class LiveFetcher:
                 if not location:
                     raise ValueError("重定向缺少 Location")
                 current = normalize_url(urljoin(current, location))
+                if self.reuse_sessions:
+                    session = self._session(current)
                 continue
             content_type = response.headers.get("Content-Type", "").lower()
             if accepted and not any(value in content_type for value in accepted):
@@ -237,6 +290,8 @@ class LiveFetcher:
         origin = f"{parsed.scheme}://{parsed.netloc}"
         with self._robots_lock:
             parser = self._robots.get(origin)
+            if self.reuse_sessions and self._robots_expiry.get(origin, 0) <= time.monotonic():
+                parser = None
         if parser is None:
             parser = RobotFileParser()
             robots_url = f"{origin}/robots.txt"
@@ -252,6 +307,7 @@ class LiveFetcher:
                 parser.parse([])
             with self._robots_lock:
                 self._robots[origin] = parser
+                self._robots_expiry[origin] = time.monotonic() + 21600
         return parser.can_fetch(self.user_agent, url)
 
     def fetch(self, result: object, query: str, discovered_at: str) -> FetchResult:
@@ -273,7 +329,10 @@ class LiveFetcher:
                 self._last_request[host] = time.monotonic()
             if response.status_code >= 400:
                 return FetchResult("failed", url, fallback_title, response.status_code, error=f"HTTP {response.status_code}")
-            title, content = extract_text(raw, response.url, self.use_trafilatura)
+            if self.lean_metadata:
+                title, content = extract_text(raw, response.url, self.use_trafilatura, lean_metadata=True)
+            else:
+                title, content = extract_text(raw, response.url, self.use_trafilatura)
             if len(content) < 100:
                 return FetchResult("failed", url, title, response.status_code, error="可提取正文不足 100 字符")
             normalized_url = normalize_url(response.url)

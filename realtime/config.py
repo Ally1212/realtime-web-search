@@ -109,7 +109,7 @@ class Config:
         os.getenv("GOOGLE_WEB_PROXY_MIN_INTERVAL_SECONDS", "30")
     )
     google_web_proxy_cooldown_seconds: int = int(
-        os.getenv("GOOGLE_WEB_PROXY_COOLDOWN_SECONDS", "21600")
+        os.getenv("GOOGLE_WEB_PROXY_COOLDOWN_SECONDS", "300")
     )
     google_web_source_cooldown_seconds: int = int(
         os.getenv("GOOGLE_WEB_SOURCE_COOLDOWN_SECONDS", "1800")

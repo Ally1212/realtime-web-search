@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS queries(id TEXT PRIMARY KEY,family TEXT,query TEXT,la
  topic TEXT,enabled INTEGER DEFAULT 1,last_served REAL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS schedule(query_id TEXT,page INTEGER,due REAL DEFAULT 0,
  PRIMARY KEY(query_id,page));
+CREATE INDEX IF NOT EXISTS pipeline_query_family ON queries(family,enabled,last_served,id);
+CREATE TABLE IF NOT EXISTS query_splits(parent_id TEXT PRIMARY KEY,created_at REAL,children TEXT);
 CREATE TABLE IF NOT EXISTS searches(id INTEGER PRIMARY KEY,query_id TEXT,page INTEGER,
  started REAL,finished REAL,status TEXT,error TEXT,cache_hit INTEGER,attempts TEXT,results TEXT);
 CREATE INDEX IF NOT EXISTS search_cache ON searches(query_id,page,finished);
@@ -28,6 +30,8 @@ CREATE INDEX IF NOT EXISTS doc_hash ON documents(hash);
 CREATE INDEX IF NOT EXISTS doc_canonical ON documents(canonical);
 CREATE TABLE IF NOT EXISTS outbox(document_id INTEGER PRIMARY KEY,payload TEXT,status TEXT,
  attempts INTEGER DEFAULT 0,next_attempt REAL DEFAULT 0,finished REAL,error TEXT);
+CREATE INDEX IF NOT EXISTS outbox_status_due ON outbox(status,next_attempt,document_id);
+CREATE INDEX IF NOT EXISTS outbox_status_finished ON outbox(status,finished);
 CREATE TABLE IF NOT EXISTS samples(at REAL PRIMARY KEY,metrics TEXT);
 CREATE TABLE IF NOT EXISTS runtime(kind TEXT PRIMARY KEY,seconds REAL DEFAULT 0);
 """
@@ -74,7 +78,7 @@ class ExperimentStore:
 
     def due_query(self, family: str, now: float):
         return self.db.execute("SELECT q.*,s.page FROM queries q JOIN schedule s ON q.id=s.query_id "
-                               "WHERE q.enabled=1 AND q.family=? AND s.due<=? ORDER BY q.last_served,s.page,q.id LIMIT 1",
+                               "WHERE q.enabled=1 AND q.family=? AND s.due<=? ORDER BY q.last_served,q.id,s.page LIMIT 1",
                                (family, now)).fetchone()
 
     def cached(self, query_id: str, page: int, now: float):
@@ -102,7 +106,7 @@ class ExperimentStore:
     def due_urls(self, limit: int, now: float):
         return self.db.execute("SELECT u.*,(SELECT q.query FROM queries q JOIN discoveries d ON q.id=d.query_id "
                                "WHERE d.url=u.url ORDER BY d.first_seen LIMIT 1) AS query FROM urls u "
-                               "WHERE state<>'fetching' AND next_fetch<=? AND (last_fetch=0 OR last_seen>last_fetch) "
+                               "WHERE state NOT IN ('fetching','baseline_skipped') AND next_fetch<=? AND (last_fetch=0 OR last_seen>last_fetch) "
                                "ORDER BY last_fetch,first_seen,url LIMIT ?", (now, limit)).fetchall()
 
     def save_document(self, record: dict, quality: list[str], deadline: float):
@@ -128,7 +132,7 @@ class ExperimentStore:
                             (now, now + (21600 if doc else 3600), record['status'], url))
         return cursor.lastrowid, classification
 
-    def counts(self, cutoff: float | None = None):
+    def counts(self, cutoff: float | None = None, *, detailed: bool = True):
         end = cutoff or self.get('deadline', time.time())
         start = self.get('started_at', 0)
         counts = {row['classification']: row['n'] for row in self.db.execute(
@@ -138,11 +142,18 @@ class ExperimentStore:
         counts.update(search_pages=searches['n'], search_failures=searches['failed'] or 0,
                       cache_hits=searches['cached'] or 0, empty_pages=searches['empty'] or 0,
                       unique_urls=self.db.execute("SELECT count(*) FROM urls WHERE first_seen<=?", (end,)).fetchone()[0])
-        attempts = [a for r in self.db.execute("SELECT attempts FROM searches WHERE finished<=?", (end,)) for a in json.loads(r[0])]
-        counts['google_requests'] = len(attempts)
-        counts['google_successes'] = sum(a['success'] for a in attempts)
-        counts['google_captchas'] = sum(a.get('error') == 'google_captcha' for a in attempts)
-        counts['google_attempt_seconds'] = round(sum(a['seconds'] for a in attempts), 2)
+        requests = successes = captchas = 0
+        attempt_seconds = 0.0
+        for row in self.db.execute("SELECT attempts FROM searches WHERE finished<=?", (end,)):
+            for attempt in json.loads(row[0]):
+                requests += 1
+                successes += bool(attempt['success'])
+                captchas += attempt.get('error') == 'google_captcha'
+                attempt_seconds += attempt['seconds']
+        counts['google_requests'] = requests
+        counts['google_successes'] = successes
+        counts['google_captchas'] = captchas
+        counts['google_attempt_seconds'] = round(attempt_seconds, 2)
         counts['fetch_seconds'] = round(self.db.execute("SELECT coalesce(sum(seconds),0) FROM documents WHERE finished<=?", (end,)).fetchone()[0], 2)
         for row in self.db.execute("SELECT status,count(*) n FROM outbox GROUP BY status"):
             counts['whale_' + row['status']] = row['n']
@@ -153,7 +164,7 @@ class ExperimentStore:
             elapsed_end = min(elapsed_end, self.get('finished_at', elapsed_end))
         counts['elapsed_seconds'] = round(max(0, elapsed_end - start), 1)
         counts['by_family'] = {}
-        for family in ('topic', 'event', 'site', 'recent'):
+        for family in (('topic', 'event', 'site', 'recent') if detailed else ()):
             row = self.db.execute("SELECT count(DISTINCT d.hash) FROM documents d JOIN discoveries x ON d.url=x.url "
                                   "JOIN queries q ON q.id=x.query_id WHERE q.family=? AND d.quality='[]' "
                                   "AND EXISTS(SELECT 1 FROM documents n WHERE n.hash=d.hash AND n.classification='new' AND n.finished<=?) "

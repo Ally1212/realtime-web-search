@@ -274,6 +274,11 @@ CREATE TABLE IF NOT EXISTS google_proxy_sessions (
   cooldown_until timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS google_proxy_aliases (
+  endpoint_hash char(64) PRIMARY KEY,
+  group_hash char(64) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS google_proxy_aliases_group ON google_proxy_aliases(group_hash);
 CREATE TABLE IF NOT EXISTS google_page_frontier (
   campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   query_hash char(64) NOT NULL,
@@ -330,6 +335,7 @@ ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS javascript_verificati
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS http_error_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS timeout_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS consecutive_failures bigint NOT NULL DEFAULT 0;
+ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS limited_failure_streak bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS latency_seconds_total double precision NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS latency_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS last_error text;
@@ -533,8 +539,11 @@ class CampaignStore:
                 ),
             )
 
-    def acquire_discovery_slot(self, source: str, initial_rps: float) -> dict[str, Any]:
+    def acquire_discovery_slot(self, source: str, initial_rps: float, *, maximum_rps: float = 2.0) -> dict[str, Any]:
         """Reserve one global request slot shared by every crawler process."""
+        if not 0 < maximum_rps <= 8:
+            raise ValueError('maximum_rps must be >0 and <=8')
+        initial_rps = min(max(initial_rps, .01), maximum_rps)
         now = datetime.now(timezone.utc)
         with self.connect() as connection:
             with connection.transaction():
@@ -552,7 +561,7 @@ class CampaignStore:
                         "state": "circuit_open", "current_rps": float(row["current_rps"]),
                         "circuit_until": circuit_until,
                     }
-                rps = max(float(row["current_rps"]), 0.01)
+                rps = min(max(float(row["current_rps"]), 0.01), maximum_rps)
                 state = str(row["state"])
                 if circuit_until and circuit_until <= now:
                     rps, state = min(0.25, rps), "warming_up"
@@ -573,7 +582,7 @@ class CampaignStore:
                     # A circuit may have reduced the durable rate far below
                     # the caller's configured starting rate. Recover promptly
                     # after a proven healthy window instead of waiting 30 min.
-                    rps = max(rps, min(max(initial_rps, 0.01), 2.0))
+                    rps = max(rps, initial_rps)
                 next_at = max(row["next_request_at"], now)
                 wait = max(0.0, (next_at - now).total_seconds())
                 connection.execute(
@@ -706,6 +715,46 @@ class CampaignStore:
                 )
         return True, 0.0
 
+    def reserve_google_proxy_group(
+        self, group_hash: str, aliases: list[str], locale: str, minimum_interval_seconds: int,
+    ) -> tuple[bool, float]:
+        """Serialize host aliases and inherit all historical endpoint restrictions."""
+        if not aliases:
+            raise ValueError('proxy group requires endpoint aliases')
+        with self.connect() as connection:
+            with connection.transaction():
+                connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (group_hash,))
+                for alias in sorted(set(aliases)):
+                    connection.execute(
+                        'INSERT INTO google_proxy_aliases VALUES(%s,%s) ON CONFLICT DO NOTHING',
+                        (alias, group_hash))
+                    owner = connection.execute('SELECT group_hash FROM google_proxy_aliases WHERE endpoint_hash=%s', (alias,)).fetchone()
+                    if owner['group_hash'] != group_hash:
+                        raise ValueError('proxy alias already belongs to another group')
+                known = [row['endpoint_hash'] for row in connection.execute(
+                    'SELECT endpoint_hash FROM google_proxy_aliases WHERE group_hash=%s', (group_hash,)).fetchall()]
+                keys = sorted(set(known + [group_hash]))
+                for key in keys:
+                    connection.execute('INSERT INTO google_proxy_sessions(proxy_key_hash,locale) VALUES(%s,%s) ON CONFLICT DO NOTHING', (key, locale))
+                rows = connection.execute(
+                    'SELECT * FROM google_proxy_sessions WHERE proxy_key_hash=ANY(%s) ORDER BY proxy_key_hash FOR UPDATE', (keys,)).fetchall()
+                now = datetime.now(timezone.utc)
+                available_at = now
+                for row in rows:
+                    samples = int(row['successes']) + int(row['failures'])
+                    if samples >= 20 and int(row['successes']) / samples < .2:
+                        return False, 3600.0
+                    if row['cooldown_until']:
+                        available_at = max(available_at, row['cooldown_until'])
+                    if row['last_used_at']:
+                        available_at = max(available_at, row['last_used_at'] + timedelta(seconds=max(0, minimum_interval_seconds)))
+                if available_at > now:
+                    return False, (available_at-now).total_seconds()
+                # Updating old endpoint rows also respects legacy workers' reservations.
+                connection.execute(
+                    'UPDATE google_proxy_sessions SET locale=%s,last_used_at=now(),updated_at=now() WHERE proxy_key_hash=ANY(%s)', (locale, keys))
+        return True, 0.0
+
     def record_google_serp_attempt(
         self, *, provider: str, query: str, page: int,
         proxy_key_hash: str | None, request_url: str | None,
@@ -736,6 +785,29 @@ class CampaignStore:
         http_error = error_code in {"google_http_403", "google_http_429"}
         timeout = error_code == "google_timeout"
         with self.connect() as connection:
+            # Serialize retry escalation across workers. Transport/layout errors
+            # neither establish a new block nor erase the last blocking streak.
+            connection.execute(
+                "INSERT INTO google_proxy_sessions(proxy_key_hash) VALUES(%s) ON CONFLICT DO NOTHING",
+                (proxy_hash,),
+            )
+            previous = connection.execute(
+                "SELECT limited_failure_streak FROM google_proxy_sessions WHERE proxy_key_hash=%s FOR UPDATE",
+                (proxy_hash,),
+            ).fetchone()
+            limited_streak = int(previous['limited_failure_streak'])
+            if success:
+                limited_streak = 0
+            elif captcha or http_error:
+                limited_streak += 1
+                # Preserve an explicitly configured longer base. The aggressive
+                # 300-second base gives 300, 600, 1200, then 1800 seconds.
+                cooldown_seconds = min(max(cooldown_seconds, 1800),
+                                       cooldown_seconds * 2 ** min(limited_streak - 1, 10))
+            connection.execute(
+                'UPDATE google_proxy_sessions SET limited_failure_streak=%s WHERE proxy_key_hash=%s',
+                (limited_streak, proxy_hash),
+            )
             connection.execute(
                 "INSERT INTO google_proxy_sessions(proxy_key_hash,successes,failures,"
                 "captcha_count,javascript_verification_count,http_error_count,timeout_count,"
@@ -751,7 +823,7 @@ class CampaignStore:
                 "consecutive_failures=CASE WHEN %s THEN 0 ELSE google_proxy_sessions.consecutive_failures+1 END,"
                 "latency_seconds_total=google_proxy_sessions.latency_seconds_total+%s,"
                 "latency_count=google_proxy_sessions.latency_count+1,last_error=%s,"
-                "cooldown_until=CASE WHEN %s>0 THEN now()+(%s*interval '1 second') "
+                "cooldown_until=CASE WHEN %s>0 THEN GREATEST(google_proxy_sessions.cooldown_until,now()+(%s*interval '1 second')) "
                 "ELSE google_proxy_sessions.cooldown_until END,updated_at=now()",
                 (
                     proxy_hash, int(success), int(not success), int(captcha), int(javascript),
@@ -765,7 +837,7 @@ class CampaignStore:
 
             if success:
                 connection.execute(
-                    "UPDATE google_proxy_sessions SET last_success_at=now(),cooldown_until=NULL WHERE proxy_key_hash=%s",
+                    "UPDATE google_proxy_sessions SET last_success_at=now(),cooldown_until=CASE WHEN cooldown_until>now() THEN cooldown_until END WHERE proxy_key_hash=%s",
                     (proxy_hash,),
                 )
 

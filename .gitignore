@@ -16,3 +16,6 @@ state/
 # Playwright local run artifacts
 .playwright-cli/
 output/playwright/
+
+# Generated experiment audits, live snapshots, logs, and profiles
+docs/research/

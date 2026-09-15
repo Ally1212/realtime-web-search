@@ -5,6 +5,31 @@ from realtime.discovery import GoogleBlocked, SearchDiscovery, SearchResult
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_http_200_parse_failure_does_not_quarantine_exit_or_cache_empty_result(self):
+        for code, status, cooldown in [('google_unrecognized_page', 200, 30),
+                                       ('google_unrecognized_page', None, 300),
+                                       ('google_timeout', None, 300),
+                                       ('google_captcha', 200, 300)]:
+            with self.subTest(code=code, status=status):
+                pool, recorder, cache = Mock(), Mock(), Mock()
+                pool.available_count.return_value = 1
+                pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
+                d = SearchDiscovery(providers=('wml',), proxy_pool=pool, proxy_profile='private',
+                                    proxy_result_recorder=recorder, cache_put=cache,
+                                    source_slot_acquirer=Mock(return_value={'allowed': True}))
+                d.transport.local.last_evidence = {'http_status': status}
+                d.transport.fetch = Mock(side_effect=GoogleBlocked(code, captcha=code == 'google_captcha'))
+                try:
+                    with self.assertRaisesRegex(GoogleBlocked, code):
+                        d._discover_google_page('AI', 1)
+                    self.assertEqual(recorder.call_args.kwargs['cooldown_seconds'], cooldown)
+                    self.assertFalse(recorder.call_args.kwargs['success'])
+                    pool.defer.assert_called_with('proxy-key', 'www.google.com', cooldown)
+                    cache.assert_not_called()
+                    self.assertFalse(d.attempts[-1]['success'])
+                finally:
+                    d.close()
+
     def test_parses_google_html_results(self):
         content = (
             b'<a href="/url?q=https%3A%2F%2Fexample.com%2Fai&amp;sa=U">'

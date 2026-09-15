@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import random
 import tempfile
@@ -38,6 +39,13 @@ PUBLIC_PARAMS = {
     "order": "desc",
     "limit": "1000",
     "format": "json",
+}
+
+# Opt-in Google pilot: retain HTTPS, threat and freshness requirements;
+# measure Google success instead of relying on unrelated quality scores.
+PUBLIC_GOOGLE_PARAMS = {
+    key: value for key, value in PUBLIC_PARAMS.items()
+    if key not in {'min_quality', 'max_latency', 'min_streak'}
 }
 
 
@@ -106,8 +114,8 @@ class ProxyApiClient:
             raise ProxyApiError("proxy API credential is missing", 401)
         if profile == "private":
             path, base_params = "/v1/private/proxies", PRIVATE_PARAMS
-        elif profile == "public":
-            path, base_params = "/v1/proxies", PUBLIC_PARAMS
+        elif profile in {"public", "public_google"}:
+            path, base_params = "/v1/proxies", PUBLIC_GOOGLE_PARAMS if profile == 'public_google' else PUBLIC_PARAMS
         else:
             raise ValueError(f"unknown proxy profile: {profile}")
         cursor: str | None = None
@@ -223,7 +231,7 @@ class ProxySynchronizer:
             synced_at, current = self.cache.load(profile)
             if not force and synced_at and (
                 datetime.now(timezone.utc) - synced_at
-            ).total_seconds() < self.config.proxy_sync_seconds:
+            ).total_seconds() < (min(300, self.config.proxy_sync_seconds) if profile == 'public_google' else self.config.proxy_sync_seconds):
                 return len(current)
             records, request_id = self.client.fetch_all(profile)
             self.cache.publish(profile, records, request_id)
@@ -243,6 +251,27 @@ class ProxyPool:
         self._expires_at: dict[str, float] = {}
         self._last_used: dict[str, float] = {}
         self._lock = threading.Lock()
+
+    def google_identity(self, key: str) -> tuple[str, list[str]]:
+        """Group protocol/port aliases by host, including stale cache entries.
+
+        A host is a conservative grouping, not proof of a distinct egress IP.
+        Historical endpoint hashes are retained for inherited DB cooldowns.
+        """
+        host = key.rsplit(':', 1)[0].strip('[]').lower().rstrip('.')
+        aliases = {key}
+        for profile in ('private', 'public', 'public_google'):
+            _, records = self.cache.load(profile)
+            aliases.update(record.key for record in records
+                           if record.host.strip('[]').lower().rstrip('.') == host)
+        return (hashlib.sha256(('google-host:' + host).encode()).hexdigest(),
+                sorted(hashlib.sha256(alias.encode()).hexdigest() for alias in aliases))
+
+    def _cooldown_until(self, record: ProxyRecord, domain: str) -> float:
+        host = record.host.strip('[]').lower().rstrip('.')
+        return max(self._cooldown.get((record.key, domain), 0),
+                   self._cooldown.get((record.key, '*'), 0),
+                   self._cooldown.get(('google-host:' + host, domain), 0))
 
     def _reload(self, profile: str) -> list[ProxyRecord]:
         path = self.cache.path(profile)
@@ -280,17 +309,11 @@ class ProxyPool:
             sticky = self._sticky.get((profile, affinity))
             if sticky and sticky[1] > now:
                 record = self._records.get(profile, {}).get(sticky[0])
-                if record and max(
-                    self._cooldown.get((record.key, domain), 0),
-                    self._cooldown.get((record.key, "*"), 0),
-                ) <= now:
+                if record and self._cooldown_until(record, domain) <= now:
                     return self._url(profile, record), record.key
             eligible = [
                 record for record in records
-                if max(
-                    self._cooldown.get((record.key, domain), 0),
-                    self._cooldown.get((record.key, "*"), 0),
-                ) <= now
+                if self._cooldown_until(record, domain) <= now
             ]
             if not eligible:
                 return None
@@ -329,18 +352,20 @@ class ProxyPool:
         now = time.monotonic()
         with self._lock:
             return sum(
-                max(
-                    self._cooldown.get((record.key, domain), 0),
-                    self._cooldown.get((record.key, "*"), 0),
-                ) <= now
+                self._cooldown_until(record, domain) <= now
                 for record in self._reload(profile)
             )
 
     def defer(self, key: str, domain: str, seconds: float) -> None:
         """Temporarily remove one endpoint without treating it as a transport failure."""
         with self._lock:
-            self._cooldown[(key, domain)] = time.monotonic() + max(0.0, seconds)
-            for profile in ("private", "public"):
+            until = time.monotonic() + max(0.0, seconds)
+            self._cooldown[(key, domain)] = max(self._cooldown.get((key, domain), 0), until)
+            if domain == 'google.com' or domain.endswith('.google.com'):
+                host = key.rsplit(':', 1)[0].strip('[]').lower().rstrip('.')
+                group = ('google-host:' + host, domain)
+                self._cooldown[group] = max(self._cooldown.get(group, 0), until)
+            for profile in ("private", "public", "public_google"):
                 for affinity, sticky in list(self._sticky.items()):
                     if affinity[0] == profile and sticky[0] == key:
                         self._sticky.pop(affinity, None)

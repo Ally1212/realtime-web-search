@@ -40,6 +40,15 @@ def main() -> None:
     experiment.add_argument("--directory", required=True, help="Persistent experiment state directory")
     experiment.add_argument("--output", default="/export", help="Empty Markdown export directory for a new run")
     experiment.add_argument("--hours", type=float, default=24)
+    experiment.add_argument('--executor', choices=('legacy', 'pipeline'), default='legacy')
+    experiment.add_argument('--body-workers', type=int, choices=range(1, 65), default=24)
+    experiment.add_argument('--body-max-rss-mib', type=int, choices=range(64, 513), default=192)
+    experiment.add_argument('--search-workers', type=int, choices=range(1, 25), default=3)
+    experiment.add_argument('--proxy-profile', choices=['private', 'public_google'], default='private')
+    experiment.add_argument('--google-providers', nargs='+', choices=('wml', 'wml_direct', 'searxng'), default=['wml', 'wml_direct', 'searxng'])
+    experiment.add_argument('--search-rps', type=float, default=2.0)
+    experiment.add_argument('--storage-budget-gib', type=float, default=10)
+    experiment.add_argument('--query-plan', choices=('balanced', 'yield', 'dense'), default='balanced')
     experiment.add_argument(
         "--languages", default="zh,en",
         help="Comma-separated experiment languages: zh,en (default: zh,en)",
