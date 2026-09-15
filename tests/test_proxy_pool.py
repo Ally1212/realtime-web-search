@@ -16,6 +16,11 @@ def config(directory: str = "/tmp"):
         proxy_api_key="secret-key",
         proxy_cache_dir=Path(directory),
         proxy_sync_seconds=1800,
+        proxy_sort="quality",
+        proxy_selection_window=160,
+        proxy_sticky_seconds=0,
+        proxy_username="",
+        proxy_password="",
     )
 
 
@@ -47,6 +52,38 @@ class ProxyApiTests(unittest.TestCase):
             self.assertEqual(a, pool.google_identity(socks.key))
             self.assertEqual(set(a[1]), {hashlib.sha256(r.key.encode()).hexdigest() for r in [http, socks]})
             self.assertNotEqual(a[0], pool.google_identity('192.0.2.2:8080/http')[0])
+            scoped = pool.google_identity_for_scope(http.key, 'openserp')
+            self.assertNotEqual(scoped, a)
+            self.assertEqual(
+                set(scoped[1]),
+                {hashlib.sha256(('openserp:' + r.key).encode()).hexdigest() for r in [http, socks]},
+            )
+
+    def test_protocol_filter_excludes_socks_and_reports_next_http_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            http = ProxyRecord('192.0.2.1', 8080, 'http')
+            socks = ProxyRecord('192.0.2.2', 1080, 'socks5')
+            cache = ProxyCache(Path(directory))
+            cache.publish('private', [http, socks], None)
+            pool = ProxyPool(config(directory))
+            protocols = frozenset({'http'})
+            with patch.object(ProxyRecord, 'fresh', return_value=True), patch(
+                'realtime.proxy_pool.time.monotonic', return_value=100,
+            ):
+                self.assertEqual(
+                    pool.available_count('private', 'www.google.com', protocols=protocols), 1,
+                )
+                selected = pool.choose(
+                    'private', 'www.google.com', full_pool=True, protocols=protocols,
+                )
+                self.assertEqual(selected[1], http.key)
+                pool.defer(http.key, 'www.google.com', 45)
+                self.assertEqual(
+                    pool.next_available_seconds(
+                        'private', 'www.google.com', protocols=protocols,
+                    ),
+                    45,
+                )
 
     def test_google_public_profile_keeps_https_threat_and_freshness_filters(self):
         response = Mock(status_code=200, headers={})

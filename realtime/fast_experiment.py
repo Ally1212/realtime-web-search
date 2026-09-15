@@ -365,9 +365,14 @@ class SearchRunner(Runner):
                                                'ORDER BY id DESC LIMIT 1', (row['id'], row['page'])).fetchone()
                 split_full_query(self.store, row, json.loads(result[0]))
         elif last and last['error'] == 'google_proxy_unavailable':
+            delay = min(300.0, max(
+                5.0,
+                float(getattr(self.client(row['language']), 'proxy_wait_seconds', 30) or 30),
+            ))
+            self.store.set('search_cooling_until', time.time() + delay)
             with self.store.db:
                 self.store.db.execute('UPDATE schedule SET due=? WHERE query_id=? AND page=?',
-                                      (time.time() + 300, row['id'], row['page']))
+                                      (time.time() + delay, row['id'], row['page']))
 
 
 class PipelineRunner(Runner):
@@ -389,7 +394,12 @@ class PipelineRunner(Runner):
         try:
             # Each thread owns its SQLite connection. WAL serializes short writes.
             store = ExperimentStore(self.store.path.parent)
-            runner = SearchRunner(store, self.config, self.production, self.output)
+            # Share rotation and local cooldown state across every search
+            # thread. PostgreSQL still coordinates with other processes.
+            runner = SearchRunner(
+                store, self.config, self.production, self.output,
+                proxy_pool=self.pool,
+            )
             if kind != 'upload':
                 runner.whale = None
             while not self.shutdown.is_set():

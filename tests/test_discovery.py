@@ -5,11 +5,18 @@ from realtime.discovery import GoogleBlocked, SearchDiscovery, SearchResult
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_openserp_health_hash_is_separate_from_legacy_transport(self):
+        key = '192.0.2.1:8080/http'
+        self.assertNotEqual(
+            SearchDiscovery._proxy_hash('openserp', key),
+            SearchDiscovery._proxy_hash('wml', key),
+        )
+
     def test_openserp_service_failure_cools_provider_without_penalizing_proxy(self):
         pool, recorder = Mock(), Mock()
         pool.available_count.return_value = 1
         pool.choose.return_value = ("http://proxy.example:80", "proxy-key")
-        pool.google_identity.return_value = ("group", ["alias"])
+        pool.google_identity_for_scope.return_value = ("group", ["alias"])
         d = SearchDiscovery(
             providers=("openserp",), proxy_pool=pool, proxy_profile="private",
             proxy_group_reserver=Mock(return_value=(True, 0)),
@@ -30,7 +37,7 @@ class DiscoveryTests(unittest.TestCase):
             ("http://proxy-1.example:80", "proxy-1"),
             ("http://proxy-2.example:80", "proxy-2"),
         ]
-        pool.google_identity.side_effect = [("group-1", ["alias-1"]), ("group-2", ["alias-2"])]
+        pool.google_identity_for_scope.side_effect = [("group-1", ["alias-1"]), ("group-2", ["alias-2"])]
         expected = [SearchResult("https://example.com/ai", "AI", ("google_web",))]
         d = SearchDiscovery(
             providers=("openserp",), proxy_pool=pool, proxy_profile="private",

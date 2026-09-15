@@ -18,6 +18,12 @@ CAPTCHA、Google 403/429 和明确的代理网络错误会隔离对应出口；O
 schema 错误或 parser failure 只冷却 OpenSERP provider，不污染代理健康度。审计保存请求 ID、
 版本、内部尝试次数、缓存状态、网络字节数和响应体哈希，绝不保存代理凭据。
 
+OpenSERP 浏览器模式不接受带认证的 SOCKS 代理，因此私有池只调度 HTTP 端点；同一主机的
+HTTP/SOCKS 别名仍合并为一个出口。pipeline 的所有搜索线程共享同一轮换与本地冷却状态，
+确保先覆盖可用出口再复用，跨进程继续由 PostgreSQL 串行化。OpenSERP 的代理健康记录使用
+独立命名空间，旧 WML/轻量页面的历史成功不会掩盖标准 Google 的 429/CAPTCHA。没有兼容
+出口时，实验按最早恢复时间进入搜索冷却，不再把未发出网络请求的调度循环当成持续尝试。
+
 当前暂停的 `million-yield-v5-20260915` 保留原账本，不迁移 provider，也不会自动恢复。
 新实验必须使用新目录，并把历史 URL/正文指纹作为基线；不继承旧任务 pending URL 或计数。
 

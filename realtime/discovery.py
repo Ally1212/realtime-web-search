@@ -163,6 +163,16 @@ class SearchDiscovery:
         self._local_next_request = 0.0
         self._local_failures: dict[str, int] = {}
         self._local_cooldowns: dict[str, float] = {}
+        self._thread_state = threading.local()
+
+    @property
+    def proxy_wait_seconds(self) -> float:
+        return float(getattr(self._thread_state, "proxy_wait_seconds", 0) or 0)
+
+    @staticmethod
+    def _proxy_hash(provider: str, key: str) -> str:
+        prefix = "openserp:" if provider == "openserp" else ""
+        return hashlib.sha256((prefix + key).encode()).hexdigest()
 
     @staticmethod
     def _cache_key(source: str, query: str, locale: str, page: int = 1) -> str:
@@ -274,30 +284,51 @@ class SearchDiscovery:
             time.sleep(wait)
 
     def _select_proxy(self, provider: str) -> tuple[str | None, str]:
+        self._thread_state.proxy_wait_seconds = 0.0
         if provider == "searxng" or provider.endswith("_direct") or self.proxy_profile == "direct":
             return None, ""
         if not self.proxy_pool:
             raise GoogleBlocked("google_proxy_unavailable")
-        for _ in range(max(1, self.proxy_pool.available_count(self.proxy_profile, "www.google.com"))):
+        # OpenSERP browser mode rejects authenticated SOCKS proxies. Filtering
+        # here also avoids counting the HTTP/SOCKS alias of one host twice.
+        protocols = frozenset({"http"}) if provider == "openserp" else None
+        available = self.proxy_pool.available_count(
+            self.proxy_profile, "www.google.com", protocols=protocols,
+        )
+        minimum_wait: float | None = None
+        for _ in range(max(1, available)):
             selected = self.proxy_pool.choose(
                 self.proxy_profile, "www.google.com", sticky_seconds=120,
                 sticky_key=f"google:{threading.get_ident()}", full_pool=True,
+                protocols=protocols,
             )
             if not selected:
                 break
             url, key = selected
-            if (provider.startswith("browser") or provider == "openserp") and not url.startswith(("http://", "https://")):
+            if provider.startswith("browser") and not url.startswith(("http://", "https://")):
                 self.proxy_pool.defer(key, "www.google.com", 60)
                 continue
-            proxy_hash = hashlib.sha256(key.encode()).hexdigest()
+            proxy_hash = self._proxy_hash(provider, key)
             if self.proxy_group_reserver:
-                group, aliases = self.proxy_pool.google_identity(key)
+                if provider == "openserp":
+                    group, aliases = self.proxy_pool.google_identity_for_scope(key, "openserp")
+                else:
+                    group, aliases = self.proxy_pool.google_identity(key)
                 allowed, wait = self.proxy_group_reserver(group, aliases, self.locale, self.proxy_min_interval_seconds)
             else:
                 allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
             if allowed:
                 return url, key
+            minimum_wait = wait if minimum_wait is None else min(minimum_wait, wait)
             self.proxy_pool.defer(key, "www.google.com", min(max(wait, 0.1), self.proxy_cooldown_seconds))
+        local_wait = self.proxy_pool.next_available_seconds(
+            self.proxy_profile, "www.google.com", protocols=protocols,
+        )
+        waits = [float(value) for value in (minimum_wait, local_wait)
+                 if isinstance(value, (int, float))]
+        if not waits:
+            waits = [30.0]
+        self._thread_state.proxy_wait_seconds = max(1.0, min(waits))
         raise GoogleBlocked("google_proxy_unavailable")
 
     @staticmethod
@@ -319,7 +350,7 @@ class SearchDiscovery:
         self._reserve_source(source)
         self._reserve_source("google_web")
         proxy_url, proxy_key = self._select_proxy(provider)
-        proxy_hash = hashlib.sha256(proxy_key.encode()).hexdigest() if proxy_key else ""
+        proxy_hash = self._proxy_hash(provider, proxy_key) if proxy_key else ""
         if proxy_hash:
             with self._proxy_usage_lock:
                 key = (self.proxy_profile, proxy_hash)

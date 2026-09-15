@@ -234,6 +234,12 @@ class ExperimentTests(unittest.TestCase):
         self.assertFalse(runner.slot('google_web',.5)['allowed'])
         self.assertGreater(self.store.get('search_cooling_until'),time.time()+1799)
 
+    def test_experiment_records_openserp_attempt_audit(self):
+        production = Mock()
+        runner = Runner(self.store, Config(), production, self.root/'export')
+        client = runner.client('zh')
+        self.assertIs(client.serp_attempt_recorder, production.record_google_serp_attempt)
+
     def test_historical_hash_copy_in_second_family_is_attributed(self):
         self.save()
         copied=document(url='https://elsewhere.org/copied')

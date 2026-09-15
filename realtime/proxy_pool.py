@@ -258,14 +258,21 @@ class ProxyPool:
         A host is a conservative grouping, not proof of a distinct egress IP.
         Historical endpoint hashes are retained for inherited DB cooldowns.
         """
+        return self.google_identity_for_scope(key)
+
+    def google_identity_for_scope(
+        self, key: str, scope: str = "",
+    ) -> tuple[str, list[str]]:
+        """Group aliases while keeping transport-specific health independent."""
         host = key.rsplit(':', 1)[0].strip('[]').lower().rstrip('.')
+        prefix = (scope.strip() + ":") if scope.strip() else ""
         aliases = {key}
         for profile in ('private', 'public', 'public_google'):
             _, records = self.cache.load(profile)
             aliases.update(record.key for record in records
                            if record.host.strip('[]').lower().rstrip('.') == host)
-        return (hashlib.sha256(('google-host:' + host).encode()).hexdigest(),
-                sorted(hashlib.sha256(alias.encode()).hexdigest() for alias in aliases))
+        return (hashlib.sha256((prefix + 'google-host:' + host).encode()).hexdigest(),
+                sorted(hashlib.sha256((prefix + alias).encode()).hexdigest() for alias in aliases))
 
     def _cooldown_until(self, record: ProxyRecord, domain: str) -> float:
         host = record.host.strip('[]').lower().rstrip('.')
@@ -299,6 +306,7 @@ class ProxyPool:
     def choose(
         self, profile: str, domain: str, *, sticky_seconds: int | None = None,
         sticky_key: str | None = None, full_pool: bool = False,
+        protocols: frozenset[str] | None = None,
     ) -> tuple[str, str] | None:
         if profile == "direct":
             return None
@@ -309,11 +317,13 @@ class ProxyPool:
             sticky = self._sticky.get((profile, affinity))
             if sticky and sticky[1] > now:
                 record = self._records.get(profile, {}).get(sticky[0])
-                if record and self._cooldown_until(record, domain) <= now:
+                if (record and (protocols is None or record.protocol in protocols)
+                        and self._cooldown_until(record, domain) <= now):
                     return self._url(profile, record), record.key
             eligible = [
                 record for record in records
-                if self._cooldown_until(record, domain) <= now
+                if (protocols is None or record.protocol in protocols)
+                and self._cooldown_until(record, domain) <= now
             ]
             if not eligible:
                 return None
@@ -346,15 +356,33 @@ class ProxyPool:
                 )
             return self._url(profile, record), record.key
 
-    def available_count(self, profile: str, domain: str) -> int:
+    def available_count(
+        self, profile: str, domain: str, *, protocols: frozenset[str] | None = None,
+    ) -> int:
         if profile == "direct":
             return 0
         now = time.monotonic()
         with self._lock:
             return sum(
-                self._cooldown_until(record, domain) <= now
+                (protocols is None or record.protocol in protocols)
+                and self._cooldown_until(record, domain) <= now
                 for record in self._reload(profile)
             )
+
+    def next_available_seconds(
+        self, profile: str, domain: str, *, protocols: frozenset[str] | None = None,
+    ) -> float:
+        """Return the local wait until a compatible endpoint can be retried."""
+        if profile == "direct":
+            return 0.0
+        now = time.monotonic()
+        with self._lock:
+            waits = [
+                max(0.0, self._cooldown_until(record, domain) - now)
+                for record in self._reload(profile)
+                if protocols is None or record.protocol in protocols
+            ]
+        return min(waits) if waits else 300.0
 
     def defer(self, key: str, domain: str, seconds: float) -> None:
         """Temporarily remove one endpoint without treating it as a transport failure."""

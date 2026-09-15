@@ -330,10 +330,10 @@ def export_search(store, output, search_id):
 
 
 class Runner:
-    def __init__(self, store, config, production, output):
+    def __init__(self, store, config, production, output, proxy_pool=None):
         self.store, self.config, self.production, self.output = store, config, production, output
         self.clients = {}
-        self.pool = ProxyPool(config)
+        self.pool = proxy_pool if proxy_pool is not None else ProxyPool(config)
         self.whale = WhaleClient(config) if store.get('whale') else None
         self.remote_only = bool(store.get('remote_only'))
         self.registered = False
@@ -373,6 +373,7 @@ class Runner:
                 openserp_request_timeout_seconds=self.config.openserp_request_timeout_seconds,
                 searxng_url=self.config.searxng_url,
                 source_slot_acquirer=self.slot, source_result_recorder=self.production.record_discovery_result,
+                serp_attempt_recorder=self.production.record_google_serp_attempt,
                 proxy_reserver=self.production.reserve_google_proxy, proxy_group_reserver=self.production.reserve_google_proxy_group, proxy_result_recorder=self.production.record_google_proxy_result,
                 google_web_initial_rps=limit if limit > 2 else 1.0, google_web_max_rps=limit,
                 proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,

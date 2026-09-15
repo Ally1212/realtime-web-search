@@ -353,6 +353,28 @@ class PipelineTests(unittest.TestCase):
             finally:
                 store.db.close()
 
+    def test_proxy_exhaustion_pauses_dispatch_until_next_compatible_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(Path(tmp), create=True)
+            try:
+                store.set('remote_only', True)
+                key = store.add_query('recent', 'AI after:2026-09-01', 'en', 'AI')
+                row = dict(store.db.execute('SELECT * FROM queries WHERE id=?', (key,)).fetchone(), page=1)
+                client = Mock(attempts=[], proxy_wait_seconds=120)
+                client._discover_google_page.side_effect = GoogleBlocked('google_proxy_unavailable')
+                shared_pool = Mock()
+                runner = SearchRunner(store, Config(), Mock(), Path(tmp), proxy_pool=shared_pool)
+                self.assertIs(runner.pool, shared_pool)
+                with patch.object(runner, 'client', return_value=client):
+                    runner.search(row)
+                self.assertGreater(store.get('search_cooling_until'), time.time()+115)
+                due = store.db.execute(
+                    'SELECT due FROM schedule WHERE query_id=? AND page=1', (key,),
+                ).fetchone()[0]
+                self.assertGreater(due, time.time()+115)
+            finally:
+                store.db.close()
+
     def test_global_circuit_remains_enforced(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ExperimentStore(Path(tmp), create=True)
