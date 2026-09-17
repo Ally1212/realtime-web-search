@@ -5,6 +5,56 @@ from realtime.discovery import GoogleBlocked, SearchDiscovery, SearchResult
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_google_profiles_rotate_and_record_selected_profile(self):
+        pool, slot, recorder = Mock(), Mock(return_value={'allowed': True}), Mock()
+        pool.available_count.return_value = 1
+        pool.choose.side_effect = [
+            ('http://private.example:80', 'private-key'),
+            ('http://public-google.example:80', 'public-google-key'),
+        ]
+        discovery = SearchDiscovery(
+            providers=('wml',), proxy_pool=pool, proxy_profile='private',
+            proxy_profiles=('private', 'public_google', 'public'),
+            source_slot_acquirer=slot, source_result_recorder=recorder,
+        )
+        discovery.transport.fetch = Mock(return_value=[SearchResult('https://example.com/a', 'A', ('google_web',))])
+
+        try:
+            discovery._attempt('wml', 'AI', 1)
+            discovery._attempt('wml', 'AI', 2)
+        finally:
+            discovery.close()
+
+        self.assertEqual([row['proxy_profile'] for row in discovery.attempts], ['private', 'public_google'])
+        self.assertEqual(
+            [call.args[0] for call in slot.call_args_list],
+            ['google_web:private', 'google_web:public_google'],
+        )
+        self.assertIn('google_web:private', [call.args[0] for call in recorder.call_args_list])
+
+    def test_profile_circuit_is_isolated_and_cannot_block_other_pools(self):
+        pool = Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
+        slots = {
+            'google_web:private': {'allowed': False},
+            'google_web:public_google': {'allowed': True},
+        }
+        slot = Mock(side_effect=lambda source, *_: slots[source])
+        discovery = SearchDiscovery(
+            providers=('wml',), proxy_pool=pool, proxy_profile='private',
+            proxy_profiles=('private', 'public_google'),
+            source_slot_acquirer=slot,
+        )
+        discovery.transport.fetch = Mock(return_value=[])
+
+        with self.assertRaisesRegex(GoogleBlocked, 'google_web_circuit_open'):
+            discovery._attempt('wml', 'AI', 1)
+
+        discovery._profile_cursor = 1
+        discovery._attempt('wml', 'AI', 2)
+        self.assertEqual(slot.call_args.args[0], 'google_web:public_google')
+
     def test_proxy_exhaustion_reports_earliest_reuse_time(self):
         pool = Mock()
         pool.available_count.return_value = 2

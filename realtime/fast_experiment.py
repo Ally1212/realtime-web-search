@@ -564,7 +564,9 @@ class PipelineRunner(Runner):
                     self.shutdown.wait(.5)
                 else:
                     try:
-                        ProxySynchronizer(self.config).sync(store.get('proxy_profile', 'private'))
+                        synchronizer = ProxySynchronizer(self.config)
+                        for profile in self.config.google_proxy_profiles:
+                            synchronizer.sync(profile)
                     except Exception as exc:
                         self.events.put(('proxy_error', type(exc).__name__))
                     # sync() enforces the shared cache's configured interval;

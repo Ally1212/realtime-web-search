@@ -408,6 +408,7 @@ class Runner:
                 source_result_recorder=lambda *args, **kwargs: self.production.record_discovery_result(
                     *args, circuit_max_seconds=self.config.google_web_circuit_max_seconds, **kwargs
                 ),
+                serp_attempt_recorder=self.production.record_google_serp_attempt,
                 proxy_reserver=self.production.reserve_google_proxy, proxy_group_reserver=self.production.reserve_google_proxy_group,
                 proxy_result_recorder=lambda *args, **kwargs: self.production.record_google_proxy_result(
                     *args, cooldown_cap_seconds=self.config.google_web_proxy_cooldown_cap_seconds, **kwargs

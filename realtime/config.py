@@ -67,7 +67,7 @@ class Config:
     proxy_sort: str = os.getenv("PROXY_SORT", "quality")
     default_proxy_profile: str = os.getenv("DEFAULT_PROXY_PROFILE", "private")
     google_proxy_profiles: tuple[str, ...] = _csv(
-        "GOOGLE_PROXY_PROFILES", "private,public_google"
+        "GOOGLE_PROXY_PROFILES", "private,public_google,public"
     )
     crawler_slots: int = int(os.getenv("CRAWLER_SLOTS", "2"))
     crawler_concurrency: int = int(os.getenv("CRAWLER_CONCURRENCY", "32"))

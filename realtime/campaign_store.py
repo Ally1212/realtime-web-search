@@ -321,6 +321,7 @@ CREATE TABLE IF NOT EXISTS google_serp_attempts (
   id bigserial PRIMARY KEY,
   created_at timestamptz NOT NULL DEFAULT now(),
   provider text NOT NULL,
+  proxy_profile text,
   query text NOT NULL,
   page integer NOT NULL,
   proxy_key_hash char(64),
@@ -346,6 +347,7 @@ ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_error text;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_rate_decrease_at timestamptz;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS circuit_streak bigint NOT NULL DEFAULT 0;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS proxy_profile text;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS captcha_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS javascript_verification_count bigint NOT NULL DEFAULT 0;
@@ -845,18 +847,19 @@ class CampaignStore:
     def record_google_serp_attempt(
         self, *, provider: str, query: str, page: int,
         proxy_key_hash: str | None, request_url: str | None,
+        proxy_profile: str | None = None,
         http_status: int | None, result_count: int, elapsed_seconds: float,
         classification: str, error_code: str | None, raw_sha256: str | None,
         raw_html_path: str | None, headless: bool | None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
-                "INSERT INTO google_serp_attempts(provider,query,page,proxy_key_hash,"
+                "INSERT INTO google_serp_attempts(provider,proxy_profile,query,page,proxy_key_hash,"
                 "request_url,http_status,result_count,elapsed_seconds,classification,"
                 "error_code,raw_sha256,raw_html_path,headless) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
-                    provider, query, page, proxy_key_hash, request_url, http_status,
+                    provider, proxy_profile, query, page, proxy_key_hash, request_url, http_status,
                     result_count, elapsed_seconds, classification, error_code,
                     raw_sha256, raw_html_path, headless,
                 ),

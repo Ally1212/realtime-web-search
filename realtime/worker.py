@@ -24,7 +24,7 @@ class WorkerManager:
         last_purge = 0.0
         while not self.stop.is_set():
             retry = self.config.proxy_sync_seconds
-            profiles = self.store.local_proxy_profiles() - {"direct"}
+            profiles = (self.store.local_proxy_profiles() | set(self.config.google_proxy_profiles)) - {"direct"}
             for profile in profiles:
                 try:
                     self.syncer.sync(profile)
@@ -58,6 +58,16 @@ class WorkerManager:
                 self.store.record_event(campaign_id, "", "proxy_unavailable", error_code="empty_pool")
                 self.queue.schedule(campaign_id, 300)
                 return
+        for supplemental_profile in set(self.config.google_proxy_profiles) - {profile, "direct"}:
+            try:
+                self.syncer.sync(supplemental_profile)
+            except ProxyApiError as exc:
+                self.store.record_event(
+                    campaign_id,
+                    "",
+                    "proxy_sync_warning",
+                    error_code=f"http_{exc.status or 'transport'}_profile_{supplemental_profile}",
+                )
         result = subprocess.run(
             [sys.executable, "-m", "realtime.scrapy_runner", campaign_id],
             check=False,

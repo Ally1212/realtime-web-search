@@ -265,7 +265,11 @@ class SearchDiscovery:
         if self.source_slot_acquirer:
             slot = self.source_slot_acquirer(source, self.google_web_initial_rps)
             if not slot.get("allowed"):
-                raise GoogleBlocked("google_web_circuit_open" if source == "google_web" else "google_provider_cooling")
+                raise GoogleBlocked(
+                    "google_web_circuit_open"
+                    if source == "google_web" or source.startswith("google_web:")
+                    else "google_provider_cooling"
+                )
             wait = float(slot.get("wait") or 0)
         elif source == "google_web":
             with self._attempt_lock:
@@ -279,7 +283,7 @@ class SearchDiscovery:
 
     def _select_proxy(self, provider: str) -> tuple[str | None, str, str]:
         if provider == "searxng" or provider.endswith("_direct") or self.proxy_profile == "direct":
-            return None, "", self.proxy_profile
+            return None, "", "direct"
         if not self.proxy_pool:
             raise GoogleBlocked("google_proxy_unavailable")
         minimum_wait = None
@@ -330,9 +334,8 @@ class SearchDiscovery:
         with self._attempt_lock:
             if self._local_cooldowns.get(provider, 0) > time.monotonic():
                 raise GoogleBlocked("google_provider_cooling")
-        self._reserve_source(source)
-        self._reserve_source("google_web")
         proxy_url, proxy_key, selected_profile = self._select_proxy(provider)
+        self._reserve_source(f"google_web:{selected_profile}")
         proxy_hash = hashlib.sha256(proxy_key.encode()).hexdigest() if proxy_key else ""
         if proxy_hash:
             with self._proxy_usage_lock:
@@ -371,6 +374,7 @@ class SearchDiscovery:
                     "success": failure is None, "results": len(results),
                     "seconds": round(elapsed, 3), "error": code,
                     "proxy_hash": proxy_hash,
+                    "proxy_profile": selected_profile,
                     "http_status": evidence.get("http_status"),
                     "page_classification": classification,
                     "raw_sha256": evidence.get("raw_sha256"),
@@ -383,6 +387,7 @@ class SearchDiscovery:
                     self.serp_attempt_recorder(
                         provider=provider, query=query, page=page,
                         proxy_key_hash=proxy_hash or None,
+                        proxy_profile=selected_profile,
                         request_url=evidence.get("request_url"),
                         http_status=evidence.get("http_status"),
                         result_count=len(results), elapsed_seconds=round(elapsed, 3),
@@ -413,7 +418,7 @@ class SearchDiscovery:
                     )
             if self.source_result_recorder:
                 novel = self.novelty_counter([row.url for row in results]) if self.novelty_counter and results else len(results)
-                for name in ("google_web", source):
+                for name in (f"google_web:{selected_profile}", f"{source}:{selected_profile}"):
                     self.source_result_recorder(
                         name, success=failure is None, limited=limited, captcha=captcha,
                         result_count=len(results), novel_count=novel,
