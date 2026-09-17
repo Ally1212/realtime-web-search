@@ -33,11 +33,15 @@ class SearchResult:
 
 
 class GoogleBlocked(RuntimeError):
-    def __init__(self, reason: str, status: int | None = None, *, captcha: bool = False):
+    def __init__(
+        self, reason: str, status: int | None = None, *, captcha: bool = False,
+        retry_after: float | None = None,
+    ):
         super().__init__(reason)
         self.reason = reason
         self.status = status
         self.captcha = captcha
+        self.retry_after = retry_after
 
 
 class SearchDiscovery:
@@ -72,6 +76,7 @@ class SearchDiscovery:
         proxy_reserver: Callable[[str, str, int], tuple[bool, float]] | None = None,
         proxy_group_reserver: Callable[..., tuple[bool, float]] | None = None,
         proxy_result_recorder: Callable[..., None] | None = None,
+        proxy_profiles: tuple[str, ...] | None = None,
         novelty_counter: Callable[[list[str]], int] | None = None,
         page_batch_acquirer: Callable[..., dict[str, Any] | None] | None = None,
         page_result_recorder: Callable[..., bool] | None = None,
@@ -95,6 +100,7 @@ class SearchDiscovery:
         self.timeout = timeout
         self.proxy_pool = proxy_pool
         self.proxy_profile = proxy_profile
+        self.proxy_profiles = tuple(proxy_profiles or [proxy_profile]) or ("direct",)
         self.language = language if language in {"en", "zh"} else "en"
         self.locale = "zh-CN" if self.language == "zh" else "en-SG"
         self.global_limiter = _discovery_limiter(global_concurrency)
@@ -159,6 +165,8 @@ class SearchDiscovery:
         self._local_next_request = 0.0
         self._local_failures: dict[str, int] = {}
         self._local_cooldowns: dict[str, float] = {}
+        self._profile_lock = threading.Lock()
+        self._profile_cursor = 0
 
     @staticmethod
     def _cache_key(source: str, query: str, locale: str, page: int = 1) -> str:
@@ -269,32 +277,42 @@ class SearchDiscovery:
         if wait > 0:
             time.sleep(wait)
 
-    def _select_proxy(self, provider: str) -> tuple[str | None, str]:
+    def _select_proxy(self, provider: str) -> tuple[str | None, str, str]:
         if provider == "searxng" or provider.endswith("_direct") or self.proxy_profile == "direct":
-            return None, ""
+            return None, "", self.proxy_profile
         if not self.proxy_pool:
             raise GoogleBlocked("google_proxy_unavailable")
-        for _ in range(max(1, self.proxy_pool.available_count(self.proxy_profile, "www.google.com"))):
-            selected = self.proxy_pool.choose(
-                self.proxy_profile, "www.google.com", sticky_seconds=120,
-                sticky_key=f"google:{threading.get_ident()}", full_pool=True,
-            )
-            if not selected:
-                break
-            url, key = selected
-            if provider.startswith("browser") and not url.startswith("http://"):
-                self.proxy_pool.defer(key, "www.google.com", 60)
+        minimum_wait = None
+        with self._profile_lock:
+            start = self._profile_cursor % max(1, len(self.proxy_profiles))
+            self._profile_cursor += 1
+        profiles = self.proxy_profiles[start:] + self.proxy_profiles[:start]
+        for profile in profiles:
+            if profile == "direct":
                 continue
-            proxy_hash = hashlib.sha256(key.encode()).hexdigest()
-            if self.proxy_group_reserver:
-                group, aliases = self.proxy_pool.google_identity(key)
-                allowed, wait = self.proxy_group_reserver(group, aliases, self.locale, self.proxy_min_interval_seconds)
-            else:
-                allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
-            if allowed:
-                return url, key
-            self.proxy_pool.defer(key, "www.google.com", min(max(wait, 0.1), self.proxy_cooldown_seconds))
-        raise GoogleBlocked("google_proxy_unavailable")
+            count = self.proxy_pool.available_count(profile, "www.google.com")
+            for _ in range(max(1, count)):
+                selected = self.proxy_pool.choose(
+                    profile, "www.google.com", sticky_seconds=120,
+                    sticky_key=f"google:{threading.get_ident()}", full_pool=True,
+                )
+                if not selected:
+                    break
+                url, key = selected
+                if provider.startswith("browser") and not url.startswith("http://"):
+                    self.proxy_pool.defer(key, "www.google.com", 60)
+                    continue
+                proxy_hash = hashlib.sha256(key.encode()).hexdigest()
+                if self.proxy_group_reserver:
+                    group, aliases = self.proxy_pool.google_identity(key)
+                    allowed, wait = self.proxy_group_reserver(group, aliases, self.locale, self.proxy_min_interval_seconds)
+                else:
+                    allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
+                if allowed:
+                    return url, key, profile
+                minimum_wait = wait if minimum_wait is None else min(minimum_wait, wait)
+                self.proxy_pool.defer(key, "www.google.com", min(max(wait, 0.1), self.proxy_cooldown_seconds))
+        raise GoogleBlocked("google_proxy_unavailable", retry_after=minimum_wait)
 
     @staticmethod
     def _error_code(exc: Exception) -> str:
@@ -314,11 +332,11 @@ class SearchDiscovery:
                 raise GoogleBlocked("google_provider_cooling")
         self._reserve_source(source)
         self._reserve_source("google_web")
-        proxy_url, proxy_key = self._select_proxy(provider)
+        proxy_url, proxy_key, selected_profile = self._select_proxy(provider)
         proxy_hash = hashlib.sha256(proxy_key.encode()).hexdigest() if proxy_key else ""
         if proxy_hash:
             with self._proxy_usage_lock:
-                key = (self.proxy_profile, proxy_hash)
+                key = (selected_profile, proxy_hash)
                 self._proxy_usage[key] = self._proxy_usage.get(key, 0) + 1
         started = time.monotonic()
         results: list[SearchResult] = []

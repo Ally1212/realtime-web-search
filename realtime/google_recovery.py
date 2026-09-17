@@ -268,9 +268,19 @@ def main():
             search_id=store.search(query,query['page'],started,normalized,[attempt],error,False)
             if not error:
                 with store.db:store.db.execute('UPDATE schedule SET due=? WHERE query_id=? AND page=?',(finished+86400,query['id'],query['page']))
-            production.record_google_proxy_result(attempt['proxy_hash'],success=success,cooldown_seconds=config.google_web_proxy_cooldown_seconds if error in {'google_captcha','google_http_403','google_http_429'} else 300 if error else 0,error_code=error,elapsed_seconds=finished-started,result_count=len(results),http_status=ev.get('http_status'))
+            production.record_google_proxy_result(
+                attempt['proxy_hash'], success=success,
+                cooldown_seconds=config.google_web_proxy_cooldown_seconds if error in {'google_captcha','google_http_403','google_http_429'} else 300 if error else 0,
+                error_code=error, elapsed_seconds=finished-started, result_count=len(results), http_status=ev.get('http_status'),
+                cooldown_cap_seconds=config.google_web_proxy_cooldown_cap_seconds,
+            )
             for source in ('google_web','google_wml'):
-                production.record_discovery_result(source,success=success,limited=error in {'google_captcha','google_http_403','google_http_429'},captcha=error=='google_captcha',result_count=len(results),novel_count=0,maximum_rps=4,error_code=error,elapsed_seconds=finished-started,shared_exit=False)
+                production.record_discovery_result(
+                    source, success=success, limited=error in {'google_captcha','google_http_403','google_http_429'},
+                    captcha=error == 'google_captcha', result_count=len(results), novel_count=0,
+                    maximum_rps=4, error_code=error, elapsed_seconds=finished-started, shared_exit=False,
+                    circuit_max_seconds=config.google_web_circuit_max_seconds,
+                )
             updated=transition(state,finished,success,error)
             if success and not state.get('streak'):
                 # The recovery observation is the request start, not response latency.

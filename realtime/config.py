@@ -66,6 +66,9 @@ class Config:
     proxy_selection_window: int = int(os.getenv("PROXY_SELECTION_WINDOW", "20"))
     proxy_sort: str = os.getenv("PROXY_SORT", "quality")
     default_proxy_profile: str = os.getenv("DEFAULT_PROXY_PROFILE", "private")
+    google_proxy_profiles: tuple[str, ...] = _csv(
+        "GOOGLE_PROXY_PROFILES", "private,public_google"
+    )
     crawler_slots: int = int(os.getenv("CRAWLER_SLOTS", "2"))
     crawler_concurrency: int = int(os.getenv("CRAWLER_CONCURRENCY", "32"))
     crawler_concurrency_per_domain: int = int(os.getenv("CRAWLER_CONCURRENCY_PER_DOMAIN", "4"))
@@ -110,6 +113,15 @@ class Config:
     )
     google_web_proxy_cooldown_seconds: int = int(
         os.getenv("GOOGLE_WEB_PROXY_COOLDOWN_SECONDS", "300")
+    )
+    google_web_proxy_cooldown_cap_seconds: int = int(
+        os.getenv("GOOGLE_WEB_PROXY_COOLDOWN_CAP_SECONDS", "7200")
+    )
+    google_web_circuit_probe_rps: float = float(
+        os.getenv("GOOGLE_WEB_CIRCUIT_PROBE_RPS", "0.05")
+    )
+    google_web_circuit_max_seconds: int = int(
+        os.getenv("GOOGLE_WEB_CIRCUIT_MAX_SECONDS", "7200")
     )
     google_web_source_cooldown_seconds: int = int(
         os.getenv("GOOGLE_WEB_SOURCE_COOLDOWN_SECONDS", "1800")

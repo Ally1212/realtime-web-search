@@ -15,7 +15,8 @@ from twisted.internet.task import LoopingCall
 from .campaign_store import CampaignStore, PageRecord
 from .config import Config
 from .discovery import SearchDiscovery
-from .fetcher import detect_language, extract_text, is_public_url, normalize_url, relevant_to
+from .fetcher import (detect_language, extract_response_text, is_pdf_response,
+                      is_public_url, normalize_url, relevant_to)
 from .keyword_catalog import AI_ANCHORS
 from .proxy_pool import ProxyPool
 from .whale_collector import whale_message
@@ -23,7 +24,7 @@ from .whale_collector import whale_message
 
 SKIP_SUFFIXES = (
     ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".mp4", ".mp3",
-    ".zip", ".gz", ".rar", ".7z", ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+    ".zip", ".gz", ".rar", ".7z", ".doc", ".docx", ".xls", ".xlsx",
 )
 
 
@@ -307,6 +308,7 @@ class FocusedSpider(scrapy.Spider):
             self.config.request_timeout,
             proxy_pool=ProxyPool(self.config),
             proxy_profile=self.proxy_profile,
+            proxy_profiles=self.config.google_proxy_profiles,
             language=self.search_language,
             global_concurrency=self.config.discovery_global_concurrency,
             query_concurrency=self.config.discovery_query_concurrency,
@@ -324,10 +326,16 @@ class FocusedSpider(scrapy.Spider):
             web_query_eligible=True,
             cache_get=self.store.get_discovery_cache,
             cache_put=self.store.put_discovery_cache,
-            source_slot_acquirer=self.store.acquire_discovery_slot,
-            source_result_recorder=self.store.record_discovery_result,
+            source_slot_acquirer=lambda source, initial_rps, **kwargs: self.store.acquire_discovery_slot(
+                source, initial_rps, probe_rps=self.config.google_web_circuit_probe_rps, **kwargs
+            ),
+            source_result_recorder=lambda *args, **kwargs: self.store.record_discovery_result(
+                *args, circuit_max_seconds=self.config.google_web_circuit_max_seconds, **kwargs
+            ),
             proxy_reserver=self.store.reserve_google_proxy,
-            proxy_result_recorder=self.store.record_google_proxy_result,
+            proxy_result_recorder=lambda *args, **kwargs: self.store.record_google_proxy_result(
+                *args, cooldown_cap_seconds=self.config.google_web_proxy_cooldown_cap_seconds, **kwargs
+            ),
             novelty_counter=lambda urls: len(urls) - len(
                 self.store.processed_urls(self.campaign_id, urls)
             ),
@@ -470,7 +478,7 @@ class FocusedSpider(scrapy.Spider):
                 "short_retry": short_retry,
                 "playwright": browser,
             },
-            headers={"Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1"},
+            headers={"Accept": "text/html,application/xhtml+xml;q=0.9,application/pdf;q=0.8,*/*;q=0.1"},
             dont_filter=True,
         )
 
@@ -478,17 +486,33 @@ class FocusedSpider(scrapy.Spider):
         self.page_responses += 1
         self._increment(fetched=1)
         content_type = response.headers.get(b"Content-Type", b"").decode(errors="ignore").lower()
-        if "html" not in content_type:
-            self.store.record_domain_result(response.url, False)
+        is_pdf = is_pdf_response(response.body, content_type)
+        extraction_started = time.monotonic()
+        try:
+            title, content = extract_response_text(
+                response.body,
+                response.url,
+                content_type,
+                self.config.trafilatura_enabled,
+            )
+        except ValueError as exc:
             self._increment(failed=1)
+            if is_pdf and str(exc) == 'PDF 正文解析失败' and not response.meta.get('short_retry'):
+                yield self._page_request(
+                    response.url,
+                    tuple(response.meta.get('source_engines') or ()),
+                    short_retry=True,
+                )
+                return
+            self.store.record_domain_result(response.url, False)
             self.store.record_event(
-                self.campaign_id, response.url, "permanent_failed", response.status, "non_html"
+                self.campaign_id,
+                response.url,
+                "permanent_failed",
+                response.status,
+                str(exc)[:120],
             )
             return
-        extraction_started = time.monotonic()
-        title, content = extract_text(
-            response.body, response.url, self.config.trafilatura_enabled
-        )
         self._observe_stage("extraction", time.monotonic() - extraction_started)
         if len(content) < self.config.crawler_min_content_chars:
             self._increment(failed=1)
@@ -501,6 +525,16 @@ class FocusedSpider(scrapy.Spider):
                 and (self.browser_requests + 1) / self.page_responses
                 <= min(max(self.config.browser_fallback_ratio, 0), 0.05)
             )
+            if is_pdf:
+                self.store.record_domain_result(response.url, False)
+                self.store.record_event(
+                    self.campaign_id,
+                    response.url,
+                    "permanent_failed",
+                    response.status,
+                    "pdf_short_content",
+                )
+                return
             if (
                 not response.meta.get("playwright")
                 and response.status == 200

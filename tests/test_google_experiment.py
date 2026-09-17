@@ -50,10 +50,14 @@ class ExperimentTests(unittest.TestCase):
 
     def test_event_query_is_not_collapsed_and_dates_are_explicit(self):
         seed_queries(self.store,Config(),time.time())
-        rows = list(self.store.db.execute("SELECT family,query FROM queries WHERE family IN ('event','recent')"))
+        rows = list(self.store.db.execute(
+            "SELECT family,query FROM queries WHERE family IN ('topic','event','recent') AND query<>'AI'"
+        ))
         self.assertTrue(any('news research' in r['query'] for r in rows if r['family']=='event'))
         self.assertTrue(all('after:' in r['query'] for r in rows if r['family']=='recent'))
         self.assertTrue(all('-site:youtube.com' in r['query'] for r in rows))
+        self.assertTrue(all('-site:linkedin.com' in r['query'] for r in rows))
+        self.assertTrue(all('-inurl:scholar.google' in r['query'] for r in rows))
         before = self.store.db.execute('SELECT count(*) FROM schedule').fetchone()[0]
         seed_queries(self.store,Config(),time.time())
         self.assertEqual(before,self.store.db.execute('SELECT count(*) FROM schedule').fetchone()[0])
@@ -91,6 +95,29 @@ class ExperimentTests(unittest.TestCase):
         self.assertIn('possibly_truncated',quality(document(text='AI ' * 40000)))
         self.assertEqual(quality(document()), [])
 
+    def test_quality_accepts_specific_ai_terms_without_ambiguous_brand_names(self):
+        for term in ('AI技术', 'LLMs', 'GPT4', 'large language model', 'neural network',
+                     'retrieval-augmented generation', 'OpenAI', 'DeepSeek', '深度学习',
+                     '大语言模型', '检索增强生成', '自然语言处理', '通义千问'):
+            with self.subTest(term=term):
+                self.assertNotIn('no_ai_context', quality(dict(
+                    document(text=(term + ' research ') * 80), title=term
+                )))
+        for text in ('Claude Monet exhibition', 'Gemini zodiac forecast', 'llama farming guide',
+                     'electrical transformer installation'):
+            with self.subTest(text=text):
+                self.assertIn('no_ai_context', quality(dict(
+                    document(text=(text + ' ') * 80), title=text
+                )))
+        self.assertIn('no_ai_context', quality(dict(
+            document(text=('DeepSeek model research ' * 2) + ('database systems ' * 80)),
+            title='Database systems',
+        )))
+        self.assertIn('no_ai_context', quality(dict(
+            document(text='DeepSeek navigation ' + ('database systems ' * 80)),
+            title='Database systems',
+        )))
+
     def test_cross_query_duplicate_and_updates_are_not_new(self):
         self.assertEqual(self.save()[1],'new')
         self.discover(family='event',text='AI update')
@@ -125,6 +152,28 @@ class ExperimentTests(unittest.TestCase):
         self.assertIsNone(self.store.cached(self.query,1,time.time()+3601))
         self.assertIsNone(self.store.cached(self.query,2,time.time()))
 
+    def test_counts_report_latency_errors_and_page_coverage(self):
+        row = self.store.db.execute('SELECT * FROM queries WHERE id=?', (self.query,)).fetchone()
+        self.store.search(
+            row, 1, time.time(),
+            [{'url': 'https://a.example/ai', 'title': 'A'},
+             {'url': 'https://b.example/ai', 'title': 'B'}],
+            [{'success': False, 'error': 'google_captcha', 'seconds': .4},
+             {'success': True, 'error': '', 'seconds': .1}],
+        )
+        counts = self.store.counts()
+        self.assertEqual(counts['google_attempt_p50_seconds'], .1)
+        self.assertEqual(counts['google_attempt_p95_seconds'], .4)
+        self.assertEqual(counts['google_error_rate'], .5)
+        self.assertEqual(counts['google_captcha_rate'], .5)
+        self.assertEqual(counts['page_coverage']['1'], {
+            'scheduled': 1, 'covered': 1, 'retrying': 0,
+            'candidates': 2, 'unique_urls': 2, 'pending': 0,
+            'valid_documents': 0, 'deliverable_documents': 0,
+            'accepted_documents': 0,
+        })
+        self.assertEqual(counts['page_coverage']['2']['pending'], 1)
+
     def test_failed_page_does_not_stall_all_queries(self):
         row=self.store.db.execute('SELECT * FROM queries WHERE id=?',(self.query,)).fetchone()
         self.store.search(row,1,time.time(),[],[], 'google_captcha')
@@ -156,6 +205,44 @@ class ExperimentTests(unittest.TestCase):
         msg=experiment_message(dict(document(),published_at=value),'run','AI',['topic'],Config())
         self.assertEqual(msg['content']['published_at'],value)
 
+    def test_publication_accepts_more_explicit_publisher_fields_without_naive_dates(self):
+        expected = '2026-09-01T10:00:00+08:00'
+        variants = (
+            b'<meta property="og:article:published_time" content="2026-09-01T10:00:00+08:00">',
+            b'<meta property="article:published" content="2026-09-01T10:00:00+08:00">',
+            b'<time itemprop="datePublished" datetime="2026-09-01T10:00:00+08:00">2026-09-01</time>',
+        )
+        for raw in variants:
+            self.assertEqual(publication_metadata(raw), (expected, 'html:datePublished'))
+        self.assertEqual(publication_metadata(
+            b'<meta name="og:article:published_time" content="2026-09-01T10:00:00Z">'
+        ), ('2026-09-01T10:00:00+00:00', 'html:og:article:published_time'))
+        self.assertEqual(publication_metadata(
+            b'<meta name="og:article:published_time" content="2026-09-01T10:00:00">'
+        ), (None, None))
+
+    def test_publication_json_ld_tolerates_literal_control_characters(self):
+        raw = (b'<script type="application/ld+json">'
+               b'{"@type":"NewsArticle","description":"line\nbreak",'
+               b'"datePublished":"2026-09-01T10:00:00+08:00"}</script>')
+        self.assertEqual(publication_metadata(raw),
+                         ('2026-09-01T10:00:00+08:00', 'jsonld:datePublished'))
+
+    def test_video_publication_uses_explicit_timezone_aware_upload_date(self):
+        raw = (b'<script type="application/ld+json">'
+               b'{"@type":"VideoObject","uploadDate":"2026-08-01T10:00:00Z",'
+               b'"dateModified":"2026-09-01T10:00:00Z"}</script>')
+        self.assertEqual(publication_metadata(raw),
+                         ('2026-08-01T10:00:00+00:00', 'jsonld:uploadDate'))
+        self.assertEqual(publication_metadata(
+            b'<script type="application/ld+json">'
+            b'{"@type":"VideoObject","uploadDate":"2026-08-01"}</script>'
+        ), (None, None))
+        self.assertEqual(publication_metadata(
+            b'<script type="application/ld+json">'
+            b'{"@type":"VideoObject","dateModified":"2026-08-01T10:00:00Z"}</script>'
+        ), (None, None))
+
     def test_missing_publication_is_retained_locally_without_posting(self):
         self.discover()
         runner=Runner(self.store,Config(),Mock(),self.root/'export')
@@ -172,11 +259,23 @@ class ExperimentTests(unittest.TestCase):
         self.discover()
         with patch('realtime.google_experiment.WhaleClient', return_value=Mock()):
             runner = Runner(self.store, Config(), Mock(), self.root/'export')
-        doc = dict(document(), published_at='2026-09-01T10:00:00+08:00')
+        doc = dict(
+            document(),
+            published_at='2026-09-01T10:00:00+08:00',
+            publication_source='jsonld:datePublished',
+        )
         runner.save_body({'document': doc, 'requested_url': doc['url'], 'status': 'success', 'seconds': 1})
-        row = self.store.db.execute('SELECT document FROM documents').fetchone()
+        row = self.store.db.execute(
+            'SELECT document,published_at,publication_source FROM documents'
+        ).fetchone()
         outbox = self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
         self.assertEqual(row['document'], 'null')
+        self.assertEqual(row['published_at'], doc['published_at'])
+        self.assertEqual(row['publication_source'], doc['publication_source'])
+        self.assertEqual(
+            self.store.counts()['publication_sources'],
+            {'jsonld:datePublished': 1},
+        )
         self.assertEqual(outbox['status'], 'pending')
         self.assertIn(doc['content'], outbox['payload'])
         self.assertFalse((self.root/'export/documents').exists())
@@ -197,12 +296,25 @@ class ExperimentTests(unittest.TestCase):
         row = self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
         self.assertIsNone(row['payload'])
         self.assertEqual(row['status'], 'blocked_missing_publication')
+        metadata = self.store.db.execute(
+            'SELECT published_at,publication_source FROM documents'
+        ).fetchone()
+        self.assertIsNone(metadata['published_at'])
+        self.assertIsNone(metadata['publication_source'])
+        self.assertEqual(self.store.counts()['publication_sources'], {'missing': 1})
 
     def test_pausing_does_not_change_deadline(self):
         deadline=self.store.get('deadline')
         for action,expected in [('pause','paused'),('resume','running')]:
             command(SimpleNamespace(action=action,directory=str(self.root/'state')))
             self.assertEqual(self.store.get('state'),expected)
+            if action == 'pause':
+                archive = self.root/'experiment-audits/state.json'
+                self.assertTrue(archive.is_file())
+                report = json.loads(archive.read_text())
+                self.assertEqual(report['experiment'], 'experiment-test')
+                self.assertEqual(report['state'], 'paused')
+                self.assertEqual(report['evidence'], 'archived_strict_snapshot')
         self.assertEqual(self.store.get('deadline'),deadline)
 
     def test_expired_run_cannot_resume(self):

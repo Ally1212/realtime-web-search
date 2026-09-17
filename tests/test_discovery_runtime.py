@@ -10,12 +10,14 @@ class DiscoveryRuntimeTests(unittest.TestCase):
     def test_aggressive_proxy_backoff_persists_and_only_success_resets_it(self):
         key=uuid4().hex.ljust(64,'0')
         try:
-            for index,delay in enumerate((300,600,1200,1800,1800),1):
+            for index,delay in enumerate((300,600,1200,2400,4800),1):
                 self.store.record_google_proxy_result(key,success=False,error_code='google_captcha',cooldown_seconds=300)
                 with self.store.connect() as db:
                     row=db.execute('SELECT limited_failure_streak,extract(epoch FROM cooldown_until-now()) AS wait FROM google_proxy_sessions WHERE proxy_key_hash=%s',(key,)).fetchone()
                 self.assertEqual(row['limited_failure_streak'],index)
-                self.assertAlmostEqual(float(row['wait']),delay,delta=3)
+                # ±20% jitter around the exponential backoff target.
+                self.assertGreaterEqual(float(row['wait']),delay*0.75)
+                self.assertLessEqual(float(row['wait']),delay*1.25)
             self.store.record_google_proxy_result(key,success=False,error_code='google_timeout',cooldown_seconds=300)
             with self.store.connect() as db:
                 self.assertEqual(db.execute('SELECT limited_failure_streak FROM google_proxy_sessions WHERE proxy_key_hash=%s',(key,)).fetchone()['limited_failure_streak'],5)
@@ -29,7 +31,8 @@ class DiscoveryRuntimeTests(unittest.TestCase):
             with self.store.connect() as db:
                 row=db.execute('SELECT limited_failure_streak,extract(epoch FROM cooldown_until-now()) AS wait FROM google_proxy_sessions WHERE proxy_key_hash=%s',(key,)).fetchone()
                 self.assertEqual(row['limited_failure_streak'],1)
-                self.assertAlmostEqual(float(row['wait']),300,delta=3)
+                self.assertGreaterEqual(float(row['wait']),225)
+                self.assertLessEqual(float(row['wait']),375)
         finally:
             with self.store.connect() as db:db.execute('DELETE FROM google_proxy_sessions WHERE proxy_key_hash=%s',(key,))
 
@@ -39,7 +42,7 @@ class DiscoveryRuntimeTests(unittest.TestCase):
             self.store.record_google_proxy_result(a, success=False, error_code='google_captcha', cooldown_seconds=300)
             allowed, wait = self.store.reserve_google_proxy_group(group, [a, b], 'zh-CN', 30)
             self.assertFalse(allowed)
-            self.assertGreater(wait, 290)
+            self.assertGreater(wait, 225)
             # Dropping an alias from a refreshed cache must not forget it.
             self.assertFalse(self.store.reserve_google_proxy_group(group, [b], 'zh-CN', 30)[0])
             self.store.record_google_proxy_result(a, success=True)
@@ -82,7 +85,10 @@ class DiscoveryRuntimeTests(unittest.TestCase):
         for _ in range(3):
             self.store.acquire_discovery_slot(self.source, 1)
             self.store.record_discovery_result(self.source, success=False, error_code='google_timeout')
-        self.assertFalse(self.store.acquire_discovery_slot(self.source, 4, maximum_rps=4)['allowed'])
+        slot = self.store.acquire_discovery_slot(self.source, 4, maximum_rps=4)
+        self.assertTrue(slot['allowed'])
+        self.assertEqual(slot['state'], 'circuit_open')
+        self.assertLessEqual(slot['current_rps'], 0.05)
 
     def setUp(self):
         self.store = CampaignStore(os.environ["TEST_DATABASE_URL"])
@@ -96,9 +102,13 @@ class DiscoveryRuntimeTests(unittest.TestCase):
         for _ in range(3):
             self.store.acquire_discovery_slot(self.source, .5)
             self.store.record_discovery_result(self.source, success=False, error_code="google_timeout", elapsed_seconds=2)
-        self.assertFalse(self.store.acquire_discovery_slot(self.source, .5)["allowed"])
+        slot = self.store.acquire_discovery_slot(self.source, .5)
+        self.assertTrue(slot["allowed"])
+        self.assertEqual(slot["state"], "circuit_open")
         self.store.record_discovery_result(self.source, success=True, result_count=10, elapsed_seconds=1)
-        self.assertFalse(self.store.acquire_discovery_slot(self.source, .5)["allowed"])
+        slot = self.store.acquire_discovery_slot(self.source, .5)
+        self.assertTrue(slot["allowed"])
+        self.assertEqual(slot["state"], "circuit_open")
         with self.store.connect() as connection:
             row = connection.execute("SELECT * FROM discovery_source_runtime WHERE source=%s", (self.source,)).fetchone()
             self.assertEqual(row["requests_total"], 4)
@@ -127,6 +137,164 @@ class DiscoveryRuntimeTests(unittest.TestCase):
             self.assertTrue(self.store.acquire_discovery_slot(self.source, .5)["allowed"])
         self.store.record_discovery_result(self.source, success=True, result_count=10)
         self.assertTrue(self.store.acquire_discovery_slot(self.source, .5)["allowed"])
+
+    def test_captcha_ratio_immediately_reduces_rate_without_disabling_pool(self):
+        self.store.acquire_discovery_slot(self.source, 4, maximum_rps=4)
+        for _ in range(19):
+            self.store.record_discovery_result(
+                self.source, success=True, result_count=10,
+                maximum_rps=4, captcha_threshold=.02,
+            )
+        self.store.record_discovery_result(
+            self.source, success=False, captcha=True, shared_exit=False,
+            maximum_rps=4, captcha_threshold=.02,
+        )
+        with self.store.connect() as connection:
+            row = connection.execute(
+                "SELECT current_rps,state,last_rate_decrease_at FROM discovery_source_runtime "
+                "WHERE source=%s", (self.source,),
+            ).fetchone()
+        self.assertEqual(row["current_rps"], 2)
+        self.assertEqual(row["state"], "degraded")
+        self.assertIsNotNone(row["last_rate_decrease_at"])
+        self.assertTrue(self.store.acquire_discovery_slot(
+            self.source, 4, maximum_rps=4
+        )["allowed"])
+        self.store.record_discovery_result(
+            self.source, success=False, captcha=True, shared_exit=False,
+            maximum_rps=4, captcha_threshold=.02,
+        )
+        with self.store.connect() as connection:
+            current = connection.execute(
+                "SELECT current_rps FROM discovery_source_runtime WHERE source=%s",
+                (self.source,),
+            ).fetchone()["current_rps"]
+        self.assertEqual(current, 2)
+
+    def test_severe_captcha_at_low_rate_opens_short_recovery_circuit(self):
+        self.store.acquire_discovery_slot(self.source, .5, maximum_rps=4)
+        for _ in range(18):
+            self.store.record_discovery_result(
+                self.source, success=True, result_count=10,
+                maximum_rps=4, captcha_threshold=.02,
+            )
+        for _ in range(3):
+            self.store.record_discovery_result(
+                self.source, success=False, captcha=True, shared_exit=False,
+                maximum_rps=4, captcha_threshold=.02,
+                source_cooldown_seconds=1800,
+            )
+
+        slot = self.store.acquire_discovery_slot(
+            self.source, .5, maximum_rps=4
+        )
+
+        self.assertTrue(slot["allowed"])
+        self.assertEqual(slot["state"], "circuit_open")
+        self.assertLessEqual(slot["wait"], 20)
+        with self.store.connect() as connection:
+            wait = connection.execute(
+                "SELECT extract(epoch FROM circuit_until-now()) AS w "
+                "FROM discovery_source_runtime WHERE source=%s", (self.source,),
+            ).fetchone()["w"]
+        self.assertGreater(float(wait), 295)
+        self.assertLessEqual(float(wait), 300)
+
+    def test_fresh_window_captcha_burst_opens_circuit_before_twenty_requests(self):
+        self.store.acquire_discovery_slot(self.source, 4, maximum_rps=4)
+        for _ in range(3):
+            self.store.record_discovery_result(
+                self.source, success=True, result_count=10,
+                maximum_rps=4, captcha_threshold=.02,
+            )
+        for _ in range(3):
+            self.store.record_discovery_result(
+                self.source, success=False, captcha=True, shared_exit=False,
+                maximum_rps=4, captcha_threshold=.02,
+                source_cooldown_seconds=1800,
+            )
+
+        slot = self.store.acquire_discovery_slot(
+            self.source, 4, maximum_rps=4,
+        )
+
+        self.assertTrue(slot["allowed"])
+        self.assertEqual(slot["state"], "circuit_open")
+        self.assertLessEqual(slot["wait"], 20)
+        with self.store.connect() as connection:
+            wait = connection.execute(
+                "SELECT extract(epoch FROM circuit_until-now()) AS w "
+                "FROM discovery_source_runtime WHERE source=%s", (self.source,),
+            ).fetchone()["w"]
+        self.assertGreater(float(wait), 295)
+        self.assertLessEqual(float(wait), 300)
+
+    def test_repeated_circuits_escalate_duration_and_probing_never_fully_stops(self):
+        def circuit_seconds():
+            with self.store.connect() as connection:
+                row = connection.execute(
+                    "SELECT extract(epoch FROM circuit_until-now()) AS w,circuit_streak "
+                    "FROM discovery_source_runtime WHERE source=%s", (self.source,),
+                ).fetchone()
+            return float(row["w"]), int(row["circuit_streak"])
+
+        self.store.acquire_discovery_slot(self.source, 4, maximum_rps=4)
+        for _ in range(3):
+            self.store.record_discovery_result(
+                self.source, success=True, result_count=10,
+                maximum_rps=4, captcha_threshold=.02,
+            )
+        for _ in range(3):
+            self.store.record_discovery_result(
+                self.source, success=False, captcha=True, shared_exit=False,
+                maximum_rps=4, captcha_threshold=.02, source_cooldown_seconds=1800,
+            )
+        first, streak = circuit_seconds()
+        self.assertGreater(first, 295)
+        self.assertLessEqual(first, 300)
+        self.assertEqual(streak, 1)
+        self.assertTrue(
+            self.store.acquire_discovery_slot(self.source, 4, maximum_rps=4)["allowed"]
+        )
+        # Expire the circuit and trip it again: the duration doubles.
+        with self.store.connect() as connection:
+            connection.execute(
+                "UPDATE discovery_source_runtime SET circuit_until=now()-interval '1 second',"
+                "window_started_at=now(),requests_window=0,successes_window=0,errors_window=0,"
+                "limited_window=0,captcha_window=0,consecutive_failures=0 WHERE source=%s",
+                (self.source,),
+            )
+        self.store.acquire_discovery_slot(self.source, 4, maximum_rps=4)
+        for _ in range(2):
+            self.store.record_discovery_result(
+                self.source, success=True, result_count=10,
+                maximum_rps=4, captcha_threshold=.02,
+            )
+        for _ in range(3):
+            self.store.record_discovery_result(
+                self.source, success=False, captcha=True, shared_exit=False,
+                maximum_rps=4, captcha_threshold=.02, source_cooldown_seconds=1800,
+            )
+        second, streak = circuit_seconds()
+        self.assertGreater(second, 590)
+        self.assertLessEqual(second, 600)
+        self.assertEqual(streak, 2)
+
+    def test_healthy_window_resets_circuit_streak(self):
+        with self.store.connect() as connection:
+            connection.execute(
+                "INSERT INTO discovery_source_runtime(source,state,current_rps,requests_window,"
+                "successes_window,captcha_window,consecutive_failures,circuit_streak) "
+                "VALUES(%s,'healthy',0.125,10,10,0,0,3)", (self.source,),
+            )
+        slot = self.store.acquire_discovery_slot(self.source, 1.0)
+        self.assertTrue(slot["allowed"])
+        with self.store.connect() as connection:
+            streak = connection.execute(
+                "SELECT circuit_streak FROM discovery_source_runtime WHERE source=%s",
+                (self.source,),
+            ).fetchone()["circuit_streak"]
+        self.assertEqual(int(streak), 0)
 
     def test_healthy_window_recovers_requested_starting_rate(self):
         with self.store.connect() as connection:

@@ -1,7 +1,9 @@
 import hashlib
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from realtime.campaign_store import CampaignStore, PageRecord
 
@@ -94,6 +96,49 @@ class LocalCampaignIntegrationTests(unittest.TestCase):
                 "WHERE cp.campaign_id=%s", (campaign_id,),
             ).fetchone()
         self.assertEqual(stored["content"], "")
+
+    def test_legacy_non_html_failure_gets_one_retry_for_pdf_support(self):
+        campaign_id = self.store.create_campaign("pdf retry", [], 1, "direct")
+        self.campaign_ids.append(campaign_id)
+        legacy_url = f"https://example.com/legacy-{campaign_id}.pdf"
+        permanent_url = f"https://example.com/unsupported-{campaign_id}.zip"
+        self.store.record_event(
+            campaign_id, legacy_url, "permanent_failed", 200, "non_html"
+        )
+        self.store.record_event(
+            campaign_id,
+            permanent_url,
+            "permanent_failed",
+            200,
+            "不支持的内容类型: application/zip",
+        )
+
+        processed = self.store.processed_urls(
+            campaign_id, [legacy_url, permanent_url]
+        )
+
+        self.assertNotIn(legacy_url, processed)
+        self.assertIn(permanent_url, processed)
+
+    def test_concurrent_same_query_requests_reuse_one_active_campaign(self):
+        query = f"Same   Keyword {os.getpid()} {uuid4()}"
+
+        def create(index):
+            return self.store.get_or_create_active_local_campaign(
+                query if index % 2 else " ".join(query.lower().split()),
+                [f"alias-{index % 3}"], 100 + index, "direct",
+            )
+
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            results = list(executor.map(create, range(64)))
+        campaign_ids = {campaign_id for campaign_id, _ in results}
+        self.assertEqual(len(campaign_ids), 1)
+        self.assertEqual(sum(created for _, created in results), 1)
+        campaign_id = campaign_ids.pop()
+        self.campaign_ids.append(campaign_id)
+        campaign = self.store.campaign(campaign_id)
+        self.assertEqual(campaign["daily_target"], 163)
+        self.assertEqual(set(campaign["aliases"]), {"alias-0", "alias-1", "alias-2"})
 
 
 if __name__ == "__main__":

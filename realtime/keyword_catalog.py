@@ -164,3 +164,31 @@ AI_ANCHORS = re.compile(
     r"人工智能|大模型|生成式|机器学习|智能体|机器人",
     re.IGNORECASE,
 )
+
+# These are precise AI concepts omitted by the original generic guard. They
+# are title-only so navigation links cannot make unrelated bodies eligible.
+AI_SPECIFIC_ANCHORS = re.compile(
+    r"\b(?:"
+    r"large language models?|small language models?|neural networks?|"
+    r"reinforcement learning|foundation models?|diffusion models?|"
+    r"retrieval[- ]augmented generation|natural language processing|"
+    r"computer vision|vision language models?|generative models?|"
+    r"prompt engineering|deepfakes?|model context protocol|"
+    r"openai|chatgpt|deepseek|qwen)\b|"
+    r"大语言模型|深度学习|神经网络|"
+    r"强化学习|扩散模型|检索增强生成|自然语言处理|计算机视觉|视觉语言模型|"
+    r"提示词工程|深度伪造|具身智能|思维链|通义千问",
+    re.IGNORECASE,
+)
+
+AI_TITLE_ACRONYMS = re.compile(
+    r"(?<![a-z0-9])(?:ai|llms?|gpt(?:-?\d+)?)(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def has_ai_context(title: str, text: str) -> bool:
+    combined = title + ' ' + text
+    if AI_ANCHORS.search(combined):
+        return True
+    return bool(AI_TITLE_ACRONYMS.search(title) or AI_SPECIFIC_ANCHORS.search(title))

@@ -24,19 +24,38 @@ from bs4 import BeautifulSoup, SoupStrainer
 from .campaign_store import CampaignStore
 from .config import Config
 from .discovery import GoogleBlocked, SearchDiscovery, SearchResult
+from .experiment_audit import write_audit_snapshot
 from .experiment_store import ExperimentStore, digest
 from .fetcher import LiveFetcher, MAX_TEXT_CHARS, normalize_url
-from .keyword_catalog import AI_ANCHORS, base_keyword_specs
+from .keyword_catalog import base_keyword_specs, has_ai_context
 from .markdown_export import literal, quality_warnings
 from .proxy_pool import ProxyPool, ProxySynchronizer
 from .whale_collector import WhaleClient, whale_message
 
 FAMILIES = ('topic', 'event', 'site', 'recent')
-EXCLUDE = ' -site:youtube.com -site:youtu.be'
+EXCLUDE = (
+    ' -site:youtube.com -site:youtu.be -site:linkedin.com -site:facebook.com'
+    ' -site:reddit.com -site:x.com -site:instagram.com -site:tiktok.com'
+    ' -inurl:scholar.google'
+)
 FINAL_STATES = {'complete', 'storage_stopped', 'stopped'}
 SUPPORTED_LANGUAGES = ('zh', 'en')
 BODY_WORKERS = 12
 SEARCH_BACKLOG_LIMIT = 300
+
+
+def archive_audit(store: ExperimentStore) -> Path | None:
+    """Persist a small strict audit outside the replaceable experiment ledger."""
+    try:
+        target = write_audit_snapshot(store.path)
+        store.set('audit_archive_path', str(target))
+        return target
+    except Exception as exc:
+        try:
+            store.set('audit_archive_error', type(exc).__name__)
+        except Exception:
+            pass
+        return None
 
 
 def iso(at: float) -> str:
@@ -64,7 +83,7 @@ def quality(document: dict | None) -> list[str]:
         warnings.append('possibly_truncated')
     if document.get('language') not in {'zh', 'en'}:
         warnings.append('unsupported_language')
-    if not AI_ANCHORS.search(document.get('title', '') + ' ' + text):
+    if not has_ai_context(document.get('title', ''), text):
         warnings.append('no_ai_context')
     title = document.get('title', '').casefold()
     if any(marker in title for marker in ('just a moment', 'access denied', 'sign in', 'log in', 'security check')):
@@ -76,12 +95,17 @@ def publication_metadata(raw: bytes, *, parser: str = 'html.parser') -> tuple[st
     """Only explicit publication fields with timezone; never infer from crawl time."""
     soup = BeautifulSoup(raw, parser, parse_only=SoupStrainer(['meta', 'time', 'script']))
     candidates = []
-    for tag in soup.select('meta[property="article:published_time"],meta[itemprop="datePublished"],time[itemprop="datePublished"]'):
+    for tag in soup.select(
+        'meta[property="article:published_time"],meta[property="article:published"],'
+        'meta[property="og:article:published_time"],meta[property="og:published_time"],'
+        'meta[itemprop="datePublished"],time[itemprop="datePublished"]'
+    ):
         candidates.append((tag.get('content') or tag.get('datetime'), 'html:datePublished'))
     for tag in soup.select('meta[name],meta[property],time[pubdate][datetime]'):
         field = (tag.get('name') or tag.get('property') or '').casefold()
         if field in {'pubdate', 'publishdate', 'publish_date', 'publication_date', 'datepublished',
-                     'dc.date.issued', 'dcterms.issued', 'parsely-pub-date', 'sailthru.date'}:
+                     'dc.date.issued', 'dcterms.issued', 'parsely-pub-date', 'sailthru.date',
+                     'og:article:published_time', 'og:published_time'}:
             candidates.append((tag.get('content'), 'html:' + field))
         elif tag.name == 'time':
             candidates.append((tag.get('datetime'), 'html:time.pubdate'))
@@ -90,6 +114,8 @@ def publication_metadata(raw: bytes, *, parser: str = 'html.parser') -> tuple[st
             kind = value.get('@type', '')
             if any(t in str(kind) for t in ('Article','BlogPosting','NewsArticle','ScholarlyArticle')):
                 candidates.append((value.get('datePublished'), 'jsonld:datePublished'))
+            elif 'VideoObject' in str(kind):
+                candidates.append((value.get('uploadDate'), 'jsonld:uploadDate'))
             for child in value.values():
                 walk(child)
         elif isinstance(value, list):
@@ -97,7 +123,9 @@ def publication_metadata(raw: bytes, *, parser: str = 'html.parser') -> tuple[st
                 walk(child)
     for tag in soup.select('script[type="application/ld+json"]'):
         try:
-            walk(json.loads(tag.string or tag.get_text() or ''))
+            # Accept literal control characters in otherwise valid JSON-LD;
+            # publication values still pass the explicit timezone check below.
+            walk(json.loads(tag.string or tag.get_text() or '', strict=False))
         except (ValueError, RecursionError):
             continue
     soup.decompose()
@@ -145,11 +173,11 @@ def seed_queries(
             if spec.language not in languages:
                 continue
             family = 'topic' if spec.key.endswith(':topic') else 'event'
-            store.add_query(family, spec.query + (EXCLUDE if family == 'event' else ''), spec.language, spec.aliases[0])
+            store.add_query(family, spec.query + EXCLUDE, spec.language, spec.aliases[0])
         for query in config.continuous_ai_keywords:
             language = 'zh' if re.search('[\u3400-\u9fff]', query) else 'en'
             if language in languages:
-                store.add_query('topic', query, language, query)
+                store.add_query('topic', query + EXCLUDE, language, query)
         store.set('catalog_seeded', True)
     today = datetime.fromtimestamp(now, timezone.utc).date()
     if store.get('recent_date') != str(today):
@@ -347,9 +375,15 @@ class Runner:
             return {'allowed': False}
         limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
         if limit == 2:
-            slot = self.production.acquire_discovery_slot(source, min(initial_rps, limit))
+            slot = self.production.acquire_discovery_slot(
+                source, min(initial_rps, limit),
+                probe_rps=self.config.google_web_circuit_probe_rps,
+            )
         else:
-            slot = self.production.acquire_discovery_slot(source, min(initial_rps, limit), maximum_rps=limit)
+            slot = self.production.acquire_discovery_slot(
+                source, min(initial_rps, limit), maximum_rps=limit,
+                probe_rps=self.config.google_web_circuit_probe_rps,
+            )
         if source == 'google_web' and not slot.get('allowed'):
             self.store.set('search_cooling_until', time.time() + max(1, float(slot.get('wait') or 60)))
         if source == 'google_web' and slot.get('allowed'):
@@ -368,9 +402,16 @@ class Runner:
             limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
             self.clients[language] = SearchDiscovery(
                 timeout=20, proxy_pool=self.pool, proxy_profile=self.store.get('proxy_profile', 'private'), language=language,
+                proxy_profiles=self.config.google_proxy_profiles,
                 providers=tuple(self.store.get('google_providers', ['wml','wml_direct','searxng'])), searxng_url=self.config.searxng_url,
-                source_slot_acquirer=self.slot, source_result_recorder=self.production.record_discovery_result,
-                proxy_reserver=self.production.reserve_google_proxy, proxy_group_reserver=self.production.reserve_google_proxy_group, proxy_result_recorder=self.production.record_google_proxy_result,
+                source_slot_acquirer=self.slot,
+                source_result_recorder=lambda *args, **kwargs: self.production.record_discovery_result(
+                    *args, circuit_max_seconds=self.config.google_web_circuit_max_seconds, **kwargs
+                ),
+                proxy_reserver=self.production.reserve_google_proxy, proxy_group_reserver=self.production.reserve_google_proxy_group,
+                proxy_result_recorder=lambda *args, **kwargs: self.production.record_google_proxy_result(
+                    *args, cooldown_cap_seconds=self.config.google_web_proxy_cooldown_cap_seconds, **kwargs
+                ),
                 google_web_initial_rps=limit if limit > 2 else 1.0, google_web_max_rps=limit,
                 proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
                 source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
@@ -381,6 +422,7 @@ class Runner:
         cached = self.store.cached(row['id'], row['page'], time.time())
         results, attempts, error = [], [], ''
         started = time.time()
+        retry_after = None
         if cached:
             results = json.loads(cached['results'])
         else:
@@ -390,11 +432,21 @@ class Runner:
                 results = [{'url': normalize_url(r.url), 'raw_url': r.url, 'title': r.title} for r in client._discover_google_page(row['query'], row['page'])]
             except GoogleBlocked as exc:
                 error = exc.reason
+                retry_after = exc.retry_after
             attempts = client.attempts[before:]
             # An empty response from a healthy primary may need confirmation
             # from a cooling fallback. Delay that page, not unrelated searches.
             if error == 'google_provider_cooling' and not any(a.get('success') for a in attempts):
                 self.store.set('search_cooling_until', time.time() + 60)
+            elif error == 'google_proxy_unavailable':
+                # Proxy groups have a durable per-exit interval. Pause global
+                # dispatch until the earliest group is reusable instead of
+                # turning untouched pages into hundreds of avoidable failures.
+                delay = min(60.0, max(0.25, float(retry_after or 1.0)))
+                self.store.set(
+                    'search_cooling_until',
+                    max(self.store.get('search_cooling_until', 0), time.time() + delay),
+                )
         search_id = self.store.search(row, row['page'], started, results, attempts, error, bool(cached))
         if not self.remote_only:
             export_search(self.store, self.output, search_id)
@@ -505,7 +557,9 @@ class Runner:
                 elif state == 'running':
                     if now-last_sync >= 300:
                         try:
-                            ProxySynchronizer(self.config).sync(self.store.get('proxy_profile', 'private'))
+                            syncer = ProxySynchronizer(self.config)
+                            for profile in self.config.google_proxy_profiles:
+                                syncer.sync(profile)
                             last_sync = now
                         except Exception as exc:
                             self.store.set('proxy_last_error', type(exc).__name__)
@@ -561,6 +615,7 @@ class Runner:
             self.store.set('finished_at', time.time())
             with self.store.db:
                 self.store.db.execute('INSERT OR REPLACE INTO samples VALUES(?,?)', (time.time(), json.dumps(self.store.counts())))
+            archive_audit(self.store)
             if not self.remote_only:
                 export_report(self.store, self.output, full=True)
 
@@ -573,6 +628,8 @@ def command(args):
             store.db.close()
             raise ValueError('experiment is finished; cannot extend its deadline')
         store.set('state', 'paused' if args.action == 'pause' else 'running')
+        if args.action == 'pause':
+            archive_audit(store)
         print(json.dumps({'state': store.get('state'), 'deadline': iso(store.get('deadline'))}))
         store.db.close()
         return
@@ -605,6 +662,12 @@ def command(args):
     if args.whale and not config.whale_collector_api_key:
         raise ValueError('Whale credentials are missing')
     production = CampaignStore(config.database_url)
+    try:
+        syncer = ProxySynchronizer(config)
+        for profile in config.google_proxy_profiles:
+            syncer.sync(profile)
+    except Exception as exc:
+        print(f'initial proxy sync failed: {type(exc).__name__}')
     if not store.get('id'):
         if any(output.iterdir()):
             raise ValueError('new experiment requires an empty output directory')
@@ -633,6 +696,7 @@ def command(args):
         store.set('deadline', now + args.hours * 3600)
         store.set('state', 'running')
     if store.get('state') in FINAL_STATES:
+        archive_audit(store)
         print('Experiment already finished; deadline is unchanged.')
         production.pool.close()
         return

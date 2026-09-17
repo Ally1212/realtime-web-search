@@ -174,14 +174,18 @@ class Handler(BaseHTTPRequestHandler):
             proxy_profile = str(payload.get("proxy_profile", self.config.default_proxy_profile))
             if proxy_profile not in {"private", "public", "direct"}:
                 raise ValueError("proxy_profile 必须是 private、public 或 direct")
-            campaign_id = self.store.create_campaign(query, aliases, daily_target, proxy_profile)
-            self.queue.enqueue(campaign_id)
+            campaign_id, created = self.store.get_or_create_active_local_campaign(
+                query, aliases, daily_target, proxy_profile
+            )
+            if created:
+                self.queue.enqueue(campaign_id)
             self.send_json(
                 {
                     "job_id": campaign_id,
                     "campaign_id": campaign_id,
                     "status": "active",
                     "upload_to_whale": False,
+                    "reused": not created,
                 },
                 202,
             )
@@ -369,8 +373,14 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
+class RealtimeHTTPServer(ThreadingHTTPServer):
+    # The default listen backlog is only five, which drops connections during
+    # the same-keyword burst before request coalescing can do its job.
+    request_queue_size = 512
+
+
 def serve() -> None:
     host = os.getenv("WEB_HOST", "127.0.0.1")
     port = int(os.getenv("WEB_PORT", "8091"))
     print(f"Realtime web search listening on http://{host}:{port}", flush=True)
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    RealtimeHTTPServer((host, port), Handler).serve_forever()

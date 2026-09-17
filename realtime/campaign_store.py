@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
+import random
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -18,6 +20,18 @@ _POOLS: dict[tuple[str, int, int], ConnectionPool[Any]] = {}
 _POOLS_LOCK = threading.Lock()
 _INITIALIZED_DSNS: set[str] = set()
 _INITIALIZE_LOCK = threading.Lock()
+
+
+def _close_shared_pools() -> None:
+    """Stop pool worker threads before Python tears down threading internals."""
+    with _POOLS_LOCK:
+        pools = tuple(_POOLS.values())
+        _POOLS.clear()
+    for pool in pools:
+        pool.close()
+
+
+atexit.register(_close_shared_pools)
 
 
 def _shared_pool(dsn: str) -> ConnectionPool[Any]:
@@ -224,6 +238,7 @@ CREATE TABLE IF NOT EXISTS discovery_source_runtime (
   circuit_until timestamptz,
   window_started_at timestamptz NOT NULL DEFAULT now(),
   evaluated_at timestamptz NOT NULL DEFAULT now(),
+  last_rate_decrease_at timestamptz,
   requests_window bigint NOT NULL DEFAULT 0,
   successes_window bigint NOT NULL DEFAULT 0,
   errors_window bigint NOT NULL DEFAULT 0,
@@ -329,6 +344,8 @@ ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS consecutive_failur
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS latency_seconds_total double precision NOT NULL DEFAULT 0;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_error text;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
+ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_rate_decrease_at timestamptz;
+ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS circuit_streak bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS captcha_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS javascript_verification_count bigint NOT NULL DEFAULT 0;
@@ -539,7 +556,7 @@ class CampaignStore:
                 ),
             )
 
-    def acquire_discovery_slot(self, source: str, initial_rps: float, *, maximum_rps: float = 2.0) -> dict[str, Any]:
+    def acquire_discovery_slot(self, source: str, initial_rps: float, *, maximum_rps: float = 2.0, probe_rps: float = 0.05) -> dict[str, Any]:
         """Reserve one global request slot shared by every crawler process."""
         if not 0 < maximum_rps <= 8:
             raise ValueError('maximum_rps must be >0 and <=8')
@@ -556,10 +573,21 @@ class CampaignStore:
                 ).fetchone()
                 circuit_until = row["circuit_until"]
                 if circuit_until and circuit_until > now:
+                    # Half-open probing instead of a full stop: serve a trickle
+                    # at the floor rate so recovery is detected immediately and
+                    # flagged exits keep resting between rare probes. Mature
+                    # crawlers (Scrapy/Crawlee) degrade rather than halt.
+                    probe = min(max(float(probe_rps), 0.01), 0.5)
+                    next_at = max(row["next_request_at"], now)
+                    wait = max(0.0, (next_at - now).total_seconds())
+                    connection.execute(
+                        "UPDATE discovery_source_runtime SET next_request_at=%s,current_rps=%s,"
+                        "updated_at=now() WHERE source=%s",
+                        (next_at + timedelta(seconds=1.0 / probe), probe, source),
+                    )
                     return {
-                        "allowed": False, "wait": (circuit_until - now).total_seconds(),
-                        "state": "circuit_open", "current_rps": float(row["current_rps"]),
-                        "circuit_until": circuit_until,
+                        "allowed": True, "wait": wait, "state": "circuit_open",
+                        "current_rps": probe, "circuit_until": circuit_until,
                     }
                 rps = min(max(float(row["current_rps"]), 0.01), maximum_rps)
                 state = str(row["state"])
@@ -587,8 +615,9 @@ class CampaignStore:
                 wait = max(0.0, (next_at - now).total_seconds())
                 connection.execute(
                     "UPDATE discovery_source_runtime SET next_request_at=%s,current_rps=%s,"
+                    "circuit_streak=CASE WHEN %s THEN 0 ELSE circuit_streak END,"
                     "updated_at=now() WHERE source=%s",
-                    (next_at + timedelta(seconds=1.0 / rps), rps, source),
+                    (next_at + timedelta(seconds=1.0 / rps), rps, healthy_window, source),
                 )
         return {"allowed": True, "wait": wait, "state": state, "current_rps": rps}
 
@@ -596,7 +625,7 @@ class CampaignStore:
         self, source: str, *, success: bool, limited: bool = False,
         captcha: bool = False, result_count: int = 0, novel_count: int = 0,
         maximum_rps: float = 2.0, captcha_threshold: float = 0.02,
-        source_cooldown_seconds: int = 1800,
+        source_cooldown_seconds: int = 1800, circuit_max_seconds: int = 7200,
         error_code: str = "", elapsed_seconds: float = 0, shared_exit: bool = True,
     ) -> None:
         now = datetime.now(timezone.utc)
@@ -618,6 +647,8 @@ class CampaignStore:
                 rps = float(row["current_rps"])
                 state = "healthy" if success else "degraded"
                 circuit_until = row["circuit_until"]
+                circuit_streak = int(row["circuit_streak"] or 0)
+                already_open = bool(circuit_until and circuit_until > now)
                 # Failures from rotating exits belong to individual proxy
                 # health and must not accumulate into a shared-source streak.
                 streak = (
@@ -631,31 +662,87 @@ class CampaignStore:
                     or (provider and requests >= 20 and successes / requests < 0.2)
                 )
                 if unhealthy or (provider and captcha and shared_exit):
-                    rps = max(0.05, min(0.25, rps / 2))
                     state = "circuit_open"
-                    circuit_until = now + timedelta(seconds=max(1, source_cooldown_seconds))
-                elif circuit_until and circuit_until > now:
+                    if not already_open:
+                        # Repeated offences back off exponentially (capped), so a
+                        # still-flagged pool does not get re-probed on a fixed
+                        # short timer. Probing continues at the floor rate.
+                        circuit_streak += 1
+                        rps = max(0.05, min(0.25, rps / 2))
+                        duration = min(
+                            max(1, circuit_max_seconds),
+                            max(1, source_cooldown_seconds) * 2 ** min(circuit_streak - 1, 8),
+                        )
+                        circuit_until = now + timedelta(seconds=duration)
+                elif already_open:
                     state = "circuit_open"
                 evaluated_at = row["evaluated_at"]
+                last_rate_decrease_at = row["last_rate_decrease_at"]
+                ratio = captcha_count / max(requests, 1)
+                early_captcha_burst = (
+                    captcha and requests >= 5 and captcha_count >= 3 and ratio >= 0.5
+                )
+                rapid_limit = (
+                    requests >= 20 and ratio > captcha_threshold
+                    and (
+                        last_rate_decrease_at is None
+                        or (now - last_rate_decrease_at).total_seconds() >= 60
+                    )
+                )
+                if early_captcha_burst and not already_open:
+                    # A freshly reset five-minute window must not need twenty
+                    # challenged requests before reacting. Require three
+                    # explicit CAPTCHA responses and a majority of the sample,
+                    # then cool briefly instead of spending more proxy exits.
+                    circuit_streak += 1
+                    rps = min(0.25, rps)
+                    state = "circuit_open"
+                    base = min(max(1, source_cooldown_seconds), 300)
+                    circuit_until = now + timedelta(
+                        seconds=min(max(1, circuit_max_seconds), base * 2 ** min(circuit_streak - 1, 8))
+                    )
+                    last_rate_decrease_at = now
+                elif rapid_limit and not already_open:
+                    rps = max(0.25, rps / 2)
+                    state = "degraded"
+                    last_rate_decrease_at = now
+                severe_captcha = (
+                    requests >= 20
+                    and ratio >= max(0.10, captcha_threshold * 4)
+                    and rps <= 0.5
+                )
+                if severe_captcha and not already_open:
+                    # At the minimum useful pace, a heavily challenged source
+                    # needs time to recover instead of more low-yield probes.
+                    circuit_streak += 1
+                    base = min(max(1, source_cooldown_seconds), 300)
+                    circuit_until = now + timedelta(
+                        seconds=min(max(1, circuit_max_seconds), base * 2 ** min(circuit_streak - 1, 8))
+                    )
+                    state = "circuit_open"
                 if (now - evaluated_at).total_seconds() >= 1800 and not circuit_until:
-                    ratio = captcha_count / max(requests, 1)
                     if ratio < 0.01 and requests >= 20 and successes / requests >= 0.9 and (row["result_count"] or result_count):
                         rps = min(maximum_rps, rps * 1.25)
                         state = "healthy"
-                    elif ratio > captcha_threshold:
+                        circuit_streak = 0
+                    elif ratio > captcha_threshold and not rapid_limit:
                         rps = max(0.25, rps / 2)
                     evaluated_at = now
                 connection.execute(
                     "UPDATE discovery_source_runtime SET state=%s,current_rps=%s,circuit_until=%s,"
-                    "window_started_at=%s,evaluated_at=%s,requests_window=%s,successes_window=%s,"
+                    "circuit_streak=%s,"
+                    "window_started_at=%s,evaluated_at=%s,last_rate_decrease_at=%s,"
+                    "requests_window=%s,successes_window=%s,"
                     "errors_window=%s,limited_window=%s,captcha_window=%s,"
                     "requests_total=requests_total+1,successes_total=successes_total+%s,"
                     "errors_total=errors_total+%s,limited_total=limited_total+%s,"
                     "captcha_total=captcha_total+%s,result_count=result_count+%s,"
                     "novel_count=novel_count+%s,updated_at=now() WHERE source=%s",
                     (
-                        state, rps, circuit_until, now if reset else row["window_started_at"],
-                        evaluated_at, requests, successes, errors, limited_count, captcha_count,
+                        state, rps, circuit_until, circuit_streak,
+                        now if reset else row["window_started_at"],
+                        evaluated_at, last_rate_decrease_at, requests, successes,
+                        errors, limited_count, captcha_count,
                         int(success), int(not success), int(limited), int(captcha),
                         max(0, result_count), max(0, novel_count), source,
                     ),
@@ -778,7 +865,8 @@ class CampaignStore:
     def record_google_proxy_result(
         self, proxy_hash: str, *, success: bool, cooldown_seconds: int = 0,
         error_code: str = "", elapsed_seconds: float = 0, result_count: int = 0,
-        http_status: int | None = None,
+        http_status: int | None = None, cooldown_cap_seconds: int = 7200,
+        jitter_ratio: float = 0.2,
     ) -> None:
         captcha = error_code == "google_captcha"
         javascript = error_code == "google_javascript_required"
@@ -800,10 +888,17 @@ class CampaignStore:
                 limited_streak = 0
             elif captcha or http_error:
                 limited_streak += 1
-                # Preserve an explicitly configured longer base. The aggressive
-                # 300-second base gives 300, 600, 1200, then 1800 seconds.
-                cooldown_seconds = min(max(cooldown_seconds, 1800),
-                                       cooldown_seconds * 2 ** min(limited_streak - 1, 10))
+                # Exponential backoff with jitter, capped well above Google's
+                # multi-hour flag memory, so flagged exits get real rest and do
+                # not unlock in a synchronized herd. The 300-second base gives
+                # 300, 600, 1200, 2400, 4800, then the 7200-second cap.
+                if cooldown_seconds > 0:
+                    cap = max(1800, cooldown_cap_seconds)
+                    cooldown_seconds = min(cap, cooldown_seconds * 2 ** min(limited_streak - 1, 10))
+                    if jitter_ratio > 0:
+                        cooldown_seconds = max(
+                            60, int(cooldown_seconds * random.uniform(1 - jitter_ratio, 1 + jitter_ratio))
+                        )
             connection.execute(
                 'UPDATE google_proxy_sessions SET limited_failure_streak=%s WHERE proxy_key_hash=%s',
                 (limited_streak, proxy_hash),
@@ -1017,6 +1112,47 @@ class CampaignStore:
                 (campaign_id, query, json.dumps(aliases, ensure_ascii=False), daily_target, proxy_profile),
             )
         return campaign_id
+
+    def get_or_create_active_local_campaign(
+        self, query: str, aliases: list[str], daily_target: int, proxy_profile: str
+    ) -> tuple[str, bool]:
+        """Coalesce concurrent local requests for the same normalized query."""
+        normalized = " ".join(query.split()).casefold()
+        lock_key = f"local-campaign:{proxy_profile}:{normalized}"
+        campaign_id = str(uuid4())
+        with self.connect() as connection:
+            with connection.transaction():
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (lock_key,)
+                )
+                existing = connection.execute(
+                    "SELECT c.id,c.aliases,c.daily_target FROM campaigns c "
+                    "WHERE c.status='active' AND c.proxy_profile=%s "
+                    "AND lower(regexp_replace(btrim(c.query),'\\s+',' ','g'))=%s "
+                    "AND NOT EXISTS(SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id) "
+                    "ORDER BY c.created_at LIMIT 1 FOR UPDATE OF c",
+                    (proxy_profile, normalized),
+                ).fetchone()
+                if existing:
+                    merged = list(dict.fromkeys([
+                        *(str(value) for value in existing["aliases"]),
+                        *(str(value) for value in aliases),
+                    ]))[:20]
+                    connection.execute(
+                        "UPDATE campaigns SET aliases=%s::jsonb,daily_target=GREATEST(daily_target,%s),"
+                        "updated_at=now() WHERE id=%s",
+                        (json.dumps(merged, ensure_ascii=False), daily_target, existing["id"]),
+                    )
+                    return str(existing["id"]), False
+                connection.execute(
+                    "INSERT INTO campaigns(id,query,aliases,daily_target,proxy_profile,status) "
+                    "VALUES(%s,%s,%s::jsonb,%s,%s,'active')",
+                    (
+                        campaign_id, " ".join(query.split()),
+                        json.dumps(aliases, ensure_ascii=False), daily_target, proxy_profile,
+                    ),
+                )
+        return campaign_id, True
 
     def create_whale_campaign(
         self, *, task_id: str, dataset_id: str, source_platform: str, task_type: str,
@@ -1284,7 +1420,11 @@ class CampaignStore:
             rows = connection.execute(
                 "SELECT url FROM pages WHERE url=ANY(%s) "
                 "UNION SELECT url FROM crawl_events WHERE campaign_id=%s AND url=ANY(%s) "
-                "AND status='permanent_failed'",
+                # Older workers classified every non-HTML response as
+                # permanent before PDF extraction existed. Let each legacy
+                # record retry once; a new success is stored in pages, while a
+                # still-unsupported response gets a specific permanent error.
+                "AND status='permanent_failed' AND error_code<>'non_html'",
                 (urls, campaign_id, urls),
             ).fetchall()
         return {str(row["url"]) for row in rows}

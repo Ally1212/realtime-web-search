@@ -17,6 +17,8 @@ dependencies = [
   "trafilatura>=2.2,<3",
   "jieba>=0.42,<1",
   "prometheus-client>=0.23,<1",
+  "pypdf>=6,<7",
+  "fonttools>=4,<5",
 ]
 
 [project.scripts]

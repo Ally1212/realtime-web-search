@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import io
 import json
 import socket
 import threading
@@ -18,8 +19,13 @@ from trafilatura import bare_extraction
 
 
 MAX_DOWNLOAD_BYTES = 5_000_000
+MAX_PDF_DOWNLOAD_BYTES = 12_000_000
 MAX_TEXT_CHARS = 100_000
-TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src"}
+MAX_PDF_PAGES = 300
+PDF_MEDIA_TYPES = {'application/pdf', 'application/x-pdf', 'text/pdf', 'text/x-pdf'}
+TRACKING_PARAMS = {
+    "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "srsltid",
+}
 
 
 @dataclass(frozen=True)
@@ -152,7 +158,10 @@ def _json_ld_article(raw: bytes, url: str, *, parser: str = 'html.parser') -> tu
 
     for script in scripts:
         try:
-            payload = json.loads(script)
+            # Some publishers emit literal newlines/tabs inside JSON-LD
+            # strings. Keep full JSON validation while tolerating only those
+            # control characters.
+            payload = json.loads(script, strict=False)
         except (ValueError, TypeError):
             continue
         for item in objects(payload):
@@ -214,6 +223,58 @@ def extract_text(raw: bytes, url: str, use_trafilatura: bool = True, *, lean_met
     return _fallback_extract_text(raw, url)
 
 
+def extract_pdf_text(raw: bytes, url: str) -> tuple[str, str]:
+    """Extract a bounded, complete text layer from a public PDF."""
+    from pypdf import PdfReader
+
+    try:
+        reader = PdfReader(io.BytesIO(raw), strict=False)
+        if reader.is_encrypted:
+            raise ValueError('PDF 已加密')
+        if len(reader.pages) > MAX_PDF_PAGES:
+            raise ValueError(f'PDF 超过 {MAX_PDF_PAGES} 页限制')
+        metadata = reader.metadata or {}
+        title = ' '.join(str(metadata.get('/Title') or '').split())[:300]
+        parts = []
+        characters = 0
+        for page in reader.pages:
+            text = ' '.join((page.extract_text() or '').split())
+            if not text:
+                continue
+            remaining = MAX_TEXT_CHARS - characters
+            parts.append(text[:remaining])
+            characters += min(len(text), remaining)
+            if characters >= MAX_TEXT_CHARS:
+                break
+        return (title or url)[:300], ' '.join(parts)[:MAX_TEXT_CHARS]
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError('PDF 正文解析失败') from exc
+
+
+def is_pdf_response(raw: bytes, content_type: str) -> bool:
+    media_type = content_type.partition(';')[0].strip().lower()
+    return media_type in PDF_MEDIA_TYPES or b'%PDF-' in raw[:1024]
+
+
+def extract_response_text(
+    raw: bytes,
+    url: str,
+    content_type: str,
+    use_trafilatura: bool = True,
+    *,
+    lean_metadata: bool = False,
+) -> tuple[str, str]:
+    """Extract supported responses, including PDFs served as generic binary."""
+    media_type = content_type.partition(';')[0].strip().lower()
+    if is_pdf_response(raw, content_type):
+        return extract_pdf_text(raw, url)
+    if media_type in {'text/html', 'application/xhtml+xml'}:
+        return extract_text(raw, url, use_trafilatura, lean_metadata=lean_metadata)
+    raise ValueError(f"不支持的内容类型: {media_type or 'unknown'}")
+
+
 class LiveFetcher:
     def __init__(self, user_agent: str, timeout: int = 20, use_trafilatura: bool = True, *, reuse_sessions: bool = False, lean_metadata: bool = False):
         self.user_agent = user_agent
@@ -250,40 +311,59 @@ class LiveFetcher:
     def _request(self, url: str, accepted: tuple[str, ...]) -> tuple[requests.Response, bytes]:
         current = normalize_url(url)
         session = self._session(current)
-        for _ in range(6):
-            if not is_public_url(current):
-                raise ValueError("目标不是公网 HTTP/HTTPS 地址")
-            response = session.get(
-                current,
-                headers={"User-Agent": self.user_agent, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1"},
-                timeout=(8, self.timeout),
-                stream=True,
-                allow_redirects=False,
-            )
-            if response.is_redirect or response.is_permanent_redirect:
-                location = response.headers.get("Location")
-                response.close()
-                if not location:
-                    raise ValueError("重定向缺少 Location")
-                current = normalize_url(urljoin(current, location))
-                if self.reuse_sessions:
-                    session = self._session(current)
-                continue
-            content_type = response.headers.get("Content-Type", "").lower()
-            if accepted and not any(value in content_type for value in accepted):
-                response.close()
-                raise ValueError(f"不支持的内容类型: {content_type or 'unknown'}")
-            chunks: list[bytes] = []
-            size = 0
-            for chunk in response.iter_content(65_536):
-                size += len(chunk)
-                if size > MAX_DOWNLOAD_BYTES:
+        try:
+            for _ in range(6):
+                if not is_public_url(current):
+                    raise ValueError("目标不是公网 HTTP/HTTPS 地址")
+                response = session.get(
+                    current,
+                    headers={
+                        "User-Agent": self.user_agent,
+                        "Accept": "text/html,application/xhtml+xml;q=0.9,application/pdf;q=0.8,*/*;q=0.1",
+                    },
+                    timeout=(8, self.timeout),
+                    stream=True,
+                    allow_redirects=False,
+                )
+                if response.is_redirect or response.is_permanent_redirect:
+                    location = response.headers.get("Location")
                     response.close()
-                    raise ValueError("页面超过 5 MB 限制")
-                chunks.append(chunk)
-            response.url = current
-            return response, b"".join(chunks)
-        raise ValueError("重定向次数过多")
+                    if not location:
+                        raise ValueError("重定向缺少 Location")
+                    # Keep one cookie jar for the full transaction. Identity
+                    # providers commonly set cross-domain cookies before
+                    # redirecting back to the article origin.
+                    current = normalize_url(urljoin(current, location))
+                    continue
+                content_type = response.headers.get("Content-Type", "").lower()
+                if accepted and not any(value in content_type for value in accepted):
+                    response.close()
+                    raise ValueError(f"不支持的内容类型: {content_type or 'unknown'}")
+                media_type = content_type.partition(';')[0].strip()
+                download_limit = (
+                    MAX_PDF_DOWNLOAD_BYTES if media_type in PDF_MEDIA_TYPES
+                    else MAX_DOWNLOAD_BYTES
+                )
+                chunks: list[bytes] = []
+                size = 0
+                for chunk in response.iter_content(65_536):
+                    if (not chunks and media_type in {'', 'application/octet-stream',
+                                                       'binary/octet-stream'}
+                            and b'%PDF-' in chunk[:1024]):
+                        download_limit = MAX_PDF_DOWNLOAD_BYTES
+                    size += len(chunk)
+                    if size > download_limit:
+                        response.close()
+                        raise ValueError(
+                            f"页面超过 {download_limit // 1_000_000} MB 限制"
+                        )
+                    chunks.append(chunk)
+                response.url = current
+                return response, b"".join(chunks)
+            raise ValueError("重定向次数过多")
+        finally:
+            if not self.reuse_sessions:
+                session.close()
 
     def _allowed(self, url: str) -> bool:
         parsed = urlsplit(url)
@@ -325,14 +405,21 @@ class LiveFetcher:
                 wait = 0.35 - (time.monotonic() - self._last_request.get(host, 0.0))
                 if wait > 0:
                     time.sleep(wait)
-                response, raw = self._request(url, ("text/html", "application/xhtml+xml"))
+                response, raw = self._request(
+                    url,
+                    ("text/html", "application/xhtml+xml", "pdf", "octet-stream"),
+                )
                 self._last_request[host] = time.monotonic()
             if response.status_code >= 400:
                 return FetchResult("failed", url, fallback_title, response.status_code, error=f"HTTP {response.status_code}")
-            if self.lean_metadata:
-                title, content = extract_text(raw, response.url, self.use_trafilatura, lean_metadata=True)
-            else:
-                title, content = extract_text(raw, response.url, self.use_trafilatura)
+            content_type = response.headers.get('Content-Type', '').lower()
+            title, content = extract_response_text(
+                raw,
+                response.url,
+                content_type,
+                self.use_trafilatura,
+                lean_metadata=self.lean_metadata,
+            )
             if len(content) < 100:
                 return FetchResult("failed", url, title, response.status_code, error="可提取正文不足 100 字符")
             normalized_url = normalize_url(response.url)

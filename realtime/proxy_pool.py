@@ -7,7 +7,7 @@ import random
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -234,6 +234,13 @@ class ProxySynchronizer:
             ).total_seconds() < (min(300, self.config.proxy_sync_seconds) if profile == 'public_google' else self.config.proxy_sync_seconds):
                 return len(current)
             records, request_id = self.client.fetch_all(profile)
+            if profile == 'public_google':
+                # The upstream lastChecked timestamp can trail the sync by more
+                # than this profile's short freshness window. Treat a successful
+                # fetch as the current health check; the short window still
+                # expires these entries between syncs.
+                now = datetime.now(timezone.utc).isoformat()
+                records = [replace(record, last_checked=now) for record in records]
             self.cache.publish(profile, records, request_id)
             return len(records)
 

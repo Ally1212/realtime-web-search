@@ -5,6 +5,26 @@ from realtime.discovery import GoogleBlocked, SearchDiscovery, SearchResult
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_proxy_exhaustion_reports_earliest_reuse_time(self):
+        pool = Mock()
+        pool.available_count.return_value = 2
+        pool.choose.side_effect = [
+            ('http://one.example:80', 'one'),
+            ('http://two.example:80', 'two'),
+        ]
+        pool.google_identity.side_effect = [('group-one', ['one']), ('group-two', ['two'])]
+        reserve = Mock(side_effect=[(False, 7.5), (False, 3.25)])
+        discovery = SearchDiscovery(
+            providers=('wml',), proxy_pool=pool, proxy_profile='private',
+            proxy_group_reserver=reserve,
+        )
+
+        with self.assertRaises(GoogleBlocked) as raised:
+            discovery._select_proxy('wml')
+
+        self.assertEqual(raised.exception.reason, 'google_proxy_unavailable')
+        self.assertEqual(raised.exception.retry_after, 3.25)
+
     def test_http_200_parse_failure_does_not_quarantine_exit_or_cache_empty_result(self):
         for code, status, cooldown in [('google_unrecognized_page', 200, 30),
                                        ('google_unrecognized_page', None, 300),

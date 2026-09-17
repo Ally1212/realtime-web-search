@@ -22,7 +22,7 @@ from .config import Config
 from .discovery import SearchResult
 from .experiment_store import ExperimentStore, digest
 from .google_experiment import (
-    DatedFetcher, FAMILIES, FINAL_STATES, Runner, export_report, iso,
+    DatedFetcher, EXCLUDE, FAMILIES, FINAL_STATES, Runner, archive_audit, export_report, iso,
     normalize_languages, seed_queries,
 )
 from .keyword_catalog import base_keyword_specs
@@ -33,44 +33,164 @@ YIELD_FAMILIES = ('site', 'site', 'site', 'site', 'recent',
                   'site', 'site', 'site', 'site', 'topic',
                   'site', 'site', 'site', 'site', 'recent',
                   'site', 'site', 'site', 'site', 'event')
+SUPPLY_PAGE_COUNT = 11
+# The adaptive metric is accepted unique documents per successful page. Use a
+# weak neutral prior: the former new-body priors (especially site=2/page)
+# overvalued families whose documents often lacked an admissible publication
+# timestamp and delayed convergence to the observed delivery yield.
+FAMILY_PRIORS = {family: (.5, 10) for family in FAMILIES}
 
 
-def archive_queries(domains, languages, today):
-    """Bounded Google-only supply; dates are query filters, not publication evidence."""
-    selected = [host for host, count in domains.most_common(160) if count >= 3]
-    for rank, host in enumerate(selected):
-        for language in languages:
-            topics = ('人工智能', '大模型', '机器学习', '智能体', '生成式AI') if language == 'zh' else (
-                'artificial intelligence', 'large language models', 'machine learning', 'AI agents', 'generative AI')
-            for topic in topics:
-                base = f'site:{host} {topic}'
-                yield base, language, topic
-                for year in range(today.year-8, today.year):
-                    yield f'{base} after:{year}-01-01 before:{year+1}-01-01', language, topic
-                if rank < 60:
-                    current_month = today.year*12 + today.month-1
-                    for offset in range(1, 25):
-                        left, right = current_month-offset, current_month-offset+1
-                        lower = f'{left//12:04d}-{left%12+1:02d}-01'
-                        upper = f'{right//12:04d}-{right%12+1:02d}-01'
-                        yield f'{base} after:{lower} before:{upper}', language, topic
+def weighted_family_schedule(observations, slots=20):
+    """Build a fair interleaved schedule from smoothed accepted-doc/page yield."""
+    if slots < len(FAMILIES):
+        raise ValueError('family schedule must include every family')
+    scores = {}
+    for family in FAMILIES:
+        new, pages = observations.get(family, (0, 0))
+        prior, strength = FAMILY_PRIORS[family]
+        scores[family] = (max(0, new) + prior * strength) / (max(0, pages) + strength)
+    # Maximize observed delivery yield while preserving exploration. At the
+    # standard 20 slots every family keeps 10%, and no family may monopolize
+    # more than 40%; the two best measured families receive the spare slots.
+    floor = 2 if slots >= len(FAMILIES) * 2 else 1
+    ceiling = min(8, slots - floor * (len(FAMILIES) - 1))
+    allocations = {family: floor for family in FAMILIES}
+    for _ in range(slots - floor * len(FAMILIES)):
+        eligible = [family for family in FAMILIES if allocations[family] < ceiling]
+        family = max(eligible, key=lambda item: (scores[item], -FAMILIES.index(item)))
+        allocations[family] += 1
+    used = Counter()
+    schedule = []
+    for position in range(slots):
+        family = max(
+            FAMILIES,
+            key=lambda item: (
+                (position + 1) * allocations[item] / slots - used[item],
+                -FAMILIES.index(item),
+            ),
+        )
+        schedule.append(family)
+        used[family] += 1
+    return tuple(schedule), {
+        'scores': scores,
+        'allocations': allocations,
+        'allocation_policy': {'minimum_per_family': floor, 'maximum_per_family': ceiling},
+    }
+
+
+def adaptive_family_schedule(store):
+    pages = dict(store.db.execute(
+        "SELECT q.family,count(*) FROM searches s JOIN queries q ON q.id=s.query_id "
+        "WHERE s.status='success' GROUP BY q.family"
+    ))
+    new = dict(store.db.execute(
+        "SELECT q.family,count(DISTINCT d.id) FROM queries q "
+        "JOIN discoveries x ON x.query_id=q.id JOIN documents d ON d.url=x.url "
+        "WHERE d.quality='[]' AND d.classification='new' GROUP BY q.family"
+    ))
+    accepted = dict(store.db.execute(
+        "SELECT q.family,count(DISTINCT d.id) FROM queries q "
+        "JOIN discoveries x ON x.query_id=q.id JOIN documents d ON d.url=x.url "
+        "JOIN outbox o ON o.document_id=d.id "
+        "WHERE d.quality='[]' AND d.classification='new' AND o.status='accepted' "
+        "GROUP BY q.family"
+    ))
+    observations = {
+        family: (int(accepted.get(family, 0)), int(pages.get(family, 0)))
+        for family in FAMILIES
+    }
+    schedule, audit = weighted_family_schedule(observations)
+    audit['observations'] = observations
+    audit['new_documents'] = {family: int(new.get(family, 0)) for family in FAMILIES}
+    audit['optimization_metric'] = 'accepted_unique_documents_per_success_page'
+    return schedule, audit
+
+
+def _ranked_domain_hosts(domains, minimum_total, limit):
+    if isinstance(domains, dict) and 'valid' in domains:
+        valid = domains['valid']
+        deliverable = domains.get('deliverable', Counter())
+        hosts = (host for host, count in valid.items() if count >= minimum_total)
+        return sorted(
+            hosts,
+            key=lambda host: (
+                -deliverable[host] / max(valid[host], 1),
+                -deliverable[host],
+                -valid[host],
+                host,
+            ),
+        )[:limit]
+    return [host for host, count in domains.most_common(limit) if count >= minimum_total]
 
 
 def supply_plan(domains, languages, today):
     specs = [s for s in base_keyword_specs() if s.key.endswith(':topic')]
     topics = [(s.query, language) for language in languages
               for s in [s for s in specs if s.language == language][::4]]
-    return {'hosts': [host for host, count in domains.most_common(160) if count >= 3],
+    return {'hosts': _ranked_domain_hosts(domains, 3, 160),
             'topics': topics, 'month_anchor': today.year * 12 + today.month - 1,
             'months': 120, 'cursor': 0}
 
 
 def dense_supply_plan(domains, languages, today):
-    hosts = [host for host, count in domains.most_common(100) if count >= 20]
+    hosts = _ranked_domain_hosts(domains, 20, 100)
     topics = [('(人工智能 OR AI OR 大模型 OR ChatGPT OR 机器学习)' if language == 'zh' else
                '(artificial intelligence OR AI OR ChatGPT OR machine learning)', language) for language in languages]
     return {'kind': 'dense', 'hosts': hosts, 'topics': topics,
             'month_anchor': today.year*12+today.month-1, 'months': 96, 'cursor': 0}
+
+
+def ranked_supply_domains(directories):
+    """Rank eligible hosts by historically deliverable, valid unique bodies."""
+    outcomes = {}
+    loaded = []
+    skipped = []
+    for directory in directories:
+        path = Path(directory) / 'experiment.sqlite3'
+        connection = None
+        try:
+            connection = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
+            columns = {row[1] for row in connection.execute('PRAGMA table_info(documents)')}
+            publication = 'd.published_at' if 'published_at' in columns else 'NULL'
+            rows = connection.execute(
+                f"SELECT d.canonical,{publication},o.status FROM documents d "
+                "LEFT JOIN outbox o ON o.document_id=d.id "
+                "WHERE d.quality='[]' AND d.classification='new'"
+            )
+            for url, published_at, status in rows:
+                # The same canonical can occur in multiple baseline ledgers.
+                # A real receipt is stronger evidence than a previous missing-date result.
+                rank = 2 if status == 'accepted' or published_at else 1 if status == 'blocked_missing_publication' else 0
+                outcomes[url] = max(outcomes.get(url, -1), rank)
+            loaded.append(str(path))
+        except (OSError, sqlite3.DatabaseError) as exc:
+            skipped.append({'path': str(path), 'error': type(exc).__name__})
+        finally:
+            if connection is not None:
+                connection.close()
+    total, accepted, blocked, other = Counter(), Counter(), Counter(), Counter()
+    for url, outcome in outcomes.items():
+        if not url:
+            continue
+        host = (urlsplit(url).hostname or '').lower()
+        if not host:
+            continue
+        total[host] += 1
+        (accepted if outcome == 2 else blocked if outcome == 1 else other)[host] += 1
+    rankings = {'valid': total, 'deliverable': accepted, 'blocked': blocked}
+    audit = {
+        'unique_canonicals': len(outcomes),
+        'accepted': sum(accepted.values()),
+        'blocked_missing_publication': sum(blocked.values()),
+        'other_not_accepted': sum(other.values()),
+        'ranked_hosts': len(total),
+        'eligible_hosts': sum(count >= 3 for count in total.values()),
+        'ranking': 'minimum_valid_unique_then_deliverable_ratio_and_count',
+        'loaded_ledgers': loaded,
+        'skipped_ledgers': skipped,
+    }
+    return rankings, audit
 
 
 def split_full_query(store, row, results):
@@ -102,7 +222,10 @@ def split_full_query(store, row, results):
             key = digest(f"site:{row['language']}:{query}")[:24]
             store.db.execute('INSERT OR IGNORE INTO queries(id,family,query,language,topic) VALUES(?,?,?,?,?)',
                              (key, 'site', query, row['language'], row['topic']))
-            store.db.executemany('INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)', ((key, p) for p in range(1, 4)))
+            store.db.executemany(
+                'INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)',
+                ((key, page) for page in range(1, SUPPLY_PAGE_COUNT + 1)),
+            )
             children.append(key)
         store.db.execute('INSERT OR IGNORE INTO query_splits VALUES(?,?,?)', (row['id'], time.time(), json.dumps(children)))
     return children
@@ -124,15 +247,31 @@ def supply_query(plan, cursor):
     return query, language, topic
 
 
-def replenish_queries(store, *, low_water=5000, batch_size=2000):
+def replenish_queries(store, *, low_water=1, batch_size=200, retry_backlog_limit=500):
+    """Add a bounded cohort after first attempts, unless failed-page debt is high."""
     plan = store.get('query_supply_cursor')
     if not plan:
         return 0
     if plan.get('kind') == 'dense':
-        low_water, batch_size = min(low_water, 1000), min(batch_size, 1000)
-    untouched = store.db.execute("SELECT count(*) FROM (SELECT 1 FROM queries WHERE family='site' "
-                                 "AND enabled=1 AND last_served=0 LIMIT ?)", (low_water,)).fetchone()[0]
-    if untouched >= low_water:
+        batch_size = min(batch_size, 100)
+    now = time.time()
+    unattempted_pages = store.db.execute(
+        "SELECT count(*) FROM (SELECT 1 FROM schedule s JOIN queries q ON q.id=s.query_id "
+        "WHERE q.family='site' AND q.enabled=1 AND s.due<=? AND NOT EXISTS "
+        "(SELECT 1 FROM searches x WHERE x.query_id=s.query_id AND x.page=s.page) LIMIT ?)",
+        (now, low_water),
+    ).fetchone()[0]
+    if unattempted_pages >= low_water:
+        return 0
+    retrying_pages = store.db.execute(
+        "SELECT count(*) FROM (SELECT 1 FROM schedule s JOIN queries q ON q.id=s.query_id "
+        "WHERE q.family='site' AND q.enabled=1 AND NOT EXISTS "
+        "(SELECT 1 FROM searches x WHERE x.query_id=s.query_id AND x.page=s.page "
+        "AND x.status='success') AND EXISTS (SELECT 1 FROM searches x "
+        "WHERE x.query_id=s.query_id AND x.page=s.page AND x.status='failed') LIMIT ?)",
+        (retry_backlog_limit,),
+    ).fetchone()[0]
+    if retrying_pages >= retry_backlog_limit:
         return 0
     added = 0
     # Cursor and rows commit atomically; duplicate seeds do not reset their schedule.
@@ -147,8 +286,10 @@ def replenish_queries(store, *, low_water=5000, batch_size=2000):
                                       (key, 'site', query, language, topic))
             if result.rowcount:
                 added += 1
-                store.db.executemany('INSERT INTO schedule(query_id,page) VALUES(?,?)',
-                                     ((key, page) for page in range(1, 4)))
+                store.db.executemany(
+                    'INSERT INTO schedule(query_id,page) VALUES(?,?)',
+                    ((key, page) for page in range(1, SUPPLY_PAGE_COUNT + 1)),
+                )
             plan['cursor'] += 1
         store.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
                          ('query_supply_cursor', json.dumps(plan, ensure_ascii=False)))
@@ -160,10 +301,13 @@ def restore_page_frontier(store, now):
     if store.get('page_frontier_restored'):
         return
     inherited = 0
+    loaded = []
+    skipped = []
     for directory in store.get('baseline_run_paths', []):
         path = Path(directory) / 'experiment.sqlite3'
-        connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
+        connection = None
         try:
+            connection = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
             # Failed attempts are still visited queries. Without this history,
             # inheriting only successful pages promotes old failures ahead of
             # genuinely untouched queries in the new experiment.
@@ -184,9 +328,20 @@ def restore_page_frontier(store, now):
                             inherited += 1
                             store.db.execute('UPDATE queries SET last_served=max(last_served,?) WHERE id=?',
                                              (finished, key))
+            loaded.append(str(path))
+        except (OSError, sqlite3.DatabaseError) as exc:
+            # Baseline URLs and hashes were already copied into this ledger.
+            # Losing an optional refresh horizon must not discard current work.
+            skipped.append({'path': str(path), 'error': type(exc).__name__})
         finally:
-            connection.close()
-    store.set('page_frontier_restored', {'pages_deferred': inherited, 'at': now})
+            if connection is not None:
+                connection.close()
+    store.set('page_frontier_restored', {
+        'pages_deferred': inherited,
+        'at': now,
+        'loaded_ledgers': loaded,
+        'skipped_ledgers': skipped,
+    })
 
 
 def serve_fetches():
@@ -335,7 +490,8 @@ class BodyPool:
 
 def retry_delay(record):
     error = str(record.get('error') or '')
-    if record.get('status') == 'blocked' or '不支持的内容类型' in error or 'HTTP 404' in error:
+    if (record.get('status') == 'blocked' or '不支持的内容类型' in error
+            or 'HTTP 404' in error or 'PDF ' in error or '重定向次数过多' in error):
         return 86400
     if record.get('document'):
         return 86400  # This experiment measures new content; updates are a separate workload.
@@ -364,10 +520,6 @@ class SearchRunner(Runner):
                 result = self.store.db.execute('SELECT results FROM searches WHERE query_id=? AND page=? '
                                                'ORDER BY id DESC LIMIT 1', (row['id'], row['page'])).fetchone()
                 split_full_query(self.store, row, json.loads(result[0]))
-        elif last and last['error'] == 'google_proxy_unavailable':
-            with self.store.db:
-                self.store.db.execute('UPDATE schedule SET due=? WHERE query_id=? AND page=?',
-                                      (time.time() + 300, row['id'], row['page']))
 
 
 class PipelineRunner(Runner):
@@ -381,6 +533,8 @@ class PipelineRunner(Runner):
         self.search_inflight = 0
         self.threads = []
         self.search_thread_count = 0
+        self.search_dispatches = 0
+        self.page_round: dict[str, int] = {}
         self.search_families = YIELD_FAMILIES if self.store.get('query_plan') in {'yield', 'dense'} else FAMILIES
 
     def _stage(self, kind):
@@ -438,19 +592,9 @@ class PipelineRunner(Runner):
             if spec.key.endswith(':topic') and spec.language in languages:
                 for year in range(this_year - 4, this_year):
                     self.store.add_query('recent', f'{spec.query} after:{year}-01-01 before:{year+1}-01-01 '
-                                         '-site:youtube.com -site:youtu.be', spec.language, spec.query)
-        domains = Counter()
-        for directory in self.store.get('baseline_run_paths', []):
-            path = Path(directory) / 'experiment.sqlite3'
-            connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
-            try:
-                for (url,) in connection.execute("SELECT d.canonical FROM documents d JOIN outbox o ON o.document_id=d.id "
-                                                 "WHERE o.status='accepted' AND d.quality='[]'"):
-                    host = urlsplit(url).hostname
-                    if host:
-                        domains[host] += 1
-            finally:
-                connection.close()
+                                         + EXCLUDE.lstrip(), spec.language, spec.query)
+        domains, domain_audit = ranked_supply_domains(self.store.get('baseline_run_paths', []))
+        self.store.set('query_supply_domain_audit', domain_audit)
         if self.store.get('query_plan') == 'dense':
             self.store.set('query_supply_cursor', dense_supply_plan(domains, languages, datetime.now(timezone.utc)))
             replenish_queries(self.store)
@@ -458,7 +602,7 @@ class PipelineRunner(Runner):
                                           'queries': self.store.db.execute('SELECT count(*) FROM queries').fetchone()[0]})
             self.store.set('pipeline_seeded', True)
             return
-        for host, _ in domains.most_common(60):
+        for host in _ranked_domain_hosts(domains, 3, 60):
             for language in languages:
                 topics = ('人工智能', '大模型', '机器学习', '智能体', '生成式AI') if language == 'zh' else (
                     'artificial intelligence', 'large language models', 'machine learning', 'AI agents', 'generative AI')
@@ -466,15 +610,6 @@ class PipelineRunner(Runner):
                     self.store.add_query('site', f'site:{host} {topic}', language, topic)
         if self.store.get('query_plan') == 'yield':
             self.store.set('query_supply_cursor', supply_plan(domains, languages, datetime.now(timezone.utc)))
-            # One bounded transaction avoids thousands of per-query fsyncs.
-            with self.store.db:
-                for query, language, topic in archive_queries(domains, languages, datetime.now(timezone.utc)):
-                    key = digest(f'site:{language}:{query}')[:24]
-                    self.store.db.execute('INSERT OR IGNORE INTO queries(id,family,query,language,topic) VALUES(?,?,?,?,?)',
-                                          (key, 'site', query, language, topic))
-                    self.store.db.executemany('INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)',
-                                             ((key, page) for page in range(1, 4)))
-                self.store.db.execute('CREATE INDEX IF NOT EXISTS pipeline_query_family ON queries(family,enabled,last_served,id)')
             self.store.set('query_supply', {'plan': 'yield', 'site_weight': .8,
                                           'queries': self.store.db.execute('SELECT count(*) FROM queries').fetchone()[0]})
         self.store.set('pipeline_seeded', True)
@@ -491,6 +626,16 @@ class PipelineRunner(Runner):
             self.store.db.execute("UPDATE urls SET state='baseline_skipped',next_fetch=? WHERE last_fetch=0 "
                                   "AND state='pending' AND EXISTS(SELECT 1 FROM baseline_urls b WHERE b.url=urls.url)",
                                   (self.store.get('deadline') + 86400,))
+            # A redirect target may be discovered after its alias was fetched.
+            # This experiment counts first-seen unique content; fetching the
+            # already validated canonical again can only produce a duplicate or
+            # an update, which is a separate workload.
+            self.store.db.execute(
+                "UPDATE urls SET state='canonical_skipped',next_fetch=? WHERE last_fetch=0 "
+                "AND state='pending' AND EXISTS(SELECT 1 FROM documents d "
+                "WHERE d.canonical=urls.url AND d.quality='[]')",
+                (self.store.get('deadline') + 86400,),
+            )
         # Cover the 1,500-URL discovery backlog so a busy host at its head
         # cannot hide work for other domains from otherwise idle body slots.
         rows = self.store.due_urls(2048, now)
@@ -508,20 +653,51 @@ class PipelineRunner(Runner):
         if pending >= 1500 or now < self.store.get('search_cooling_until', 0):
             return family_index
         while self.search_inflight < self.search_size and not self.jobs.full():
-            for offset in range(len(self.search_families)):
-                index = (family_index + offset) % len(self.search_families)
-                row = self.store.due_query(self.search_families[index], now)
-                if row:
-                    with self.store.db:
-                        self.store.db.execute('UPDATE schedule SET due=? WHERE query_id=? AND page=?',
-                                              (now + 300, row['id'], row['page']))
-                        self.store.db.execute('UPDATE queries SET last_served=? WHERE id=?', (now, row['id']))
-                    self.jobs.put_nowait(dict(row))
-                    self.search_inflight += 1
-                    family_index = (index + 1) % len(self.search_families)
-                    break
-            else:
+            # Untouched pages are always first. Retries only get a short burst
+            # slot; otherwise one provider outage can consume the whole window.
+            prefer_retry = self.search_dispatches % 4 == 3
+            families = list(self.search_families)
+            deficit = {
+                family: self.store.next_page_deficit(family)
+                for family in families
+            }
+
+            # Select the least-covered page number across active families, then
+            # rotate families at that page. A bounded budget advances breadth
+            # before refreshing an already-covered page 1 again.
+            page_deficit: dict[int, int] = {}
+            for pages in deficit.values():
+                for page, count in pages.items():
+                    page_deficit[int(page)] = page_deficit.get(int(page), 0) + count
+            if not page_deficit:
                 break
+            # Choose the page number with the largest unfinished backlog, not
+            # the smallest. Selecting the minimum would keep finishing page 1
+            # forever because its remaining count becomes slightly smaller.
+            available = sorted(page_deficit, key=lambda page: (-page_deficit[page], page))
+            for target in available:
+                for offset in range(len(families)):
+                    index = (family_index + offset) % len(families)
+                    family = families[index]
+                    if not deficit[family].get(str(target)):
+                        continue
+                    row = self.store.claim_due_page(
+                        family, target, now, prefer_retry=prefer_retry,
+                    )
+                    if row:
+                        self.jobs.put_nowait(row)
+                        self.search_inflight += 1
+                        self.search_dispatches += 1
+                        self.page_round[family] = target + 1
+                        family_index = (index + 1) % len(families)
+                        break
+                else:
+                    continue
+                break
+            else:
+                # Every due row is leased or cooling.
+                break
+
         return family_index
 
     def _configure_pool(self, pool):
@@ -566,8 +742,11 @@ class PipelineRunner(Runner):
         with store.db:
             store.db.execute("UPDATE urls SET state='pending' WHERE state='fetching'")
             store.db.execute('CREATE INDEX IF NOT EXISTS pipeline_url_due ON urls(state,next_fetch,last_fetch)')
-            store.db.execute("CREATE INDEX IF NOT EXISTS pipeline_url_ready ON urls(last_fetch,first_seen,url) "
-                             "WHERE state NOT IN ('fetching','baseline_skipped') AND (last_fetch=0 OR last_seen>last_fetch)")
+            # Refresh the partial predicate when upgrading an existing ledger.
+            store.db.execute('DROP INDEX IF EXISTS pipeline_url_ready')
+            store.db.execute("CREATE INDEX pipeline_url_ready ON urls(last_fetch,first_seen,url) "
+                             "WHERE state NOT IN ('fetching','baseline_skipped','canonical_skipped') "
+                             "AND (last_fetch=0 OR last_seen>last_fetch)")
             store.db.execute('CREATE INDEX IF NOT EXISTS pipeline_document_url ON documents(url)')
         self._seed()
         restore_page_frontier(store, time.time())
@@ -627,15 +806,25 @@ class PipelineRunner(Runner):
                 if now-last_sample >= 60:
                     self._configure_pool(pool)
                     self._configure_searches()
-                    replenish_queries(store)
+                    # A reserved page has a future due time before its search
+                    # record exists, just like inherited fresh coverage. Wait
+                    # for all live reservations before deciding the cohort is done.
+                    if not self.search_inflight:
+                        replenish_queries(store)
                     metrics = store.counts(detailed=False)
+                    if store.get('query_plan') in {'yield', 'dense'}:
+                        self.search_families, family_audit = adaptive_family_schedule(store)
+                        store.set('family_schedule', {
+                            'at': now, 'schedule': self.search_families, **family_audit,
+                        })
                     with store.db:
                         store.db.execute('INSERT OR REPLACE INTO samples VALUES(?,?)', (now, json.dumps(metrics)))
                     store.set('pipeline', {'body_busy': pool.busy, 'body_workers': self.body_size,
                                           'body_rss_recycle_mib': pool.max_rss_mib,
                                           'search_busy': self.search_inflight, 'search_workers': self.search_size,
                                           'search_threads': self.search_thread_count,
-                                          'baseline_skipped': store.db.execute("SELECT count(*) FROM urls WHERE state='baseline_skipped'").fetchone()[0]})
+                                          'baseline_skipped': store.db.execute("SELECT count(*) FROM urls WHERE state='baseline_skipped'").fetchone()[0],
+                                          'canonical_skipped': store.db.execute("SELECT count(*) FROM urls WHERE state='canonical_skipped'").fetchone()[0]})
                     print(json.dumps({'experiment': store.get('id'), 'state': store.get('state'),
                                       'new': metrics.get('new', 0), 'requests': metrics['google_requests'],
                                       'whale_accepted': metrics.get('whale_accepted', 0),
@@ -656,6 +845,7 @@ class PipelineRunner(Runner):
             store.set('finished_at', time.time())
             with store.db:
                 store.db.execute('INSERT OR REPLACE INTO samples VALUES(?,?)', (time.time(), json.dumps(store.counts())))
+            archive_audit(store)
             if not self.remote_only:
                 export_report(store, self.output, full=True)
 

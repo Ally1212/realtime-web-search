@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,14 @@ from realtime.state import StateStore
 
 
 class StateTests(unittest.TestCase):
+    def test_connection_context_closes_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = StateStore(Path(directory) / "state.db")
+            with store._connect() as connection:
+                self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+
     def test_job_progress(self):
         with tempfile.TemporaryDirectory() as directory:
             store = StateStore(Path(directory) / "state.db")

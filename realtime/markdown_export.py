@@ -14,7 +14,8 @@ from urllib.parse import urlencode, urlsplit
 from .campaign_store import CampaignStore
 from .config import Config
 from .discovery import GoogleBlocked, SearchDiscovery, SearchResult
-from .fetcher import LiveFetcher, MAX_DOWNLOAD_BYTES, MAX_TEXT_CHARS, normalize_url, relevant_to
+from .fetcher import (LiveFetcher, MAX_DOWNLOAD_BYTES, MAX_PDF_DOWNLOAD_BYTES,
+                      MAX_TEXT_CHARS, normalize_url, relevant_to)
 from .proxy_pool import ProxyPool
 
 
@@ -139,9 +140,10 @@ def export_summary(report: dict, rows: list[dict], records: dict) -> str:
         "只记录解析器识别的公开网页链接，不包含完整 Google UI、广告、AI 摘要和截图。"
         "页内顺序不能直接称为桌面排名。请求失败与明确无结果分开标记。\n\n"
         "所有发现的 URL 都有记录；正文使用项目 LiveFetcher 和正文抽取器，直连访问原站，"
-        "遵循 robots.txt、公网校验、HTML 类型限制。没有绕过登录、验证码或付费墙。"
-        "非 HTML（包括 PDF）、被禁止或失败的页面仅保留链接和原因，不伪装为完整正文。"
-        f"下载上限 {MAX_DOWNLOAD_BYTES:,} 字节，正文上限 {MAX_TEXT_CHARS:,} 字符；"
+        "遵循 robots.txt、公网校验和内容类型限制。没有绕过登录、验证码或付费墙。"
+        "支持带文本层的公开 PDF；其他非 HTML、被禁止或失败的页面仅保留链接和原因。"
+        f"HTML 下载上限 {MAX_DOWNLOAD_BYTES:,} 字节，PDF 上限 {MAX_PDF_DOWNLOAD_BYTES:,} 字节，"
+        f"正文上限 {MAX_TEXT_CHARS:,} 字符；"
         "正文是抽取文本，不是原网页无损备份。\n\n"
         "为避免影响 SERP 对照，不删除不相关结果；项目相关性判定只作标注。"
         "短词 AI 的现有判定使用子串匹配，可能误命中，不等于人工准确率。"
