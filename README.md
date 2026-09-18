@@ -193,12 +193,12 @@ docker compose --profile whale run --rm --no-deps --entrypoint sh collector -c \
 500 字符、AI 语境、非导航/验证页面、非截断是本实验自动有效正文门槛；
 同文重复、同 URL 更新、已知历史、截止后完成量分别统计。
 
-Whale 强制要求 `content.published_at`，实验仅使用原站明确带时区的发布时间。
-未知时间的新正文仍保存并计入本地有效量，但标记 `blocked_missing_publication`，不填造时间上传。
+Whale 强制要求 `content.published_at`，实验优先使用原站明确带时区的发布时间；缺失时使用正文采集时间兜底上传，
+并在消息元数据标记 `collector:fetched_at`，不把兜底值写入本地原站发布时间字段。
 完整操作和验收说明见 [Google 日量实验](docs/google-24h-experiment.md)。
 
 统一统计入口为 <http://localhost:8091/stats>，默认显示最新正式实验，也可切换预检。
-展示新增有效正文、Whale 回执、缺少发布时间、各组贡献和小时产量，独立于旧任务统计。
+展示新增有效正文、Whale 回执、原站发布时间未知量、各组贡献和小时产量，独立于旧任务统计。
 实验明细 API 同时返回 Google 请求 P50/P95、错误率、验证码率，以及第 1–11 页各自的
 计划页数、成功覆盖、失败重试、候选数和唯一 URL 数，便于区分吞吐提升与浅页堆积。
 实验已持续时间包含暂停、冷却、离线；累计在线运行按心跳估算（含冷却，不重复累加限速等待）。

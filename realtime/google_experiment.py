@@ -243,14 +243,18 @@ def experiment_message(doc: dict, run_id: str, query: str, families: list[str], 
     task = {'task_id': run_id, 'dataset_id': config.whale_dataset_id,
             'source_platform': config.whale_source_platform, 'task_type': 'keyword_search'}
     _, message = whale_message(item, task, config)
-    # The original helper substitutes fetched_at for published_at. Experiments
-    # must never represent a crawl timestamp as a publication timestamp.
-    message['content'].pop('published_at', None)
-    if doc.get('published_at'):
-        message['content']['published_at'] = doc['published_at']
+    original_publication = doc.get('published_at')
+    collector_fallback = not original_publication
+    publication_source = doc.get('publication_source')
+    if not collector_fallback:
+        message['content']['published_at'] = original_publication
+    else:
+        publication_source = 'collector:fetched_at'
     message['discovery']['metadata'].update(experiment_id=run_id, query_families=families,
-                                           publication_time_known=bool(doc.get('published_at')),
-                                           publication_source=doc.get('publication_source'))
+                                           publication_time_known=bool(original_publication),
+                                           original_publication_time_known=bool(original_publication),
+                                           publication_source=publication_source,
+                                           published_at_is_collector_fallback=collector_fallback)
     return message
 
 
@@ -293,8 +297,8 @@ def export_report(store: ExperimentStore, output: Path, *, full: bool = False):
     text += ('\n## 口径\n\n主指标 `new` 是本地基线之外、按 URL 和正文哈希去重、通过自动质量规则的首次有效正文；'
              '不是人工验收的完整文章，也不是当天发布的文章。`update`、`baseline`、`duplicate`、`invalid` 和 `late_*` 不计入主指标。'
              '相似改写可能未被精确哈希去重。Whale accepted/duplicate 表示接口接收/幂等重复回执，不代表平台最终索引完成。\n\n'
-             'Whale 当前强制 published_at：只投递取得网页明确带时区发布时间的合格新正文；未知时间的正文保留本地，'
-             '以 whale_blocked_missing_publication 单列，不填造日期。日期仅为原站声明，未独立证实。\n\n'
+             'Whale 的 content.published_at 为协议必填字段：优先使用原站明确带时区的发布时间；缺失时使用正文采集时间兜底，'
+             '并在 metadata.publication_source 标记 collector:fetched_at，不把兜底值写入本地原站发布时间。\n\n'
              '仅 Google 发现链接；主题/事件/站点/时间四组轮询。after 条件不保证真实发布时间。网页内部链接不进入发现队列。'
              '复用全球限速和冷却，实验请求上限 0.5 RPS；正文 4 并发、每域最多 2。'
              '使用独立缓存：前 3 页 1 小时，深页 6 小时。已发现 URL 最多每 6 小时复查，非新增单列。\n\n'
@@ -460,8 +464,7 @@ class Runner:
             message = experiment_message(doc, self.store.get('id'), rows[0]['query'], sorted({r['family'] for r in rows}), self.config)
             with self.store.db:
                 self.store.db.execute('INSERT OR IGNORE INTO outbox(document_id,payload,status) VALUES(?,?,?)',
-                                      (document_id, json.dumps(message, ensure_ascii=False) if doc.get('published_at') else None,
-                                       'pending' if doc.get('published_at') else 'blocked_missing_publication'))
+                                      (document_id, json.dumps(message, ensure_ascii=False), 'pending'))
         if self.remote_only:
             with self.store.db:
                 self.store.db.execute("UPDATE documents SET document='null' WHERE id=?", (document_id,))

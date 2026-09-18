@@ -153,7 +153,7 @@ DASHBOARD_HTML = r'''<!doctype html>
 <div class="card"><div class="label">最近一分钟新增</div><div class="value" id="speed">0 条/分钟</div><div class="hint">实际新增正文，不是日量预测</div></div>
 <div class="card"><div class="label">Google 唯一候选 URL</div><div class="value" id="urls">0</div><div class="hint" id="requests">实际搜索请求 0 次</div></div>
 <div class="card"><div class="label">Whale 接收回执</div><div class="value" id="accepted">0</div><div class="hint" id="whaleDetail">幂等重复 / 待投递 / 拒收：0 / 0 / 0</div></div>
-<div class="card"><div class="label">缺少发布时间 · 仅本地保存</div><div class="value" id="missingDate">0</div><div class="hint">Whale 要求发布时间，不填造日期上传</div></div>
+<div class="card"><div class="label">原站发布时间未知</div><div class="value" id="missingDate">0</div><div class="hint">上传时改用采集时间兜底</div></div>
 </div>
 <section class="panel"><h2>四类查询贡献</h2><p class="hint">覆盖量可以重合，不能相加当总量；独有量按完整来源关系计算。</p><div class="sources" id="sources"></div><div class="mini" id="quality"></div></section>
 <section class="panel"><h2>每小时新增正文</h2><div class="table-wrap"><table><thead><tr><th>实验小时</th><th>新增有效正文</th><th>累计</th></tr></thead><tbody id="hourRows"></tbody></table></div><p id="phaseRates" class="hint"></p></section>

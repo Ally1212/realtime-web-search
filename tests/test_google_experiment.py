@@ -189,10 +189,11 @@ class ExperimentTests(unittest.TestCase):
         row=self.store.db.execute("SELECT query FROM queries WHERE family='site'").fetchone()
         self.assertIn('site:example.org',row[0])
 
-    def test_message_keeps_identity_and_does_not_invent_publication_time(self):
+    def test_message_keeps_identity_and_marks_collector_publication_fallback(self):
         msg=experiment_message(document(),'run-a','AI',['topic'],Config())
         again=experiment_message(document(),'run-b','AI news',['event'],Config())
-        self.assertNotIn('published_at',msg['content'])
+        self.assertEqual(msg['content']['published_at'],document()['fetched_at'])
+        self.assertTrue(msg['discovery']['metadata']['published_at_is_collector_fallback'])
         self.assertEqual(msg['source']['source_record_key'],again['source']['source_record_key'])
         self.assertEqual(msg['discovery']['metadata']['experiment_id'],'run-a')
 
@@ -202,8 +203,9 @@ class ExperimentTests(unittest.TestCase):
         self.assertIsNotNone(source)
         self.assertEqual(publication_metadata(b'<meta property="article:modified_time" content="2026-09-01T10:00:00Z">'),(None,None))
         self.assertEqual(publication_metadata(b'<meta property="article:published_time" content="2026-09-01">'),(None,None))
-        msg=experiment_message(dict(document(),published_at=value),'run','AI',['topic'],Config())
+        msg=experiment_message(dict(document(),published_at=value,publication_source=source),'run','AI',['topic'],Config())
         self.assertEqual(msg['content']['published_at'],value)
+        self.assertFalse(msg['discovery']['metadata']['published_at_is_collector_fallback'])
 
     def test_publication_accepts_more_explicit_publisher_fields_without_naive_dates(self):
         expected = '2026-09-01T10:00:00+08:00'
@@ -249,8 +251,18 @@ class ExperimentTests(unittest.TestCase):
         runner.output.mkdir()
         runner.whale=Mock()
         runner.save_body({'document':document(),'requested_url':document()['url'],'status':'success','seconds':1})
-        self.assertEqual(self.store.db.execute('SELECT status FROM outbox').fetchone()[0],'blocked_missing_publication')
+        row=self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
+        payload=json.loads(row['payload'])
         self.assertEqual(self.store.counts()['new'],1)
+        self.assertEqual(row['status'],'pending')
+        self.assertEqual(payload['content']['published_at'],document()['fetched_at'])
+        metadata=payload['discovery']['metadata']
+        self.assertFalse(metadata['publication_time_known'])
+        self.assertTrue(metadata['published_at_is_collector_fallback'])
+        self.assertEqual(metadata['publication_source'],'collector:fetched_at')
+        original=self.store.db.execute('SELECT published_at,publication_source FROM documents').fetchone()
+        self.assertIsNone(original['published_at'])
+        self.assertIsNone(original['publication_source'])
         runner.whale.bulk_ingest.assert_not_called()
 
     def test_remote_only_scrubs_bodies_after_queue_and_payload_after_receipt(self):
@@ -285,7 +297,7 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(outbox['status'], 'accepted')
         self.assertIsNone(outbox['payload'])
 
-    def test_remote_only_discards_body_without_publication_date(self):
+    def test_remote_only_queues_body_without_publication_date(self):
         self.store.set('whale', True)
         self.store.set('remote_only', True)
         self.discover()
@@ -294,8 +306,8 @@ class ExperimentTests(unittest.TestCase):
         runner.save_body({'document': document(), 'requested_url': document()['url'], 'status': 'success', 'seconds': 1})
         self.assertEqual(self.store.db.execute('SELECT document FROM documents').fetchone()[0], 'null')
         row = self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
-        self.assertIsNone(row['payload'])
-        self.assertEqual(row['status'], 'blocked_missing_publication')
+        self.assertIn(document()['fetched_at'], row['payload'])
+        self.assertEqual(row['status'], 'pending')
         metadata = self.store.db.execute(
             'SELECT published_at,publication_source FROM documents'
         ).fetchone()
