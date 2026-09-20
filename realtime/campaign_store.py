@@ -266,6 +266,7 @@ CREATE TABLE IF NOT EXISTS discovery_query_cache (
   last_modified text,
   result_count integer NOT NULL DEFAULT 0,
   novel_count integer NOT NULL DEFAULT 0,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   expires_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -341,6 +342,18 @@ CREATE INDEX IF NOT EXISTS google_serp_attempts_proxy
   ON google_serp_attempts(proxy_key_hash,created_at DESC);
 CREATE INDEX IF NOT EXISTS google_serp_attempts_classification
   ON google_serp_attempts(classification,created_at DESC);
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS locale_label text;
+ALTER TABLE discovery_query_cache ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS parser_version text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS parse_mode text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS requested_query text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS effective_query text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS detected_query text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS spelling_correction text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS query_mismatch text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS error_scope text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS session_id text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS field_extraction jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS consecutive_failures bigint NOT NULL DEFAULT 0;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS latency_seconds_total double precision NOT NULL DEFAULT 0;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_error text;
@@ -364,6 +377,17 @@ CREATE TABLE IF NOT EXISTS discovery_query_leases (
   token uuid NOT NULL,
   expires_at timestamptz NOT NULL
 );
+CREATE TABLE IF NOT EXISTS google_query_cooldowns (
+  cooldown_key char(64) PRIMARY KEY,
+  query text NOT NULL,
+  locale_label text,
+  reason text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS google_query_cooldowns_expires
+  ON google_query_cooldowns(expires_at);
 """
 
 
@@ -525,7 +549,7 @@ class CampaignStore:
     def get_discovery_cache(self, cache_key: str, source: str = "cache") -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT payload,etag,last_modified,result_count,novel_count "
+                "SELECT payload,etag,last_modified,result_count,novel_count,metadata "
                 "FROM discovery_query_cache WHERE cache_key=%s AND expires_at>now()",
                 (cache_key,),
             ).fetchone()
@@ -542,19 +566,22 @@ class CampaignStore:
         self, cache_key: str, source: str, query_hash: str, locale: str, page: int,
         payload: list[dict[str, Any]], ttl_seconds: int, *, novel_count: int = 0,
         etag: str | None = None, last_modified: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO discovery_query_cache(cache_key,source,query_hash,locale,page,payload,"
-                "etag,last_modified,result_count,novel_count,expires_at) "
-                "VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,now()+(%s*interval '1 second')) "
+                "etag,last_modified,result_count,novel_count,metadata,expires_at) "
+                "VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s::jsonb,now()+(%s*interval '1 second')) "
                 "ON CONFLICT(cache_key) DO UPDATE SET payload=EXCLUDED.payload,etag=EXCLUDED.etag,"
                 "last_modified=EXCLUDED.last_modified,result_count=EXCLUDED.result_count,"
-                "novel_count=EXCLUDED.novel_count,expires_at=EXCLUDED.expires_at,updated_at=now()",
+                "novel_count=EXCLUDED.novel_count,metadata=EXCLUDED.metadata,"
+                "expires_at=EXCLUDED.expires_at,updated_at=now()",
                 (
                     cache_key, source, query_hash, locale, page,
                     json.dumps(payload, ensure_ascii=False), etag, last_modified,
-                    len(payload), novel_count, max(1, ttl_seconds),
+                    len(payload), novel_count,
+                    json.dumps(metadata or {}, ensure_ascii=False), max(1, ttl_seconds),
                 ),
             )
 
@@ -771,6 +798,31 @@ class CampaignStore:
         with self.connect() as connection:
             connection.execute("DELETE FROM discovery_query_leases WHERE cache_key=%s AND token=%s", (cache_key, token))
 
+    def get_google_query_cooldown(self, cooldown_key: str) -> dict[str, object] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT reason,expires_at-now() AS retry_after "
+                "FROM google_query_cooldowns "
+                "WHERE cooldown_key=%s AND expires_at>now()", (cooldown_key,),
+            ).fetchone()
+        return {"reason": row["reason"], "retry_after": row["retry_after"].total_seconds()} if row else None
+
+    def record_google_query_cooldown(
+        self, *, cooldown_key: str, query: str, locale_label: str | None,
+        reason: str, retry_after: float,
+    ) -> None:
+        seconds = max(0.1, float(retry_after))
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO google_query_cooldowns"
+                "(cooldown_key,query,locale_label,reason,expires_at) "
+                "VALUES(%s,%s,%s,%s,now()+(%s*interval '1 second')) "
+                "ON CONFLICT(cooldown_key) DO UPDATE SET "
+                "query=EXCLUDED.query,locale_label=EXCLUDED.locale_label,"
+                "reason=EXCLUDED.reason,expires_at=EXCLUDED.expires_at,updated_at=now()",
+                (cooldown_key, query, locale_label, reason, seconds),
+            )
+
     def reserve_google_proxy(
         self, proxy_hash: str, locale: str, minimum_interval_seconds: int,
     ) -> tuple[bool, float]:
@@ -846,22 +898,38 @@ class CampaignStore:
 
     def record_google_serp_attempt(
         self, *, provider: str, query: str, page: int,
+        locale_label: str | None = None,
         proxy_key_hash: str | None, request_url: str | None,
         proxy_profile: str | None = None,
         http_status: int | None, result_count: int, elapsed_seconds: float,
         classification: str, error_code: str | None, raw_sha256: str | None,
         raw_html_path: str | None, headless: bool | None,
+        parser_version: str | None = None,
+        parse_mode: str | None = None,
+        requested_query: str | None = None,
+        effective_query: str | None = None,
+        detected_query: str | None = None,
+        spelling_correction: str | None = None,
+        query_mismatch: str | None = None,
+        error_scope: str | None = None,
+        session_id: str | None = None,
+        field_extraction: str | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
-                "INSERT INTO google_serp_attempts(provider,proxy_profile,query,page,proxy_key_hash,"
+                "INSERT INTO google_serp_attempts(provider,proxy_profile,query,page,locale_label,proxy_key_hash,"
                 "request_url,http_status,result_count,elapsed_seconds,classification,"
-                "error_code,raw_sha256,raw_html_path,headless) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "error_code,raw_sha256,raw_html_path,headless,parser_version,parse_mode,"
+                "requested_query,effective_query,detected_query,spelling_correction,"
+                "query_mismatch,error_scope,session_id,field_extraction) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
                 (
-                    provider, proxy_profile, query, page, proxy_key_hash, request_url, http_status,
+                    provider, proxy_profile, query, page, locale_label, proxy_key_hash, request_url, http_status,
                     result_count, elapsed_seconds, classification, error_code,
-                    raw_sha256, raw_html_path, headless,
+                    raw_sha256, raw_html_path, headless, parser_version, parse_mode,
+                    requested_query, effective_query, detected_query, spelling_correction,
+                    query_mismatch, error_scope, session_id,
+                    field_extraction or "{}",
                 ),
             )
 

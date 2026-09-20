@@ -47,6 +47,9 @@ def main() -> None:
     experiment.add_argument('--proxy-profile', choices=['private', 'public_google'], default='private')
     experiment.add_argument('--google-providers', nargs='+', choices=('wml', 'wml_direct', 'searxng'), default=['wml', 'wml_direct', 'searxng'])
     experiment.add_argument('--search-rps', type=float, default=2.0)
+    experiment.add_argument('--time-filter', choices=('qdr:h', 'qdr:d', 'qdr:w', 'qdr:m', 'qdr:y'), default='')
+    experiment.add_argument('--parse-mode', choices=('fast', 'light', 'full'), default='light')
+    experiment.add_argument('--session-policy', choices=('query', 'thread'), default='thread')
     experiment.add_argument('--storage-budget-gib', type=float, default=10)
     experiment.add_argument('--query-plan', choices=('balanced', 'yield', 'dense'), default='balanced')
     experiment.add_argument(
@@ -59,6 +62,17 @@ def main() -> None:
         help="Keep document bodies only while pending Whale delivery; requires --whale",
     )
     experiment.add_argument("--preflight", action="store_true", help="Bounded two-page pilot, not a 24h result")
+    experiment.add_argument(
+        "--locale-matrix", action="store_true",
+        help="Experiment hl/gl locales; forces the selected single free Google provider",
+    )
+    experiment.add_argument(
+        "--locales", default="auto",
+        help=(
+            "Comma-separated locale labels for --locale-matrix; "
+            "'auto' uses the built-in locales for each selected language"
+        ),
+    )
     experiment.add_argument("--baseline-run", action="append", default=[])
     experiment.add_argument("--baseline-export", action="append", default=[])
     purge = commands.add_parser("purge-non-google-web")

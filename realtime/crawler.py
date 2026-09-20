@@ -361,6 +361,11 @@ class FocusedSpider(scrapy.Spider):
             deep_cache_seconds=self.config.google_web_deep_cache_seconds,
             singleflight_acquirer=self.store.acquire_query_lease,
             singleflight_releaser=self.store.release_query_lease,
+            singleflight_wait_seconds=self.config.google_singleflight_wait_seconds,
+            query_cooldown_seconds=self.config.google_query_cooldown_seconds,
+            query_cooldown_checker=self.store.get_google_query_cooldown,
+            query_cooldown_recorder=self.store.record_google_query_cooldown,
+            parse_mode=self.config.google_serp_parse_mode,
         )
         self._search_discovery = discovery
         queries = self.terms

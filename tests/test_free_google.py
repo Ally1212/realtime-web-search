@@ -3,9 +3,27 @@ from unittest.mock import Mock, MagicMock, patch
 
 from realtime.discovery import GoogleBlocked
 from realtime.free_google import GoogleTransport
+from realtime.locales import SearchLocale
 
 
 class FreeGoogleTests(unittest.TestCase):
+    def test_wml_request_carries_selected_hl_and_gl(self):
+        session = Mock()
+        response = session.get.return_value
+        response.content = b'<a href="/url?q=https%3A%2F%2Fexample.com%2Fai"><span>AI research</span></a>'
+        response.status_code = 200
+        response.url = 'https://www.google.com/wml/search'
+        transport = GoogleTransport(
+            5, 'zh', '', search_locale=SearchLocale('zh-TW-TW', 'zh', 'zh-TW', 'tw')
+        )
+        with patch('curl_cffi.requests.Session', return_value=session), \
+                patch('realtime.free_google.public_result', return_value=True):
+            transport.curl('AI', 2, None, wml=True)
+        params = session.get.call_args.kwargs['params']
+        self.assertEqual(params['hl'], 'zh-TW')
+        self.assertEqual(params['gl'], 'tw')
+        self.assertEqual(params['start'], 10)
+
     def test_browser_watchdog_bounds_failure_and_keeps_credentials_out_of_argv(self):
         import subprocess
         process = Mock()
@@ -19,12 +37,31 @@ class FreeGoogleTests(unittest.TestCase):
         kill.assert_called_once_with(process)
 
     def test_wml_parser_handles_unicode_titles_redirects_and_skips_navigation(self):
-        html = '<a href="/search?q=AI"><span>下一页</span></a><a href="/url?q=https%3A%2F%2Fexample.com%2Fai&amp;sa=U"><span>人工智能研究</span><span>example.com</span></a>'
+        html = ('<a href="/search?q=AI"><span>下一页</span></a>'
+                '<a href="/url?q=https%3A%2F%2Fexample.com%2Fai&amp;sa=U">'
+                '<span>人工智能研究</span><span>example.com</span></a>2 小时前 — 新的开源智能体发布')
         with patch("realtime.free_google.public_result", return_value=True):
             results = GoogleTransport.parse_wml(html.encode())
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].title, "人工智能研究")
         self.assertEqual(results[0].url, "https://example.com/ai")
+        self.assertEqual(results[0].rank, 1)
+        self.assertEqual(results[0].display_link, "example.com")
+        self.assertEqual(results[0].date, "2 小时前")
+        self.assertEqual(results[0].description, "新的开源智能体发布")
+
+    def test_fast_parse_mode_keeps_only_discovery_fields(self):
+        html = ('<a href="/url?q=https%3A%2F%2Fexample.com%2Fai&amp;sa=U">'
+                '<span>AI research</span></a>2 hours ago — OpenAI released a model')
+        transport = GoogleTransport(5, 'en', '', parse_mode='fast')
+        with patch('realtime.free_google.public_result', return_value=True):
+            result = transport._parse_wml_for_mode(html.encode())[0]
+        self.assertEqual(result.url, 'https://example.com/ai')
+        self.assertEqual(result.title, 'AI research')
+        self.assertEqual(result.rank, 1)
+        self.assertIsNone(result.description)
+        self.assertIsNone(result.date)
+        self.assertIsNone(result.display_link)
 
     def test_searxng_rejects_upstream_error_even_with_http_200(self):
         session = MagicMock()
@@ -38,6 +75,24 @@ class FreeGoogleTests(unittest.TestCase):
         self.assertEqual(session.get.call_args.kwargs["params"]["pageno"], 11)
         self.assertEqual(session.get.call_args.kwargs["params"]["language"], "zh-CN")
         response.close.assert_called_once()
+
+    def test_searxng_preserves_serp_metadata(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        response = session.get.return_value
+        response.json.return_value = {"results": [{
+            "engine": "google", "url": "https://www.example.com/ai",
+            "title": "AI research", "content": "1 day ago — OpenAI released a model",
+            "publishedDate": "2026-09-17",
+        }]}
+        with patch("realtime.free_google.requests.Session", return_value=session), \
+                patch("realtime.free_google.public_result", return_value=True):
+            results = GoogleTransport(5, "en", "http://searxng:8080").searxng("AI", 1)
+        self.assertEqual(results[0].rank, 1)
+        self.assertEqual(results[0].date, "2026-09-17")
+        self.assertEqual(results[0].description, "OpenAI released a model")
+        self.assertEqual(results[0].display_link, "example.com")
+        self.assertEqual(results[0].serp_module, "news")
 
     def test_searxng_does_not_accept_other_engine_or_unknown_empty(self):
         session = MagicMock()

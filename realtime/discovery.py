@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -12,11 +13,15 @@ from urllib.parse import parse_qs, urlsplit
 import requests
 from bs4 import BeautifulSoup
 
+from .locales import SearchLocale, locale_for_language
 from .proxy_pool import ProxyPool
 
 
 _DISCOVERY_LIMITERS: dict[int, threading.BoundedSemaphore] = {}
 _DISCOVERY_LIMITERS_LOCK = threading.Lock()
+SERP_PARSER_VERSION = "google-serp-v2"
+SERP_PARSE_MODES = frozenset({"fast", "light", "full"})
+GOOGLE_TIME_FILTERS = frozenset({"qdr:h", "qdr:d", "qdr:w", "qdr:m", "qdr:y"})
 
 
 def _discovery_limiter(limit: int) -> threading.BoundedSemaphore:
@@ -30,6 +35,38 @@ class SearchResult:
     url: str
     title: str
     engines: tuple[str, ...]
+    rank: int | None = None
+    description: str | None = None
+    display_link: str | None = None
+    source: str | None = None
+    date: str | None = None
+    serp_module: str = "web"
+
+
+DATE_PREFIX = re.compile(
+    r"^(?P<date>(?:\d+\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+ago|"
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}|"
+    r"\d{4}年\d{1,2}月\d{1,2}日|\d+\s*(?:分钟|小时|天|周|个月|年)前))\s*(?:—|-)?\s*",
+    re.IGNORECASE,
+)
+
+
+def serp_metadata(url: str, title: str, *, rank: int, description: str | None = None,
+                  module: str = "web") -> dict[str, object]:
+    """Normalize provider-neutral SERP fields without treating snippets as body text."""
+    snippet = " ".join((description or "").split())[:1000] or None
+    date = None
+    if snippet:
+        match = DATE_PREFIX.match(snippet)
+        if match:
+            date = match.group("date")
+            snippet = snippet[match.end():].strip() or None
+    host = (urlsplit(url).hostname or "").removeprefix("www.").lower()
+    source = host.rsplit(".", 2)[0] if host.count(".") >= 1 else host
+    return {
+        "rank": rank, "description": snippet, "display_link": host or None,
+        "source": source or None, "date": date, "serp_module": module,
+    }
 
 
 class GoogleBlocked(RuntimeError):
@@ -44,6 +81,58 @@ class GoogleBlocked(RuntimeError):
         self.retry_after = retry_after
 
 
+def normalize_query_audit(
+    requested: str, *, effective: str = "", detected: str = "",
+    spelling_correction: str = "",
+) -> dict[str, object]:
+    """Audit whether Google preserved the requested search semantics."""
+    requested_norm = " ".join(requested.casefold().split())
+    effective_norm = " ".join((effective or requested).casefold().split())
+    detected_norm = " ".join((detected or effective_norm).casefold().split())
+    mismatch = ""
+    if requested_norm != effective_norm:
+        mismatch = "request_transformed"
+    elif detected_norm and detected_norm != requested_norm:
+        mismatch = "result_page_query_changed"
+    return {
+        "requested_query": requested,
+        "effective_query": effective or requested,
+        "detected_query": detected or effective or requested,
+        "spelling_correction": spelling_correction or None,
+        "query_mismatch": mismatch or None,
+    }
+
+
+def field_extraction_stats(results: list[SearchResult]) -> dict[str, object]:
+    total = len(results)
+    if not total:
+        return {"result_count": 0, "title_rate": 0.0, "description_rate": 0.0, "date_rate": 0.0}
+    return {
+        "result_count": total,
+        "title_rate": round(sum(bool(row.title) for row in results) / total, 4),
+        "description_rate": round(sum(bool(row.description) for row in results) / total, 4),
+        "date_rate": round(sum(bool(row.date) for row in results) / total, 4),
+    }
+
+
+def error_scope(error_code: str, *, http_status: int | None = None) -> str:
+    """Map failures to the component that owns the next action."""
+    if error_code in {
+        "google_proxy_unavailable", "google_transport_error", "google_timeout",
+        "searxng_engine_timeout", "searxng_engine_error",
+    }:
+        return "proxy" if error_code.startswith("google_") else "provider"
+    if error_code in {"google_unrecognized_page", "searxng_empty_unverified", "google_invalid_response"}:
+        return "parser"
+    if error_code in {"google_query_mismatch", "google_query_rejected", "google_query_cooling"}:
+        return "query"
+    if error_code == "google_web_circuit_open":
+        return "global"
+    if error_code.startswith("google_http_") or error_code in {"google_captcha", "google_consent"}:
+        return "global" if http_status == 429 else "proxy"
+    return "provider"
+
+
 class SearchDiscovery:
     """Google-only discovery with durable caching and cross-process throttling hooks."""
 
@@ -54,6 +143,7 @@ class SearchDiscovery:
         proxy_pool: ProxyPool | None = None,
         proxy_profile: str = "direct",
         language: str = "en",
+        search_locale: SearchLocale | None = None,
         global_concurrency: int = 24,
         query_concurrency: int = 4,
         proxy_usage_recorder: Callable[[list[tuple[str, str, int]]], None] | None = None,
@@ -85,6 +175,10 @@ class SearchDiscovery:
         deep_cache_seconds: int = 86400,
         singleflight_acquirer: Callable[..., str | None] | None = None,
         singleflight_releaser: Callable[..., None] | None = None,
+        singleflight_wait_seconds: float = 30.0,
+        query_cooldown_seconds: int = 15,
+        query_cooldown_checker: Callable[[str], dict[str, Any] | None] | None = None,
+        query_cooldown_recorder: Callable[..., None] | None = None,
         persistent_browser_enabled: bool = False,
         persistent_browser_profile_root: str = "state/browser-profiles",
         persistent_browser_max_contexts: int = 4,
@@ -96,6 +190,9 @@ class SearchDiscovery:
         google_serp_evidence_dir: str = "state/serp-evidence",
         serp_attempt_recorder: Callable[..., None] | None = None,
         proxy_provider_attempts: int = 1,
+        parse_mode: str = "light",
+        time_filter: str = "",
+        session_id: str = "",
     ):
         self.timeout = timeout
         self.proxy_pool = proxy_pool
@@ -103,6 +200,9 @@ class SearchDiscovery:
         self.proxy_profiles = tuple(proxy_profiles or [proxy_profile]) or ("direct",)
         self.language = language if language in {"en", "zh"} else "en"
         self.locale = "zh-CN" if self.language == "zh" else "en-SG"
+        self.search_locale = search_locale or locale_for_language(self.language)
+        if self.search_locale.language != self.language:
+            raise ValueError("search locale language does not match search language")
         self.global_limiter = _discovery_limiter(global_concurrency)
         self.query_concurrency = max(1, query_concurrency)
         self.proxy_usage_recorder = proxy_usage_recorder
@@ -143,9 +243,14 @@ class SearchDiscovery:
         self.deep_cache_seconds = max(self.query_cache_seconds, deep_cache_seconds)
         self.singleflight_acquirer = singleflight_acquirer
         self.singleflight_releaser = singleflight_releaser
+        self.singleflight_wait_seconds = max(0.0, singleflight_wait_seconds)
+        self.query_cooldown_seconds = max(0, query_cooldown_seconds)
+        self.query_cooldown_checker = query_cooldown_checker
+        self.query_cooldown_recorder = query_cooldown_recorder
         from .free_google import GoogleTransport
         self.transport = GoogleTransport(
             timeout, self.language, searxng_url,
+            search_locale=self.search_locale,
             persistent_browser_enabled=persistent_browser_enabled,
             persistent_browser_profile_root=persistent_browser_profile_root,
             persistent_browser_max_contexts=persistent_browser_max_contexts,
@@ -155,6 +260,8 @@ class SearchDiscovery:
             persistent_browser_failure_threshold=persistent_browser_failure_threshold,
             google_serp_save_html=google_serp_save_html,
             google_serp_evidence_dir=google_serp_evidence_dir,
+            parse_mode=parse_mode,
+            time_filter=time_filter,
         )
         self.serp_attempt_recorder = serp_attempt_recorder
         # Zero means exhaust every currently available rotating proxy before
@@ -165,17 +272,39 @@ class SearchDiscovery:
         self._local_next_request = 0.0
         self._local_failures: dict[str, int] = {}
         self._local_cooldowns: dict[str, float] = {}
+        self._query_cooldowns: dict[str, float] = {}
         self._profile_lock = threading.Lock()
         self._profile_cursor = 0
+        if parse_mode not in SERP_PARSE_MODES:
+            raise ValueError(f"parse_mode must be one of {','.join(sorted(SERP_PARSE_MODES))}")
+        if time_filter and time_filter not in GOOGLE_TIME_FILTERS:
+            raise ValueError("time_filter must be one of qdr:h,d,w,m,y")
+        self.parse_mode = parse_mode
+        self.time_filter = time_filter
+        self.session_id = re.sub(r"[^A-Za-z0-9_.:-]", "-", session_id)[:128] if session_id else ""
+        self.last_search_evidence: dict[str, Any] = {}
+        self.discovery_global_concurrency = global_concurrency
 
-    @staticmethod
-    def _cache_key(source: str, query: str, locale: str, page: int = 1) -> str:
-        value = json.dumps([source, query, locale, page], ensure_ascii=False, separators=(",", ":"))
+    def _cache_key(
+        self, source: str, query: str, locale: str, page: int = 1,
+        *, time_filter: str = "",
+    ) -> str:
+        value = json.dumps(
+            [source, query, locale, page, time_filter or self.time_filter],
+            ensure_ascii=False, separators=(",", ":"),
+        )
         return hashlib.sha256(value.encode()).hexdigest()
 
     @staticmethod
     def _serialize(results: list[SearchResult]) -> list[dict[str, Any]]:
-        return [{"url": row.url, "title": row.title, "engines": list(row.engines)} for row in results]
+        fields = ("rank", "description", "display_link", "source", "date", "serp_module")
+        return [
+            {
+                "url": row.url, "title": row.title, "engines": list(row.engines),
+                **{field: getattr(row, field) for field in fields},
+            }
+            for row in results
+        ]
 
     @staticmethod
     def _deserialize(payload: object) -> list[SearchResult]:
@@ -188,19 +317,58 @@ class SearchDiscovery:
             results.append(SearchResult(
                 str(row["url"]), str(row.get("title") or row["url"]),
                 tuple(str(value) for value in row.get("engines") or ()),
+                rank=int(row["rank"]) if row.get("rank") is not None else None,
+                description=str(row["description"]) if row.get("description") else None,
+                display_link=str(row["display_link"]) if row.get("display_link") else None,
+                source=str(row["source"]) if row.get("source") else None,
+                date=str(row["date"]) if row.get("date") else None,
+                serp_module=str(row.get("serp_module") or "web"),
             ))
         return results
+
+    @staticmethod
+    def _project_results(
+        results: list[SearchResult], *, include_metadata: bool,
+    ) -> list[SearchResult]:
+        """Keep fast mode focused on discovery instead of snippet extraction."""
+        if include_metadata:
+            return results
+        return [
+            SearchResult(row.url, row.title, row.engines, rank=row.rank)
+            for row in results
+        ]
+
+    @staticmethod
+    def project_serp_fields(
+        results: list[SearchResult], *, include_metadata: bool,
+    ) -> list[SearchResult]:
+        return SearchDiscovery._project_results(
+            results, include_metadata=include_metadata
+        )
 
     def _cached(self, source: str, query: str, locale: str, page: int = 1) -> tuple[str, list[SearchResult] | None]:
         key = self._cache_key(source, query, locale, page)
         if not self.cache_get:
+            self.last_search_evidence = {"cache_key": key, "cache_hit": False}
             return key, None
         row = self.cache_get(key, source)
-        return key, self._deserialize(row.get("payload")) if row else None
+        if not row:
+            self.last_search_evidence = {"cache_key": key, "cache_hit": False}
+            return key, None
+        metadata = row.get("metadata") if isinstance(row, dict) else {}
+        metadata = metadata if isinstance(metadata, dict) else {}
+        self.last_search_evidence = {
+            **metadata,
+            "parser_version": metadata.get("parser_version") or SERP_PARSER_VERSION,
+            "cache_key": key,
+            "cache_hit": True,
+        }
+        return key, self._deserialize(row.get("payload"))
 
     def _store_cache(
         self, key: str, source: str, query: str, locale: str, page: int,
         results: list[SearchResult], ttl: int, novel_count: int = 0,
+        metadata: dict[str, Any] | None = None,
         response: requests.Response | None = None,
     ) -> None:
         if not self.cache_put:
@@ -208,6 +376,7 @@ class SearchDiscovery:
         self.cache_put(
             key, source, hashlib.sha256(query.encode()).hexdigest(), locale, page,
             self._serialize(results), ttl, novel_count=novel_count,
+            metadata=metadata,
             etag=response.headers.get("ETag") if response else None,
             last_modified=response.headers.get("Last-Modified") if response else None,
         )
@@ -224,6 +393,7 @@ class SearchDiscovery:
     def _parse_google_html(content: bytes) -> list[SearchResult]:
         results: list[SearchResult] = []
         soup = BeautifulSoup(content, "html.parser")
+        rank = 0
         for anchor in soup.select("a[href]"):
             href = str(anchor.get("href") or "").strip()
             if href.startswith("/url?"):
@@ -236,7 +406,17 @@ class SearchDiscovery:
             if title_node:
                 title = title_node.get_text(" ", strip=True)
                 if title:
-                    results.append(SearchResult(href, title, ("google_web",)))
+                    rank += 1
+                    snippet_node = None
+                    for parent in tuple(anchor.parents)[:5]:
+                        snippet_node = parent.select_one(
+                            "div.VwiC3b, div[data-sncf], span.aCOpRe, div.IsZvec"
+                        )
+                        if snippet_node:
+                            break
+                    description = snippet_node.get_text(" ", strip=True) if snippet_node else None
+                    metadata = serp_metadata(href, title, rank=rank, description=description)
+                    results.append(SearchResult(href, title, ("google_web",), **metadata))
         return results
 
     def _close_browser(self) -> None:
@@ -298,7 +478,7 @@ class SearchDiscovery:
             for _ in range(max(1, count)):
                 selected = self.proxy_pool.choose(
                     profile, "www.google.com", sticky_seconds=120,
-                    sticky_key=f"google:{threading.get_ident()}", full_pool=True,
+                    sticky_key=self._proxy_sticky_key(), full_pool=True,
                 )
                 if not selected:
                     break
@@ -317,6 +497,76 @@ class SearchDiscovery:
                 minimum_wait = wait if minimum_wait is None else min(minimum_wait, wait)
                 self.proxy_pool.defer(key, "www.google.com", min(max(wait, 0.1), self.proxy_cooldown_seconds))
         raise GoogleBlocked("google_proxy_unavailable", retry_after=minimum_wait)
+
+    def _proxy_sticky_key(self) -> str:
+        return f"google:{self.session_id or threading.get_ident()}"
+
+    def _query_cooldown_key(self, query: str) -> str:
+        value = json.dumps(
+            [query, self.search_locale.cache_identity, self.time_filter],
+            ensure_ascii=False, separators=(",", ":"),
+        )
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    def _assert_query_available(self, query: str, cooldown_key: str) -> None:
+        if not self.query_cooldown_seconds:
+            return
+        wait = 0.0
+        with self._attempt_lock:
+            wait = max(0.0, self._query_cooldowns.get(cooldown_key, 0) - time.monotonic())
+        if not wait and self.query_cooldown_checker:
+            row = self.query_cooldown_checker(cooldown_key)
+            if row:
+                wait = max(0.0, float(row.get("retry_after") or 0))
+        if wait:
+            raise GoogleBlocked("google_query_cooling", retry_after=wait)
+
+    def _record_query_cooldown(self, query: str, cooldown_key: str, reason: str) -> None:
+        if not self.query_cooldown_seconds or reason not in {
+            "google_query_mismatch", "google_query_rejected",
+        }:
+            return
+        retry_after = float(self.query_cooldown_seconds)
+        with self._attempt_lock:
+            self._query_cooldowns[cooldown_key] = time.monotonic() + retry_after
+        if self.query_cooldown_recorder:
+            try:
+                self.query_cooldown_recorder(
+                    cooldown_key=cooldown_key, query=query,
+                    locale_label=self.search_locale.label,
+                    reason=reason, retry_after=retry_after,
+                )
+            except Exception:
+                pass
+
+    def _record_query_success(self, cooldown_key: str) -> None:
+        with self._attempt_lock:
+            self._query_cooldowns.pop(cooldown_key, None)
+
+    def _acquire_singleflight(
+        self, cache_key: str, source: str, query: str, locale: str, page: int,
+    ) -> tuple[str | None, list[SearchResult] | None]:
+        deadline = time.monotonic() + self.singleflight_wait_seconds
+        while True:
+            lease = self.singleflight_acquirer(cache_key) if self.singleflight_acquirer else ""
+            if lease:
+                return lease, None
+            _, cached = self._cached(source, query, locale, page)
+            if cached is not None:
+                self.last_search_evidence = {
+                    "cache_hit": True,
+                    "parser_version": SERP_PARSER_VERSION,
+                    "parse_mode": self.parse_mode,
+                    "requested_query": query,
+                    "effective_query": query,
+                    "detected_query": query,
+                    "time_filter": self.time_filter or None,
+                }
+                return None, cached
+            if time.monotonic() >= deadline:
+                raise GoogleBlocked("google_query_inflight", retry_after=0.1)
+            time.sleep(min(0.25, max(0.01, deadline - time.monotonic())))
+        raise GoogleBlocked("google_query_inflight", retry_after=0.1)
 
     @staticmethod
     def _error_code(exc: Exception) -> str:
@@ -347,6 +597,18 @@ class SearchDiscovery:
         try:
             with self.global_limiter:
                 results = self.transport.fetch(provider, query, page, proxy_url, proxy_key=proxy_key)
+            results = self._project_results(
+                results, include_metadata=self.parse_mode != "fast"
+            )
+            evidence = dict(self.transport.last_evidence)
+            audit = normalize_query_audit(
+                query,
+                effective=str(evidence.get("effective_query") or query),
+                detected=str(evidence.get("detected_query") or ""),
+                spelling_correction=str(evidence.get("spelling_correction") or ""),
+            )
+            if audit["query_mismatch"] and results:
+                raise GoogleBlocked("google_query_mismatch")
             return results
         except Exception as exc:
             failure = exc
@@ -357,6 +619,15 @@ class SearchDiscovery:
             captcha = isinstance(failure, GoogleBlocked) and failure.captcha
             limited = captcha or code in {"google_http_403", "google_http_429", "google_javascript_required", "google_consent"}
             evidence = dict(self.transport.last_evidence)
+            query_audit = normalize_query_audit(
+                query,
+                effective=str(evidence.get("effective_query") or query),
+                detected=str(evidence.get("detected_query") or ""),
+                spelling_correction=str(evidence.get("spelling_correction") or ""),
+            )
+            if failure is None and query_audit["query_mismatch"] and results:
+                failure = GoogleBlocked(str(query_audit["query_mismatch"]))
+                code = str(query_audit["query_mismatch"])
             classification = evidence.get("classification") or (
                 ("results" if results else "empty") if failure is None
                 else "timeout" if code == "google_timeout"
@@ -371,8 +642,19 @@ class SearchDiscovery:
                     self._local_cooldowns[provider] = time.monotonic() + self.source_cooldown_seconds
                 self.attempts.append({
                     "provider": provider, "query": query, "page": page,
+                    "locale_label": self.search_locale.label,
                     "success": failure is None, "results": len(results),
                     "seconds": round(elapsed, 3), "error": code,
+                    "error_scope": error_scope(code, http_status=evidence.get("http_status")),
+                    "parser_version": evidence.get("parser_version") or SERP_PARSER_VERSION,
+                    "parse_mode": evidence.get("parse_mode") or self.parse_mode,
+                    "requested_query": query_audit["requested_query"],
+                    "effective_query": query_audit["effective_query"],
+                    "detected_query": query_audit["detected_query"],
+                    "spelling_correction": query_audit["spelling_correction"],
+                    "query_mismatch": query_audit["query_mismatch"],
+                    "session_id": self.session_id or None,
+                    "field_extraction": field_extraction_stats(results),
                     "proxy_hash": proxy_hash,
                     "proxy_profile": selected_profile,
                     "http_status": evidence.get("http_status"),
@@ -381,11 +663,13 @@ class SearchDiscovery:
                     "raw_html_path": evidence.get("raw_html_path"),
                     "request_url": evidence.get("request_url"),
                     "headless": evidence.get("headless"),
+                    "time_filter": self.time_filter or None,
                 })
             if self.serp_attempt_recorder:
                 try:
                     self.serp_attempt_recorder(
                         provider=provider, query=query, page=page,
+                        locale_label=self.search_locale.label,
                         proxy_key_hash=proxy_hash or None,
                         proxy_profile=selected_profile,
                         request_url=evidence.get("request_url"),
@@ -395,6 +679,16 @@ class SearchDiscovery:
                         raw_sha256=evidence.get("raw_sha256"),
                         raw_html_path=evidence.get("raw_html_path"),
                         headless=evidence.get("headless"),
+                        error_scope=error_scope(code, http_status=evidence.get("http_status")),
+                        parser_version=evidence.get("parser_version") or SERP_PARSER_VERSION,
+                        parse_mode=evidence.get("parse_mode") or self.parse_mode,
+                        requested_query=query_audit["requested_query"],
+                        effective_query=query_audit["effective_query"],
+                        detected_query=query_audit["detected_query"],
+                        spelling_correction=query_audit["spelling_correction"],
+                        query_mismatch=query_audit["query_mismatch"],
+                        field_extraction=json.dumps(field_extraction_stats(results), ensure_ascii=False),
+                        session_id=self.session_id or None,
                     )
                 except Exception:
                     pass
@@ -429,20 +723,39 @@ class SearchDiscovery:
                     )
 
     def _discover_google_page(self, query: str, page: int) -> list[SearchResult]:
-        cache_locale = self.locale + ":free-v1:" + ",".join(self.providers)
+        cache_locale = self.search_locale.cache_identity + ":free-v1:" + ",".join(self.providers)
         cache_key, cached = self._cached("google_web", query, cache_locale, page)
         if cached is not None:
             return cached
+        cooldown_key = self._query_cooldown_key(query)
+        self._assert_query_available(query, cooldown_key)
         lease = None
         if self.singleflight_acquirer:
-            lease = self.singleflight_acquirer(cache_key)
-            if not lease:
-                raise GoogleBlocked("google_query_inflight")
+            lease, cached = self._acquire_singleflight(
+                cache_key, "google_web", query, cache_locale, page,
+            )
+            if cached is not None:
+                return cached
+        self.last_search_evidence = {
+            "parser_version": SERP_PARSER_VERSION,
+            "parse_mode": self.parse_mode,
+            "cache_key": cache_key,
+            "cache_hit": False,
+            "requested_query": query,
+            "effective_query": query,
+            "detected_query": query,
+            "query_mismatch": None,
+            "session_id": self.session_id or None,
+            "time_filter": self.time_filter or None,
+        }
         try:
             # Another process may have filled the cache before our lease was acquired.
             if lease:
                 _, cached = self._cached("google_web", query, cache_locale, page)
                 if cached is not None:
+                    self.last_search_evidence = dict(self.last_search_evidence) | {
+                        "cache_hit": True,
+                    }
                     return cached
             errors = []
             # An empty page is confirmed by at most one backup channel before
@@ -480,11 +793,20 @@ class SearchDiscovery:
                     continue
                 novel = self.novelty_counter([row.url for row in results]) if self.novelty_counter else len(results)
                 ttl = self.query_cache_seconds if page <= 3 else self.deep_cache_seconds
-                self._store_cache(cache_key, "google_web", query, cache_locale, page, results, ttl, novel)
+                evidence = dict(self.last_search_evidence)
+                evidence.update(self.transport.last_evidence)
+                evidence.update(field_extraction_stats(results))
+                self._store_cache(
+                    cache_key, "google_web", query, cache_locale, page, results, ttl, novel,
+                    metadata=evidence,
+                )
+                self._record_query_success(cooldown_key)
                 return results
             # Preserve actionable failure over a later skipped/cooling provider.
             substantive = [exc for exc in errors if exc.reason != "google_provider_cooling"]
-            raise (substantive or errors)[-1]
+            failure = (substantive or errors)[-1]
+            self._record_query_cooldown(query, cooldown_key, failure.reason)
+            raise failure
         finally:
             if lease and self.singleflight_releaser:
                 self.singleflight_releaser(cache_key, lease)
@@ -499,7 +821,7 @@ class SearchDiscovery:
             if self.page_batch_acquirer:
                 try:
                     batch = self.page_batch_acquirer(
-                        query, self.locale, page_limit, self.google_web_pages_per_batch
+                        query, self.search_locale, page_limit, self.google_web_pages_per_batch
                     )
                 except Exception as exc:
                     errors.append(f"google frontier acquire {type(exc).__name__}")
@@ -558,9 +880,14 @@ class SearchDiscovery:
                 for query, (results, query_errors) in zip(queries, batches):
                     for result in results:
                         previous = found.get(result.url)
+                        metadata = {
+                            field: getattr(previous or result, field)
+                            for field in ("rank", "description", "display_link", "source", "date", "serp_module")
+                        }
                         found[result.url] = SearchResult(
                             result.url, previous.title if previous else result.title,
                             tuple(dict.fromkeys((*(previous.engines if previous else ()), *result.engines))),
+                            **metadata,
                         )
                     errors.extend(f"{query}: {value}" for value in query_errors)
             return list(found.values()), list(dict.fromkeys(errors))

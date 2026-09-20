@@ -108,6 +108,13 @@ class Config:
     google_web_query_cache_seconds: int = int(
         os.getenv("GOOGLE_WEB_QUERY_CACHE_SECONDS", "21600")
     )
+    google_singleflight_wait_seconds: float = float(
+        os.getenv("GOOGLE_SINGLEFLIGHT_WAIT_SECONDS", "30")
+    )
+    google_query_cooldown_seconds: int = int(
+        os.getenv("GOOGLE_QUERY_COOLDOWN_SECONDS", "15")
+    )
+    google_serp_parse_mode: str = os.getenv("GOOGLE_SERP_PARSE_MODE", "light")
     google_web_proxy_min_interval_seconds: int = int(
         os.getenv("GOOGLE_WEB_PROXY_MIN_INTERVAL_SECONDS", "30")
     )

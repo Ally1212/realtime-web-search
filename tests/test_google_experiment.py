@@ -10,7 +10,14 @@ from unittest.mock import Mock, patch
 
 from realtime.config import Config
 from realtime.experiment_store import ExperimentStore, digest
-from realtime.google_experiment import Runner, command, experiment_message, export_report, fetch_one, normalize_languages, publication_metadata, quality, seed_queries, site_queries
+from realtime.google_experiment import (
+    Runner, command, experiment_message, export_report, fetch_one, normalize_languages,
+    publication_metadata, quality, resolve_experiment_locales, seed_queries, site_queries,
+    validate_locale_matrix,
+)
+from realtime.locales import (
+    default_locales_for_languages, locale_for_language, parse_locales,
+)
 
 
 def document(url='https://example.org/ai', text=None):
@@ -51,7 +58,7 @@ class ExperimentTests(unittest.TestCase):
     def test_event_query_is_not_collapsed_and_dates_are_explicit(self):
         seed_queries(self.store,Config(),time.time())
         rows = list(self.store.db.execute(
-            "SELECT family,query FROM queries WHERE family IN ('topic','event','recent') AND query<>'AI'"
+            "SELECT family,query,locale_label FROM queries WHERE family IN ('topic','event','recent') AND query<>'AI'"
         ))
         self.assertTrue(any('news research' in r['query'] for r in rows if r['family']=='event'))
         self.assertTrue(all('after:' in r['query'] for r in rows if r['family']=='recent'))
@@ -88,6 +95,65 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(normalize_languages('zh,en,zh'), ('zh', 'en'))
         with self.assertRaises(ValueError):
             normalize_languages('ja')
+
+    def test_locale_matrix_creates_separate_queries_and_keeps_global_deduplication(self):
+        self.store.db.execute('DELETE FROM schedule')
+        self.store.db.execute('DELETE FROM queries')
+        self.store.db.commit()
+        locales = parse_locales('zh-CN-CN,zh-TW-TW')
+        seed_queries(self.store, Config(), time.time(), languages=('zh',), locales=locales)
+        rows = list(self.store.db.execute(
+            "SELECT id,locale_label FROM queries WHERE family='topic' GROUP BY id,locale_label"
+        ))
+        self.assertEqual({row['locale_label'] for row in rows}, {'zh-CN-CN', 'zh-TW-TW'})
+        self.assertEqual(len({row['id'] for row in rows}), len(rows))
+
+        first = self.store.add_query('topic', 'same query', 'zh', 'AI', locale_label='zh-CN-CN')
+        second = self.store.add_query('topic', 'same query', 'zh', 'AI', locale_label='zh-TW-TW')
+        self.assertNotEqual(first, second)
+        for key in (first, second):
+            row = self.store.db.execute('SELECT * FROM queries WHERE id=?', (key,)).fetchone()
+            self.store.search(row, 1, time.time(), [{'url':'https://example.org/ai','title':'AI'}], [])
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM urls').fetchone()[0], 1)
+        self.assertEqual(self.store.db.execute('SELECT count(DISTINCT query_id) FROM discoveries').fetchone()[0], 2)
+
+    def test_locale_matrix_requires_one_wml_provider_and_exact_languages(self):
+        locales = parse_locales('zh-CN-CN,en-US-US')
+        validate_locale_matrix(locales, ('zh', 'en'), ['wml'])
+        validate_locale_matrix(locales, ('zh', 'en'), ['wml_direct'])
+        with self.assertRaisesRegex(ValueError, 'one --google-providers'):
+            validate_locale_matrix(locales, ('zh', 'en'), ['wml', 'wml_direct'])
+        with self.assertRaisesRegex(ValueError, 'exactly match'):
+            validate_locale_matrix(parse_locales('en-US-US'), ('zh',), ['wml_direct'])
+
+    def test_auto_locales_expand_from_selected_languages(self):
+        self.assertEqual(
+            default_locales_for_languages(('zh',)),
+            parse_locales('zh-CN-CN,zh-CN-HK,zh-TW-TW,zh-CN-SG,zh-CN-US'),
+        )
+        self.assertEqual(
+            default_locales_for_languages(('zh', 'en')),
+            parse_locales('zh-CN-CN,zh-CN-HK,zh-TW-TW,zh-CN-SG,zh-CN-US,en-SG-SG,en-US-US,en-GB-GB,en-IN-IN'),
+        )
+
+    def test_resolve_locales_uses_auto_or_explicit_labels(self):
+        self.assertEqual(
+            resolve_experiment_locales(
+                ('zh',), locale_matrix=True, locales='auto', providers=['wml']
+            ),
+            default_locales_for_languages(('zh',)),
+        )
+        self.assertEqual(
+            resolve_experiment_locales(
+                ('zh', 'en'), locale_matrix=True,
+                locales='zh-TW-TW,en-US-US', providers=['wml_direct'],
+            ),
+            parse_locales('zh-TW-TW,en-US-US'),
+        )
+        self.assertEqual(
+            resolve_experiment_locales(('zh',), locale_matrix=False, locales='auto'),
+            (locale_for_language('zh'),),
+        )
 
     def test_quality_excludes_false_ai_substring_shells_and_short_text(self):
         self.assertIn('no_ai_context', quality(dict(document(text='Daily mail rain ' * 100), title='Daily mail')))
@@ -357,6 +423,22 @@ class ExperimentTests(unittest.TestCase):
         production.acquire_discovery_slot.return_value={'allowed':False,'wait':1800}
         self.assertFalse(runner.slot('google_web',.5)['allowed'])
         self.assertGreater(self.store.get('search_cooling_until'),time.time()+1799)
+
+    def test_query_session_policy_uses_one_sticky_client_per_locale_and_query(self):
+        production=Mock()
+        production.acquire_discovery_slot.return_value={'allowed':True,'wait':0}
+        runner=Runner(self.store,Config(),production,self.root/'export')
+        self.store.set('session_policy','query')
+        row=self.store.db.execute('SELECT * FROM queries WHERE id=?',(self.query,)).fetchone()
+        first=runner.client_for_query(row)
+        second=runner.client_for_query(row)
+        other={**row, 'query': 'AI safety'}
+        other['query']='AI safety'
+        third=runner.client_for_query(other)
+        self.assertIs(first,second)
+        self.assertIsNot(first,third)
+        self.assertTrue(first.session_id.endswith(':AI'))
+        self.assertTrue(third.session_id.endswith(':AI-safety'))
 
     def test_historical_hash_copy_in_second_family_is_attributed(self):
         self.save()

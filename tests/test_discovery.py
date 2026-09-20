@@ -1,10 +1,66 @@
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
 from realtime.discovery import GoogleBlocked, SearchDiscovery, SearchResult
+from realtime.locales import parse_locales
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_locale_separates_cache_but_same_locale_reuses_without_network(self):
+        cache = {}
+        expected = [SearchResult('https://example.com/ai', 'AI', ('google_web',))]
+
+        def get(key, source):
+            row = cache.get(key)
+            return row if row is not None else None
+
+    def put(key, source, query_hash, locale, page, results, ttl, **kwargs):
+        cache[key] = {
+            'payload': results, 'metadata': kwargs.get('metadata') or {},
+        }
+
+        def discovery(locale):
+            return SearchDiscovery(
+                providers=('wml',), language='zh', search_locale=locale,
+                cache_get=get, cache_put=put,
+                source_slot_acquirer=Mock(return_value={'allowed': True}),
+            )
+
+        first = discovery(parse_locales('zh-CN-CN')[0])
+        second = discovery(parse_locales('zh-TW-TW')[0])
+        first.transport.fetch = Mock(return_value=expected)
+        second.transport.fetch = Mock(return_value=expected)
+        try:
+            self.assertEqual(first._discover_google_page('AI', 1), expected)
+            self.assertEqual(first._discover_google_page('AI', 1), expected)
+            self.assertEqual(second._discover_google_page('AI', 1), expected)
+            self.assertEqual(first.transport.fetch.call_count, 1)
+            self.assertEqual(second.transport.fetch.call_count, 1)
+            self.assertEqual(len(cache), 2)
+        finally:
+            first.close()
+            second.close()
+
+    def test_search_locale_does_not_change_proxy_locale_dimension(self):
+        pool = Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
+        reserve = Mock(return_value=(True, 0))
+        discovery = SearchDiscovery(
+            providers=('wml',), proxy_pool=pool, proxy_profile='private',
+            language='zh',
+            search_locale=parse_locales('zh-TW-TW')[0], proxy_reserver=reserve,
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+        )
+        discovery.transport.fetch = Mock(return_value=[])
+        try:
+            discovery._attempt('wml', 'AI', 1)
+        finally:
+            discovery.close()
+        self.assertEqual(reserve.call_args.args[1], 'zh-CN')
+
     def test_google_profiles_rotate_and_record_selected_profile(self):
         pool, slot, recorder = Mock(), Mock(return_value={'allowed': True}), Mock()
         pool.available_count.return_value = 1
@@ -102,15 +158,20 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_parses_google_html_results(self):
         content = (
-            b'<a href="/url?q=https%3A%2F%2Fexample.com%2Fai&amp;sa=U">'
-            b'<h3>AI report</h3></a><a href="https://www.google.com/preferences">'
-            b'<h3>Preferences</h3></a>'
+            '<div><a href="/url?q=https%3A%2F%2Fexample.com%2Fai&amp;sa=U">'
+            '<h3>AI report</h3></a><div class="VwiC3b">2 days ago — New AI research</div></div>'
+            '<a href="https://www.google.com/preferences">'
+            '<h3>Preferences</h3></a>'
         )
 
         results = SearchDiscovery._parse_google_html(content)
 
         self.assertEqual([row.url for row in results], ["https://example.com/ai"])
         self.assertEqual(results[0].engines, ("google_web",))
+        self.assertEqual(results[0].rank, 1)
+        self.assertEqual(results[0].date, "2 days ago")
+        self.assertEqual(results[0].description, "New AI research")
+        self.assertEqual(results[0].display_link, "example.com")
 
 
     def test_http_200_captcha_opens_block_path(self):
@@ -130,6 +191,17 @@ class DiscoveryTests(unittest.TestCase):
         results = discovery._discover_google_page("AI", 1)
         self.assertEqual([row.url for row in results], ["https://example.com/a"])
         session.get.assert_not_called()
+
+    def test_cache_round_trip_preserves_serp_metadata(self):
+        row = {"url": "https://example.com/ai", "title": "AI", "engines": ["google_web"],
+               "rank": 3, "description": "Research", "display_link": "example.com",
+               "source": "example", "date": "2 days ago", "serp_module": "news"}
+        discovery = SearchDiscovery(cache_get=Mock(return_value={"payload": [row]}))
+        results = discovery._discover_google_page("AI", 1)
+        self.assertEqual(results[0].rank, 3)
+        self.assertEqual(results[0].description, "Research")
+        self.assertEqual(results[0].date, "2 days ago")
+        self.assertEqual(results[0].serp_module, "news")
 
 
 
@@ -310,11 +382,84 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(release.call_args.args[1], "token")
 
     def test_inflight_query_is_not_dispatched(self):
-        d = SearchDiscovery(singleflight_acquirer=Mock(return_value=None))
+        d = SearchDiscovery(singleflight_acquirer=Mock(return_value=None), singleflight_wait_seconds=0)
         d.transport.fetch = Mock()
         with self.assertRaisesRegex(GoogleBlocked, "google_query_inflight"):
             d._discover_google_page("AI", 1)
         d.transport.fetch.assert_not_called()
+
+    def test_inflight_query_waits_for_cache_then_reuses_it(self):
+        cache = {'pending': 0}
+        expected = [SearchResult('https://example.com/ai', 'AI', ('google_web',))]
+
+        def get(key, source):
+            row = cache.get(key)
+            return row if row is not None else None
+
+        def put(key, source, query_hash, locale, page, results, ttl, **kwargs):
+            cache[key] = {'payload': results, 'metadata': kwargs.get('metadata') or {}}
+
+        release = threading.Event()
+
+        def acquire(key):
+            cache['pending'] += 1
+            return None
+
+        d = SearchDiscovery(
+            providers=('wml',), cache_get=get, cache_put=put,
+            singleflight_acquirer=acquire,
+            singleflight_wait_seconds=2,
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+        )
+        d.transport.fetch = Mock(return_value=expected)
+        cache_key = d._cache_key('google_web', 'AI', d.search_locale.cache_identity + ':free-v1:wml', 1)
+
+        def fill_cache():
+            cache[cache_key] = {
+                'payload': SearchDiscovery._serialize(expected), 'metadata': {}
+            }
+            release.set()
+
+        threading.Timer(.15, fill_cache).start()
+        try:
+            self.assertEqual(d._discover_google_page('AI', 1), expected)
+        finally:
+            d.close()
+        self.assertGreaterEqual(cache['pending'], 2)
+        d.transport.fetch.assert_not_called()
+
+    def test_query_mismatch_is_rejected_and_query_level_cooldown_is_isolated(self):
+        recorder = Mock()
+        d = SearchDiscovery(
+            providers=('wml',), query_cooldown_seconds=15,
+            query_cooldown_recorder=recorder,
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+        )
+        d.transport.local.last_evidence = {
+            'http_status': 200, 'detected_query': 'AI safety',
+            'parser_version': 'google-serp-v2', 'parse_mode': 'light',
+        }
+        d.transport.fetch = Mock(return_value=[SearchResult('https://example.com/a', 'A', ('google_web',))])
+        try:
+            with self.assertRaisesRegex(GoogleBlocked, 'google_query_mismatch'):
+                d._discover_google_page('AI agents', 1)
+            d.transport.local.last_evidence['detected_query'] = 'other query'
+            d.transport.fetch = Mock(return_value=[SearchResult('https://example.com/b', 'B', ('google_web',))])
+            d._discover_google_page('other query', 1)
+            with self.assertRaisesRegex(GoogleBlocked, 'google_query_cooling'):
+                d._discover_google_page('AI agents', 2)
+        finally:
+            d.close()
+        self.assertEqual(recorder.call_args.kwargs['reason'], 'google_query_mismatch')
+
+    def test_time_filter_changes_request_and_cache_identity(self):
+        first = SearchDiscovery(providers=('wml',), time_filter='qdr:d')
+        second = SearchDiscovery(providers=('wml',), time_filter='qdr:w')
+        self.assertNotEqual(
+            first._cache_key('google_web', 'AI', 'en', 1),
+            second._cache_key('google_web', 'AI', 'en', 1),
+        )
+        self.assertEqual(first.transport.time_filter, 'qdr:d')
 
     def test_deep_pages_have_daily_cache(self):
         cache = Mock()

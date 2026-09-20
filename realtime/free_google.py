@@ -15,7 +15,26 @@ from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlsplit
 import requests
 from bs4 import BeautifulSoup
 
-from .discovery import GoogleBlocked, SearchResult
+from .discovery import GoogleBlocked, SearchResult, SearchDiscovery, serp_metadata
+from .locales import SearchLocale, locale_for_language
+
+SERP_PARSER_VERSION = "google-serp-v2"
+
+
+def detect_query(content: bytes) -> str:
+    """Best-effort query detection from Google's visible result-page title."""
+    soup = BeautifulSoup(content, "html.parser")
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    for suffix in (" - Google Search", " - Google 搜索", " – Google Search"):
+        if title.endswith(suffix):
+            title = title[: -len(suffix)].strip()
+    return title
+
+
+def detect_spelling_correction(content: bytes) -> str:
+    soup = BeautifulSoup(content, "html.parser")
+    node = soup.select_one("p.sp_cnt a, a[href*='spell=']")
+    return node.get_text(" ", strip=True) if node else ""
 
 
 def public_result(url: str) -> bool:
@@ -34,6 +53,13 @@ def explicit_empty(content: bytes) -> bool:
     ))
 
 
+def parse_google_html(content: bytes, *, include_metadata: bool = True) -> list[SearchResult]:
+    """Parse a normal Google HTML SERP while preserving result order."""
+    return SearchDiscovery.project_serp_fields(
+        SearchDiscovery._parse_google_html(content), include_metadata=include_metadata,
+    )
+
+
 class GoogleTransport:
     def __init__(
         self, timeout: int, language: str, searxng_url: str,
@@ -46,9 +72,13 @@ class GoogleTransport:
         persistent_browser_failure_threshold: int = 3,
         google_serp_save_html: bool = False,
         google_serp_evidence_dir: str = "state/serp-evidence",
+        search_locale: SearchLocale | None = None,
+        parse_mode: str = "light",
+        time_filter: str = "",
     ):
         self.timeout = timeout
-        self.language = language
+        self.language = language if language in {"en", "zh"} else "en"
+        self.search_locale = search_locale or locale_for_language(self.language)
         self.searxng_url = searxng_url.rstrip("/")
         self.local = threading.local()
         self.local.last_evidence = {}
@@ -61,6 +91,10 @@ class GoogleTransport:
         self.persistent_browser_failure_threshold = max(1, persistent_browser_failure_threshold)
         self.google_serp_save_html = google_serp_save_html
         self.google_serp_evidence_dir = Path(google_serp_evidence_dir)
+        if parse_mode not in {"fast", "light", "full"}:
+            raise ValueError("parse_mode must be fast, light, or full")
+        self.parse_mode = parse_mode
+        self.time_filter = time_filter
         # Persistent contexts are shared across discovery threads so one proxy
         # always maps to one browser profile. Each context serializes its own
         # requests through a dedicated lock.
@@ -99,8 +133,14 @@ class GoogleTransport:
         else:
             raw = b""
         digest = hashlib.sha256(raw).hexdigest() if raw else None
-        evidence = {"raw_sha256": digest, "raw_html_path": None, **values}
-        if raw and self.google_serp_save_html:
+        evidence = {
+            "raw_sha256": digest,
+            "raw_html_path": None,
+            "parser_version": SERP_PARSER_VERSION,
+            "parse_mode": self.parse_mode,
+            **values,
+        }
+        if raw and (self.google_serp_save_html or self.parse_mode == "full"):
             evidence["raw_html_path"] = self._save_serp_html(digest, raw)
         self.local.last_evidence = evidence
 
@@ -132,7 +172,7 @@ class GoogleTransport:
             session.trust_env = False
             params = {
                 "q": query, "engines": "google", "categories": "general",
-                "format": "json", "language": "zh-CN" if self.language == "zh" else "en",
+                "format": "json", "language": self.search_locale.hl or ("zh-CN" if self.language == "zh" else "en"),
                 "pageno": page, "safesearch": 0,
             }
             request_url = self.searxng_url + "/search?" + urlencode(params)
@@ -150,18 +190,40 @@ class GoogleTransport:
                         raise GoogleBlocked("google_captcha", captcha=True)
                     raise GoogleBlocked("searxng_engine_timeout" if "timeout" in reason else "searxng_engine_error")
                 results = {}
+                rank = 0
                 for item in payload["results"]:
                     if item.get("engine") != "google":
                         continue
                     url, title = str(item.get("url") or ""), str(item.get("title") or "")
                     if title and public_result(url):
-                        results[url] = SearchResult(url, title, ("google_web",))
+                        rank += 1
+                        metadata = serp_metadata(
+                            url, title, rank=rank,
+                            description=item.get("content"),
+                            module="news" if item.get("publishedDate") else "web",
+    )
+
+
+
+
+
+                        date = str(item.get("publishedDate") or "").strip() or None
+                        results[url] = SearchResult(
+                            url, title, ("google_web",),
+                            **{**metadata, "date": date or metadata["date"]},
+                        )
                 # SearXNG's Google parser cannot distinguish a layout regression from
                 # a genuine empty SERP. Never cache that ambiguity as a successful page.
+                audit = {
+                    "requested_query": query,
+                    "effective_query": query,
+                    "detected_query": query,
+                    "spelling_correction": None,
+                }
                 if not results:
-                    self._evidence(raw, http_status=response.status_code, classification="parse_failure", request_url=request_url)
+                    self._evidence(raw, http_status=response.status_code, classification="parse_failure", request_url=request_url, **audit)
                     raise GoogleBlocked("searxng_empty_unverified")
-                self._evidence(raw, http_status=response.status_code, classification="results", request_url=request_url)
+                self._evidence(raw, http_status=response.status_code, classification="results", request_url=request_url, **audit)
                 return list(results.values())
             finally:
                 response.close()
@@ -178,15 +240,19 @@ class GoogleTransport:
         session = sessions[key]
         params = {
             "q": query, "start": (page - 1) * 10,
-            "hl": "zh-CN" if self.language == "zh" else "en", "pws": 0,
+            "hl": self.search_locale.hl or ("zh-CN" if self.language == "zh" else "en"), "pws": 0,
             "ie": "utf-8", "oe": "utf-8",
         }
+        if self.time_filter:
+            params["tbs"] = self.time_filter
         headers = {
             "Accept-Language": "zh-CN,zh;q=0.9" if self.language == "zh" else "en-SG,en;q=0.9",
         }
         if wml:
             params["sca_esv"] = "1"
             headers["User-Agent"] = "Nokia6230/2.0 (05.50) Profile/MIDP-2.0 Configuration/CLDC-1.1"
+        if self.search_locale.gl:
+            params["gl"] = self.search_locale.gl
         # The evidence URL identifies the Google request; proxy credentials never appear in it.
         request_url = "https://www.google.com/" + ("wml/search" if wml else "search") + "?" + urlencode(params)
         response = session.get("https://www.google.com/" + ("wml/search" if wml else "search"),
@@ -195,15 +261,25 @@ class GoogleTransport:
             raw = response.content
             blocked = SearchDiscovery._google_block(response)
             if blocked:
-                self._evidence(raw, http_status=response.status_code, classification="captcha" if blocked.captcha else "http_error", request_url=request_url)
+                self._evidence(raw, http_status=response.status_code, classification="captcha" if blocked.captcha else "http_error", request_url=request_url, detected_query=detect_query(raw))
                 raise blocked
             response.raise_for_status()
-            results = self.parse_wml(raw) if wml else SearchDiscovery._parse_google_html(raw)
+            results = self._parse_wml_for_mode(raw) if wml else parse_google_html(
+                raw, include_metadata=self.parse_mode != "fast"
+            )
             if results:
-                self._evidence(raw, http_status=response.status_code, classification="results", request_url=request_url)
+                self._evidence(
+                    raw, http_status=response.status_code, classification="results",
+                    request_url=request_url, detected_query=detect_query(raw),
+                    spelling_correction=detect_spelling_correction(raw) or None,
+                )
                 return [row for row in results if public_result(row.url)]
             if explicit_empty(raw):
-                self._evidence(raw, http_status=response.status_code, classification="empty", request_url=request_url)
+                self._evidence(
+                    raw, http_status=response.status_code, classification="empty",
+                    request_url=request_url, detected_query=detect_query(raw),
+                    spelling_correction=detect_spelling_correction(raw) or None,
+                )
                 return []
             if b"enablejs" in raw or b"enable javascript" in raw.lower():
                 self._evidence(raw, http_status=response.status_code, classification="javascript_verification", request_url=request_url)
@@ -219,6 +295,7 @@ class GoogleTransport:
         # SearXNG's source or DOM classes. Navigation links have no title span.
         soup = BeautifulSoup(content, "html.parser", from_encoding="utf-8")
         results = {}
+        rank = 0
         for anchor in soup.select("a[href]"):
             raw = str(anchor.get("href") or "")
             if not raw.startswith("/url?"):
@@ -228,8 +305,29 @@ class GoogleTransport:
             title_node = anchor.find("span") or anchor.find(["h3", "h2"])
             title = title_node.get_text(" ", strip=True) if title_node else ""
             if title and public_result(url):
-                results[url] = SearchResult(url, title, ("google_web",))
+                rank += 1
+                description = None
+                text_node = anchor.next_sibling
+                if isinstance(text_node, str) and text_node.strip():
+                    description = text_node.strip()
+                else:
+                    for sibling in anchor.find_next_siblings("br"):
+                        text_node = sibling.find_previous_sibling(text=True)
+                        if text_node and text_node.strip() and text_node.strip() != title:
+                            description = text_node.strip()
+                            break
+                host = (urlsplit(url).hostname or "").removeprefix("www.").lower()
+                metadata = serp_metadata(url, title, rank=rank, description=description)
+                results[url] = SearchResult(
+                    url, title, ("google_web",),
+                    **{**metadata, "source": metadata["source"] or host or None},
+                )
         return list(results.values())
+
+    def _parse_wml_for_mode(self, content: bytes) -> list[SearchResult]:
+        return SearchDiscovery.project_serp_fields(
+            self.parse_wml(content), include_metadata=self.parse_mode != "fast"
+        )
 
     def browser(self, query: str, page_number: int, proxy_url: str | None) -> list[SearchResult]:
         # Chromium/driver shutdown can hang beyond Playwright navigation timeouts.
@@ -239,7 +337,15 @@ class GoogleTransport:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
         )
         payload = json.dumps({"query": query, "page": page_number, "proxy": proxy_url,
-                              "language": self.language, "timeout": self.timeout})
+                              "language": self.language, "timeout": self.timeout,
+                              "locale_label": self.search_locale.label, "hl": self.search_locale.hl, "gl": self.search_locale.gl,
+                              "parse_mode": self.parse_mode, "time_filter": self.time_filter})
+        self.local.last_evidence = {
+            "parser_version": SERP_PARSER_VERSION,
+            "parse_mode": self.parse_mode,
+            "requested_query": query,
+            "effective_query": query,
+        }
         try:
             stdout, _ = process.communicate(payload, timeout=self.timeout + 5)
         except subprocess.TimeoutExpired:
@@ -253,7 +359,15 @@ class GoogleTransport:
             raise GoogleBlocked(result["error"], captcha=bool(result.get("captcha")))
         if process.returncode:
             raise GoogleBlocked("google_browser_runtime_error")
-        return [SearchResult(row["url"], row["title"], ("google_web",)) for row in result["results"]]
+        self.local.last_evidence.update(result.get("evidence") or {})
+        return [
+            SearchResult(
+                str(row.get("url") or ""), str(row.get("title") or ""), ("google_web",),
+                **{key: value for key, value in row.items()
+                   if key in {"rank", "description", "display_link", "source", "date", "serp_module"}},
+            )
+            for row in result.get("results", [])
+        ]
 
     def persistent_browser(
         self, query: str, page_number: int, proxy_url: str | None, proxy_key: str | None,
@@ -314,7 +428,7 @@ class GoogleTransport:
             runtime = sync_playwright().start()
             try:
                 browser = runtime.chromium.launch(headless=not bool(os.getenv("DISPLAY")), proxy=proxy, timeout=self.timeout * 1000)
-                context = browser.new_context(locale="zh-CN" if self.language == "zh" else "en-SG")
+                context = browser.new_context(locale=self.search_locale.hl or ("zh-CN" if self.language == "zh" else "en-SG"))
                 context.set_default_timeout(min(self.timeout * 1000, 2000))
             except Exception:
                 runtime.stop()
@@ -324,7 +438,9 @@ class GoogleTransport:
         deadline = time.monotonic() + self.timeout
         request_url = "https://www.google.com/search?" + urlencode({
             "q": query, "start": (page_number - 1) * 10, "num": 10,
-            "hl": "zh-CN" if self.language == "zh" else "en", "pws": 0,
+            "hl": self.search_locale.hl or ("zh-CN" if self.language == "zh" else "en"), "pws": 0,
+            **({"gl": self.search_locale.gl} if self.search_locale.gl else {}),
+            **({"tbs": self.time_filter} if self.time_filter else {}),
         })
         try:
             response = page.goto(request_url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
@@ -335,10 +451,22 @@ class GoogleTransport:
                     "url": page.url, "status_code": status, "content": content,
                 })())
                 if blocked:
-                    self._evidence(content, http_status=status, classification="captcha" if blocked.captcha else "http_error", request_url=request_url)
+                    self._evidence(content, http_status=status, classification="captcha" if blocked.captcha else "http_error", request_url=request_url, detected_query=detect_query(content))
                     raise blocked
                 results = {}
-                anchors = page.eval_on_selector_all("a:has(h3)", "nodes => nodes.map(a => ({href: a.getAttribute('href'), title: a.querySelector('h3').textContent}))")
+                anchors = page.eval_on_selector_all(
+                    "a:has(h3)",
+                    """nodes => nodes.map(a => {
+                      const block = a.closest('div[data-hveid],div.g,div[data-sok]');
+                      const text = block ? block.innerText : '';
+                      const heading = a.querySelector('h3').textContent.trim();
+                      const remainder = text ? text.replace(heading, ' ').replace(/\\s+/g, ' ').trim() : '';
+                      const date = remainder.match(/^((?:\\d+\\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\\s+ago)|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\s+\\d{1,2},?\\s+\\d{4}|\\d{4}年\\d{1,2}月\\d{1,2}日|\\d+\\s*(?:分钟|小时|天|周|个月|年)前))(?:\\s+(?:—|-)\\s+)?(.*)$/);
+                      return {href: a.getAttribute('href'), title: heading,
+                              description: date ? date[2] : remainder,
+                              date: date ? date[1] : ''};
+                    })""",
+                )
                 for anchor in anchors[:30]:
                     raw = anchor.get("href") or ""
                     url = urljoin(page.url, raw)
@@ -347,12 +475,29 @@ class GoogleTransport:
                         url = (args.get("q") or args.get("url") or [""])[0]
                     title = str(anchor.get("title") or "").strip()
                     if title and public_result(url):
-                        results[url] = SearchResult(url, title, ("google_web",))
+                        metadata = serp_metadata(
+                            url, title, rank=len(results) + 1,
+                            description=anchor.get("description"), module="web",
+                        )
+                        date = str(anchor.get("date") or "").strip() or None
+                        results[url] = SearchResult(
+                            url, title, ("google_web",),
+                            **{**metadata, "date": date or metadata["date"]},
+                        )
                 if results:
-                    self._evidence(content, http_status=status, classification="results", headless=not bool(os.getenv("DISPLAY")), request_url=request_url)
+                    self._evidence(
+                        content, http_status=status, classification="results",
+                        headless=not bool(os.getenv("DISPLAY")), request_url=request_url,
+                        detected_query=detect_query(content),
+                        spelling_correction=detect_spelling_correction(content) or None,
+                    )
                     return list(results.values())
                 if explicit_empty(content):
-                    self._evidence(content, http_status=status, classification="empty", headless=not bool(os.getenv("DISPLAY")), request_url=request_url)
+                    self._evidence(
+                        content, http_status=status, classification="empty",
+                        headless=not bool(os.getenv("DISPLAY")), request_url=request_url,
+                        detected_query=detect_query(content),
+                    )
                     return []
                 if time.monotonic() >= deadline:
                     reason = "google_javascript_required" if b"enablejs" in content else "google_browser_no_results"
@@ -519,7 +664,9 @@ class GoogleTransport:
             headless = not bool(os.getenv("DISPLAY"))
             request_url = "https://www.google.com/search?" + urlencode({
                 "q": query, "start": (page_number - 1) * 10, "num": 10,
-                "hl": "zh-CN" if self.language == "zh" else "en", "pws": 0,
+                "hl": self.search_locale.hl or ("zh-CN" if self.language == "zh" else "en"), "pws": 0,
+                **({"gl": self.search_locale.gl} if self.search_locale.gl else {}),
+                **({"tbs": self.time_filter} if self.time_filter else {}),
             })
             try:
                 response = page.goto(request_url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
@@ -531,7 +678,7 @@ class GoogleTransport:
                     })())
                     if blocked:
                         resource["failures"] += 1
-                        self._evidence(content, http_status=status, classification="captcha" if blocked.captcha else "http_error", headless=headless, request_url=request_url)
+                        self._evidence(content, http_status=status, classification="captcha" if blocked.captcha else "http_error", headless=headless, request_url=request_url, detected_query=detect_query(content))
                         raise blocked
                     anchors = page.eval_on_selector_all(
                         "a:has(h3)",
@@ -546,14 +693,32 @@ class GoogleTransport:
                             url = (args.get("q") or args.get("url") or [""])[0]
                         title = str(anchor.get("title") or "").strip()
                         if title and public_result(url):
-                            results[url] = SearchResult(url, title, ("google_web",))
+                            rank = len(results) + 1
+                            metadata = serp_metadata(
+                                url, title, rank=rank,
+                                description=anchor.get("description"), module="web",
+                            )
+                            date = str(anchor.get("date") or "").strip() or None
+                            results[url] = SearchResult(
+                                url, title, ("google_web",),
+                                **{**metadata, "date": date or metadata["date"]},
+                            )
                     if results:
                         resource["failures"] = 0
-                        self._evidence(content, http_status=status, classification="results", headless=headless, request_url=request_url)
+                        self._evidence(
+                            content, http_status=status, classification="results",
+                            headless=headless, request_url=request_url,
+                            detected_query=detect_query(content),
+                            spelling_correction=detect_spelling_correction(content) or None,
+                        )
                         return list(results.values())
                     if explicit_empty(content):
                         resource["failures"] = 0
-                        self._evidence(content, http_status=status, classification="empty", headless=headless, request_url=request_url)
+                        self._evidence(
+                            content, http_status=status, classification="empty",
+                            headless=headless, request_url=request_url,
+                            detected_query=detect_query(content),
+                        )
                         return []
                     if time.monotonic() >= deadline:
                         resource["failures"] += 1

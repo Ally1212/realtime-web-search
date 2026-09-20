@@ -11,20 +11,22 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS baseline_urls(url TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS baseline_hashes(hash TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS queries(id TEXT PRIMARY KEY,family TEXT,query TEXT,language TEXT,
+CREATE TABLE IF NOT EXISTS queries(id TEXT PRIMARY KEY,family TEXT,query TEXT,language TEXT,locale_label TEXT NOT NULL DEFAULT 'legacy',
  topic TEXT,enabled INTEGER DEFAULT 1,last_served REAL DEFAULT 0,lease_until REAL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS schedule(query_id TEXT,page INTEGER,due REAL DEFAULT 0,
  PRIMARY KEY(query_id,page));
 CREATE INDEX IF NOT EXISTS pipeline_query_family ON queries(family,enabled,last_served,id);
 CREATE TABLE IF NOT EXISTS query_splits(parent_id TEXT PRIMARY KEY,created_at REAL,children TEXT);
 CREATE TABLE IF NOT EXISTS searches(id INTEGER PRIMARY KEY,query_id TEXT,page INTEGER,
- started REAL,finished REAL,status TEXT,error TEXT,cache_hit INTEGER,attempts TEXT,results TEXT);
+ started REAL,finished REAL,status TEXT,error TEXT,cache_hit INTEGER,attempts TEXT,results TEXT,
+ metadata TEXT NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS search_cache ON searches(query_id,page,finished);
 CREATE INDEX IF NOT EXISTS search_latest ON searches(query_id,page,id);
 CREATE TABLE IF NOT EXISTS urls(url TEXT PRIMARY KEY,title TEXT,first_seen REAL,last_seen REAL,
  last_fetch REAL DEFAULT 0,next_fetch REAL DEFAULT 0,state TEXT DEFAULT 'pending');
 CREATE TABLE IF NOT EXISTS discoveries(url TEXT,query_id TEXT,page INTEGER,position INTEGER,
- first_seen REAL,last_seen REAL,PRIMARY KEY(url,query_id,page,position));
+ first_seen REAL,last_seen REAL,description TEXT,date TEXT,serp_module TEXT,
+ PRIMARY KEY(url,query_id,page,position));
 CREATE TABLE IF NOT EXISTS documents(id INTEGER PRIMARY KEY,url TEXT,canonical TEXT,hash TEXT,
  finished REAL,quality TEXT,classification TEXT,document TEXT,status TEXT,error TEXT,seconds REAL,
  published_at TEXT,publication_source TEXT);
@@ -36,6 +38,12 @@ CREATE INDEX IF NOT EXISTS outbox_status_due ON outbox(status,next_attempt,docum
 CREATE INDEX IF NOT EXISTS outbox_status_finished ON outbox(status,finished);
 CREATE TABLE IF NOT EXISTS samples(at REAL PRIMARY KEY,metrics TEXT);
 CREATE TABLE IF NOT EXISTS runtime(kind TEXT PRIMARY KEY,seconds REAL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS inflight_experiments(
+  name TEXT PRIMARY KEY,started_at REAL NOT NULL,finished_at REAL,
+  wait_seconds REAL NOT NULL,concurrency INTEGER NOT NULL,
+  network_requests INTEGER NOT NULL,cache_reuses INTEGER NOT NULL,
+  errors INTEGER NOT NULL,latencies TEXT NOT NULL
+);
 """
 
 
@@ -76,11 +84,27 @@ class ExperimentStore:
         self.db.execute("BEGIN IMMEDIATE")
         try:
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(queries)")}
+            if 'locale_label' not in columns:
+                self.db.execute("ALTER TABLE queries ADD COLUMN locale_label TEXT NOT NULL DEFAULT 'legacy'")
             if 'lease_until' not in columns:
                 self.db.execute("ALTER TABLE queries ADD COLUMN lease_until REAL DEFAULT 0")
             document_columns = {
                 row[1] for row in self.db.execute("PRAGMA table_info(documents)")
             }
+            discovery_columns = {
+                row[1] for row in self.db.execute("PRAGMA table_info(discoveries)")
+            }
+            if 'description' not in discovery_columns:
+                self.db.execute("ALTER TABLE discoveries ADD COLUMN description TEXT")
+            if 'date' not in discovery_columns:
+                self.db.execute("ALTER TABLE discoveries ADD COLUMN date TEXT")
+            if 'serp_module' not in discovery_columns:
+                self.db.execute("ALTER TABLE discoveries ADD COLUMN serp_module TEXT")
+            search_columns = {
+                row[1] for row in self.db.execute("PRAGMA table_info(searches)")
+            }
+            if 'metadata' not in search_columns:
+                self.db.execute("ALTER TABLE searches ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
             if 'published_at' not in document_columns:
                 self.db.execute("ALTER TABLE documents ADD COLUMN published_at TEXT")
             if 'publication_source' not in document_columns:
@@ -89,6 +113,8 @@ class ExperimentStore:
                             "ON queries(family,enabled,lease_until,last_served,id)")
             self.db.execute("CREATE INDEX IF NOT EXISTS doc_publication_source "
                             "ON documents(publication_source)")
+            self.db.execute("CREATE INDEX IF NOT EXISTS query_locale ON queries(locale_label)")
+            self.db.execute("CREATE INDEX IF NOT EXISTS discovery_serp_date ON discoveries(date)")
             self.db.commit()
         except Exception:
             self.db.rollback()
@@ -107,14 +133,22 @@ class ExperimentStore:
             self.db.executemany("INSERT OR IGNORE INTO baseline_urls VALUES(?)", ((u,) for u in urls if u))
             self.db.executemany("INSERT OR IGNORE INTO baseline_hashes VALUES(?)", ((h,) for h in hashes if h))
 
-    def add_query(self, family: str, query: str, language: str, topic: str, pages: int = 11):
-        key = digest(f"{family}:{language}:{query}")[:24]
+    def add_query(self, family: str, query: str, language: str, topic: str, pages: int = 11, locale_label: str = "legacy"):
+        key = self.query_id(family, query, language, locale_label)
         with self.db:
-            self.db.execute("INSERT OR IGNORE INTO queries(id,family,query,language,topic) VALUES(?,?,?,?,?)",
-                            (key, family, query, language, topic))
-            self.db.execute("UPDATE queries SET enabled=1 WHERE id=?", (key,))
+            self.db.execute("INSERT OR IGNORE INTO queries(id,family,query,language,locale_label,topic) VALUES(?,?,?,?,?,?)",
+                            (key, family, query, language, locale_label, topic))
+            self.db.execute("UPDATE queries SET enabled=1,family=?,query=?,language=?,locale_label=?,topic=? WHERE id=?",
+                            (family, query, language, locale_label, topic, key))
             self.db.executemany("INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)", ((key, p) for p in range(1, pages + 1)))
         return key
+
+    def query_id(self, family: str, query: str, language: str, locale_label: str = "legacy") -> str:
+        # Preserve pre-locale ledger IDs so resuming an old experiment cannot
+        # duplicate its already scheduled frontier.
+        if locale_label == "legacy":
+            return digest(f"{family}:{language}:{query}")[:24]
+        return digest(f"{family}:{language}:{locale_label}:{query}")[:24]
 
     def due_query(self, family: str, now: float):
         return self.db.execute(
@@ -233,7 +267,7 @@ class ExperimentStore:
                                "AND finished>? ORDER BY id DESC LIMIT 1",
                                (query_id, page, now - (3600 if page <= 3 else 21600))).fetchone()
 
-    def search(self, query, page: int, started: float, results: list[dict], attempts: list[dict], error: str = "", cache_hit: bool = False):
+    def search(self, query, page: int, started: float, results: list[dict], attempts: list[dict], error: str = "", cache_hit: bool = False, metadata: dict | None = None):
         now = time.time()
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -253,9 +287,10 @@ class ExperimentStore:
                     if previous['status'] != 'failed' or previous['error'] != error:
                         break
                     consecutive_failures += 1
-            cursor = self.db.execute("INSERT INTO searches(query_id,page,started,finished,status,error,cache_hit,attempts,results) "
-                                     "VALUES(?,?,?,?,?,?,?,?,?)", (query['id'], page, started, now, 'failed' if error else 'success',
-                                     error, int(cache_hit), json.dumps(attempts), json.dumps(results, ensure_ascii=False)))
+            cursor = self.db.execute("INSERT INTO searches(query_id,page,started,finished,status,error,cache_hit,attempts,results,metadata) "
+                                     "VALUES(?,?,?,?,?,?,?,?,?,?)", (query['id'], page, started, now, 'failed' if error else 'success',
+                                     error, int(cache_hit), json.dumps(attempts), json.dumps(results, ensure_ascii=False),
+                                     json.dumps(metadata or {}, ensure_ascii=False)))
             delay = search_retry_delay(error, consecutive_failures) if error else (3600 if page <= 3 else 21600)
             if owns_lease:
                 self.db.execute("UPDATE schedule SET due=? WHERE query_id=? AND page=?",
@@ -268,8 +303,14 @@ class ExperimentStore:
                 url = item['url']
                 self.db.execute("INSERT INTO urls(url,title,first_seen,last_seen) VALUES(?,?,?,?) "
                                 "ON CONFLICT(url) DO UPDATE SET last_seen=excluded.last_seen", (url, item['title'], now, now))
-                self.db.execute("INSERT INTO discoveries VALUES(?,?,?,?,?,?) ON CONFLICT(url,query_id,page,position) "
-                                "DO UPDATE SET last_seen=excluded.last_seen", (url, query['id'], page, position, now, now))
+                self.db.execute(
+                    "INSERT INTO discoveries(url,query_id,page,position,first_seen,last_seen,description,date,serp_module) "
+                    "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(url,query_id,page,position) "
+                    "DO UPDATE SET last_seen=excluded.last_seen,description=excluded.description,"
+                    "date=excluded.date,serp_module=excluded.serp_module",
+                    (url, query['id'], page, position, now, now,
+                     item.get('description'), item.get('date'), item.get('serp_module')),
+                )
             search_id = cursor.lastrowid
             self.db.commit()
             return search_id
@@ -317,6 +358,29 @@ class ExperimentStore:
                             (now, now + (21600 if doc else 3600), record['status'], url))
         return cursor.lastrowid, classification
 
+    def record_inflight_experiment(self, name: str, *, wait_seconds: float, concurrency: int,
+                                   network_requests: int, cache_reuses: int, errors: int,
+                                   latencies: list[float]):
+        now = time.time()
+        with self.db:
+            self.db.execute(
+                "INSERT INTO inflight_experiments"
+                "(name,started_at,finished_at,wait_seconds,concurrency,network_requests,cache_reuses,errors,latencies) "
+                "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
+                "started_at=excluded.started_at,finished_at=excluded.finished_at,"
+                "wait_seconds=excluded.wait_seconds,concurrency=excluded.concurrency,"
+                "network_requests=excluded.network_requests,cache_reuses=excluded.cache_reuses,"
+                "errors=excluded.errors,latencies=excluded.latencies",
+                (name, now, now, wait_seconds, concurrency, network_requests,
+                 cache_reuses, errors, json.dumps(latencies)),
+            )
+
+    def inflight_experiments(self) -> list[dict]:
+        return [dict(row) | {'latencies': json.loads(row['latencies'])}
+                for row in self.db.execute(
+                    "SELECT * FROM inflight_experiments ORDER BY name"
+                )]
+
     def counts(self, cutoff: float | None = None, *, detailed: bool = True):
         end = cutoff or self.get('deadline', time.time())
         start = self.get('started_at', 0)
@@ -330,11 +394,13 @@ class ExperimentStore:
         requests = successes = captchas = 0
         attempt_seconds = 0.0
         attempt_latencies = []
+        scopes: dict[str, int] = {}
         for row in self.db.execute("SELECT attempts FROM searches WHERE finished<=?", (end,)):
             for attempt in json.loads(row[0]):
                 requests += 1
                 successes += bool(attempt['success'])
                 captchas += attempt.get('error') == 'google_captcha'
+                scopes[attempt.get('error_scope') or 'unknown'] = scopes.get(attempt.get('error_scope') or 'unknown', 0) + 1
                 seconds = float(attempt['seconds'])
                 attempt_seconds += seconds
                 attempt_latencies.append(seconds)
@@ -349,6 +415,7 @@ class ExperimentStore:
                 round(attempt_latencies[index], 3) if attempt_latencies else None
             )
         counts['google_error_rate'] = round((requests - successes) / requests, 4) if requests else 0.0
+        counts['google_error_scopes'] = scopes
         counts['google_captcha_rate'] = round(captchas / requests, 4) if requests else 0.0
         counts['fetch_seconds'] = round(self.db.execute("SELECT coalesce(sum(seconds),0) FROM documents WHERE finished<=?", (end,)).fetchone()[0], 2)
         for row in self.db.execute("SELECT status,count(*) n FROM outbox GROUP BY status"):
@@ -362,6 +429,45 @@ class ExperimentStore:
                 (end,),
             )
         }
+        counts['locales'] = {}
+        locale_labels = [row[0] for row in self.db.execute(
+            "SELECT DISTINCT locale_label FROM queries ORDER BY locale_label"
+        )]
+        for label in locale_labels:
+            counts['locales'][label] = {
+                'scheduled_pages': self.db.execute(
+                    'SELECT count(*) FROM schedule s JOIN queries q ON q.id=s.query_id '
+                    'WHERE q.locale_label=?',
+                    (label,),
+                ).fetchone()[0],
+                'successful_pages': self.db.execute(
+                    'SELECT count(*) FROM searches s JOIN queries q ON q.id=s.query_id '
+                    "WHERE q.locale_label=? AND s.status='success' AND s.finished<=?",
+                    (label, end),
+                ).fetchone()[0],
+                'candidate_urls': self.db.execute(
+                    'SELECT count(DISTINCT x.url) FROM discoveries x JOIN queries q ON q.id=x.query_id '
+                    'WHERE q.locale_label=? AND x.first_seen<=?',
+                    (label, end),
+                ).fetchone()[0],
+                'valid_documents': self.db.execute(
+                    "SELECT count(DISTINCT d.id) FROM documents d JOIN discoveries x ON d.url=x.url "
+                    "JOIN queries q ON q.id=x.query_id WHERE q.locale_label=? AND d.quality='[]' "
+                    "AND d.classification='new' AND d.finished<=?",
+                    (label, end),
+                ).fetchone()[0],
+                'accepted_documents': self.db.execute(
+                    "SELECT count(DISTINCT o.document_id) FROM outbox o JOIN documents d ON d.id=o.document_id "
+                    "JOIN discoveries x ON d.url=x.url JOIN queries q ON q.id=x.query_id "
+                    "WHERE q.locale_label=? AND d.quality='[]' AND d.classification='new' "
+                    "AND o.status IN ('accepted','duplicate') AND o.finished<=?",
+                    (label, end),
+                ).fetchone()[0],
+            }
+            item = counts['locales'][label]
+            item['accepted_per_successful_page'] = round(
+                item['accepted_documents'] / item['successful_pages'], 4
+            ) if item['successful_pages'] else None
         elapsed_end = min(time.time(), end)
         if self.get('state') in {'complete','storage_stopped','stopped'}:
             elapsed_end = min(elapsed_end, self.get('finished_at', elapsed_end))

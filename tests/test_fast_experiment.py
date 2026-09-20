@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from realtime.config import Config
-from realtime.discovery import GoogleBlocked
+from realtime.discovery import GoogleBlocked, SearchResult
 from realtime.experiment_store import ExperimentStore
 from realtime.fast_experiment import (BodyPool, PipelineRunner, SearchRunner,
                                       adaptive_family_schedule,
@@ -21,6 +21,7 @@ from realtime.fast_experiment import (BodyPool, PipelineRunner, SearchRunner,
                                       weighted_family_schedule)
 from realtime.fetcher import LiveFetcher, _json_ld_article, extract_text
 from realtime.google_experiment import Runner, publication_metadata
+from realtime.locales import locale_for_language
 
 
 class PipelineTests(unittest.TestCase):
@@ -379,23 +380,32 @@ class PipelineTests(unittest.TestCase):
             key = store.add_query('site', query, language, topic, pages=1)
             with store.db:
                 store.db.execute('UPDATE schedule SET due=123 WHERE query_id=?', (key,))
-            self.assertEqual(replenish_queries(store, low_water=5, batch_size=2), 1)
+            self.assertEqual(replenish_queries(
+                store, (locale_for_language('zh'),), low_water=5, batch_size=2
+            ), 1)
             self.assertEqual(store.db.execute('SELECT due FROM schedule WHERE query_id=?', (key,)).fetchone()[0], 123)
             store.db.close()
             store = ExperimentStore(Path(tmp))
             try:
                 self.assertEqual(store.get('query_supply_cursor')['cursor'], 2)
-                self.assertEqual(replenish_queries(store, low_water=5, batch_size=3), 0)
+                self.assertEqual(replenish_queries(
+                    store, (locale_for_language('zh'),), low_water=5, batch_size=3
+                ), 0)
                 with store.db:
                     store.db.execute(
                         "INSERT INTO searches(query_id,page,finished,status) "
                         "SELECT s.query_id,s.page,1,'failed' FROM schedule s",
                     )
                 self.assertEqual(replenish_queries(
-                    store, low_water=5, batch_size=3, retry_backlog_limit=1
+                    store, (locale_for_language('zh'),), low_water=5, batch_size=3,
+                    retry_backlog_limit=1
                 ), 0)
-                self.assertEqual(replenish_queries(store, low_water=5, batch_size=3), 3)
-                self.assertEqual(replenish_queries(store, low_water=5, batch_size=3), 0)
+                self.assertEqual(replenish_queries(
+                    store, (locale_for_language('zh'),), low_water=5, batch_size=3
+                ), 3)
+                self.assertEqual(replenish_queries(
+                    store, (locale_for_language('zh'),), low_water=5, batch_size=3
+                ), 0)
                 self.assertEqual(store.get('query_supply_cursor')['cursor'], 5)
                 self.assertEqual(store.db.execute('SELECT count(*) FROM queries').fetchone()[0], 5)
                 self.assertEqual(store.db.execute('SELECT count(*) FROM schedule').fetchone()[0], 45)
@@ -413,7 +423,9 @@ class PipelineTests(unittest.TestCase):
                 with store.db:
                     store.db.execute('UPDATE schedule SET due=? WHERE query_id=?',
                                      (time.time() + 3600, inherited))
-                self.assertEqual(replenish_queries(store, batch_size=2), 2)
+                self.assertEqual(replenish_queries(
+                    store, (locale_for_language('zh'),), batch_size=2
+                ), 2)
                 self.assertEqual(store.db.execute(
                     'SELECT count(*) FROM schedule WHERE query_id<>?', (inherited,)
                 ).fetchone()[0], 22)
@@ -624,7 +636,8 @@ class PipelineTests(unittest.TestCase):
                 runner._submit_searches(0)
                 jobs = [runner.jobs.get_nowait() for _ in range(4)]
                 self.assertEqual(jobs[0]['id'], fresh)
-                self.assertEqual({job['id'] for job in jobs[1:3]}, set(failed[:2]))
+                self.assertGreaterEqual(len(set(failed) & {job['id'] for job in jobs}), 3)
+                self.assertNotIn(fresh, {job['id'] for job in jobs[1:]})
             finally:
                 store.db.close()
 
@@ -671,7 +684,7 @@ class PipelineTests(unittest.TestCase):
                     raise GoogleBlocked('google_provider_cooling')
                 client._discover_google_page.side_effect = discover
                 runner = Runner(store, Config(), Mock(), Path(tmp))
-                with patch.object(runner, 'client', return_value=client):
+                with patch.object(runner, 'client_for_locale', return_value=client):
                     runner.search(row)
                 self.assertEqual(store.get('search_cooling_until', 0), 0)
                 self.assertIsNone(store.cached(key, 1, time.time()))
@@ -690,7 +703,7 @@ class PipelineTests(unittest.TestCase):
                 client = Mock(attempts=[{'provider': 'wml', 'success': True, 'results': 10}])
                 client._discover_google_page.side_effect = GoogleBlocked('google_provider_cooling')
                 runner = Runner(store, Config(), Mock(), Path(tmp))
-                with patch.object(runner, 'client', return_value=client):
+                with patch.object(runner, 'client_for_locale', return_value=client):
                     runner.search(row)
                 self.assertGreater(store.get('search_cooling_until'), time.time()+55)
             finally:
@@ -704,9 +717,9 @@ class PipelineTests(unittest.TestCase):
                 key = store.add_query('site', 'site:example.com 人工智能', 'zh', '人工智能')
                 row = dict(store.db.execute('SELECT * FROM queries WHERE id=?', (key,)).fetchone(), page=1)
                 client = Mock(attempts=[])
-                client._discover_google_page.return_value = [Mock(url='https://example.com/article', title='人工智能')]
+                client._discover_google_page.return_value = [SearchResult('https://example.com/article', '人工智能', ('google_web',))]
                 runner = SearchRunner(store, Config(), Mock(), Path(tmp))
-                with patch.object(runner, 'client', return_value=client):
+                with patch.object(runner, 'client_for_locale', return_value=client):
                     runner.search(row)
                 self.assertEqual(store.due_query('site', time.time()+3601)['page'], 2)
                 self.assertGreater(store.db.execute('SELECT due FROM schedule WHERE query_id=? AND page=1', (key,)).fetchone()[0], time.time()+86300)
@@ -723,7 +736,7 @@ class PipelineTests(unittest.TestCase):
                 client = Mock(attempts=[])
                 client._discover_google_page.side_effect = GoogleBlocked('google_timeout')
                 runner = SearchRunner(store, Config(), Mock(), Path(tmp))
-                with patch.object(runner, 'client', return_value=client):
+                with patch.object(runner, 'client_for_locale', return_value=client):
                     runner.search(row)
                 self.assertEqual(store.due_query('site', time.time()+61)['page'], 1)
             finally:
@@ -739,7 +752,7 @@ class PipelineTests(unittest.TestCase):
                 client = Mock(attempts=[])
                 client._discover_google_page.side_effect = GoogleBlocked('google_proxy_unavailable')
                 runner = SearchRunner(store, Config(), Mock(), Path(tmp))
-                with patch.object(runner, 'client', return_value=client):
+                with patch.object(runner, 'client_for_locale', return_value=client):
                     with patch('realtime.experiment_store.time.time', return_value=1000):
                         runner.search(row)
                     self.assertEqual(store.db.execute(
@@ -769,7 +782,7 @@ class PipelineTests(unittest.TestCase):
                 )
                 runner = SearchRunner(store, Config(), Mock(), Path(tmp))
                 before = time.time()
-                with patch.object(runner, 'client', return_value=client):
+                with patch.object(runner, 'client_for_locale', return_value=client):
                     runner.search(row)
                 self.assertGreater(store.get('search_cooling_until'), before + 6.5)
             finally:

@@ -28,6 +28,10 @@ from .experiment_audit import write_audit_snapshot
 from .experiment_store import ExperimentStore, digest
 from .fetcher import LiveFetcher, MAX_TEXT_CHARS, normalize_url
 from .keyword_catalog import base_keyword_specs, has_ai_context
+from .locales import (
+    LOCALES, SearchLocale, default_locales_for_languages, locale_for_language,
+    parse_locales, runner_locales,
+)
 from .markdown_export import literal, quality_warnings
 from .proxy_pool import ProxyPool, ProxySynchronizer
 from .whale_collector import WhaleClient, whale_message
@@ -70,6 +74,36 @@ def normalize_languages(value: str | list[str] | tuple[str, ...] | None) -> tupl
     if not languages or any(language not in SUPPORTED_LANGUAGES for language in languages):
         raise ValueError('languages must contain zh and/or en')
     return languages
+
+
+def validate_locale_matrix(
+    locales: tuple[SearchLocale, ...], languages: tuple[str, ...], providers: list[str] | tuple[str, ...],
+) -> None:
+    """Keep a locale experiment attributable to one free SERP provider."""
+    if len(providers) != 1 or providers[0] not in {"wml", "wml_direct"}:
+        raise ValueError("--locale-matrix requires exactly one --google-providers value: wml or wml_direct")
+    locale_languages = {locale.language for locale in locales}
+    if locale_languages != set(languages):
+        raise ValueError("locale languages must exactly match --languages")
+    unknown = {locale.label for locale in locales} - set(LOCALES)
+    if unknown:
+        raise ValueError(f"unknown locales: {','.join(sorted(unknown))}")
+
+
+def resolve_experiment_locales(
+    languages: tuple[str, ...], *, locale_matrix: bool, locales: str | list[str] | None,
+    providers: list[str] | tuple[str, ...] = ('wml',),
+) -> tuple[SearchLocale, ...]:
+    """Resolve explicit labels, or the documented language-aware defaults."""
+    if not locale_matrix:
+        return tuple(locale_for_language(language) for language in languages)
+    value = str(locales or '').strip()
+    selected = (
+        default_locales_for_languages(languages)
+        if value.lower() == 'auto' else parse_locales(value)
+    )
+    validate_locale_matrix(selected, languages, providers)
+    return selected
 
 
 def quality(document: dict | None) -> list[str]:
@@ -155,8 +189,13 @@ class DatedFetcher(LiveFetcher):
 def seed_queries(
     store: ExperimentStore, config: Config, now: float, preflight: bool = False,
     languages: tuple[str, ...] = SUPPORTED_LANGUAGES,
+    locales: tuple[SearchLocale, ...] | None = None,
 ):
     languages = normalize_languages(languages)
+    locales = tuple(locales or tuple(locale_for_language(language) for language in languages))
+    selected_languages = {locale.language for locale in locales}
+    if not selected_languages or not selected_languages <= set(languages):
+        raise ValueError('locales must match selected languages')
     topics = [
         spec for spec in base_keyword_specs()
         if spec.key.endswith(':topic') and spec.language in languages
@@ -164,7 +203,9 @@ def seed_queries(
     if preflight:
         for query, language in (('AI agents release open source update', 'en'), ('人工智能智能体 发布 开源 更新', 'zh')):
             if language in languages:
-                store.add_query('event', query + EXCLUDE, language, query, pages=1)
+                for locale in locales:
+                    if locale.language == language:
+                        store.add_query('event', query + EXCLUDE, language, query, pages=1, locale_label=locale.label)
         store.set('preflight_search_target', len(languages))
         store.set('catalog_seeded', True)
         return
@@ -173,11 +214,15 @@ def seed_queries(
             if spec.language not in languages:
                 continue
             family = 'topic' if spec.key.endswith(':topic') else 'event'
-            store.add_query(family, spec.query + EXCLUDE, spec.language, spec.aliases[0])
+            for locale in locales:
+                if locale.language == spec.language:
+                    store.add_query(family, spec.query + EXCLUDE, spec.language, spec.aliases[0], locale_label=locale.label)
         for query in config.continuous_ai_keywords:
             language = 'zh' if re.search('[\u3400-\u9fff]', query) else 'en'
             if language in languages:
-                store.add_query('topic', query + EXCLUDE, language, query)
+                for locale in locales:
+                    if locale.language == language:
+                        store.add_query('topic', query + EXCLUDE, language, query, locale_label=locale.label)
         store.set('catalog_seeded', True)
     today = datetime.fromtimestamp(now, timezone.utc).date()
     if store.get('recent_date') != str(today):
@@ -185,11 +230,14 @@ def seed_queries(
         for spec in topics:
             for days in (1, 7):
                 text = f'{spec.query} after:{today - timedelta(days=days)}{EXCLUDE}'
-                store.add_query('recent', text, spec.language, spec.query)
+                for locale in locales:
+                    if locale.language == spec.language:
+                        store.add_query('recent', text, spec.language, spec.query, locale_label=locale.label)
         store.set('recent_date', str(today))
 
 
-def site_queries(store: ExperimentStore):
+def site_queries(store: ExperimentStore, locales: tuple[SearchLocale, ...] | None = None):
+    locales = locales or tuple(locale_for_language(language) for language in normalize_languages(None))
     candidates = {}
     for row in store.db.execute("SELECT d.canonical,d.hash,q.topic,q.language FROM documents d JOIN discoveries x ON d.url=x.url "
                                 "JOIN queries q ON q.id=x.query_id WHERE d.quality='[]'"):
@@ -203,7 +251,8 @@ def site_queries(store: ExperimentStore):
     selected = sorted((h for h, v in candidates.items() if len(v['hashes']) >= 2), key=lambda h: (-len(candidates[h]['hashes']), h))[:20]
     for host in selected:
         for topic, language in sorted(candidates[host]['topics'])[:5]:
-            store.add_query('site', f'site:{host} {topic}{EXCLUDE}', language, topic)
+            for locale in (locale for locale in locales if locale.language == language):
+                store.add_query('site', f'site:{host} {topic}{EXCLUDE}', language, topic, locale_label=locale.label)
     store.db.commit()
     return len(selected)
 
@@ -373,6 +422,19 @@ class Runner:
         self.next_request = 0.0
         self.stop = False
         self.domain_locks = {}
+        self.locales = runner_locales(store)
+
+    def _locale_for(self, language):
+        matches = [locale for locale in self.locales if locale.language == language]
+        if not matches:
+            raise ValueError(f'no locale configured for language: {language}')
+        return matches[0]
+
+    def locale_for_query(self, row):
+        matches = [locale for locale in self.locales if locale.label == row['locale_label']]
+        if matches:
+            return matches[0]
+        return self._locale_for(row['language'])
 
     def slot(self, source, initial_rps):
         if time.time() >= self.store.get('deadline') or self.store.get('state') != 'running':
@@ -402,10 +464,17 @@ class Runner:
         return slot
 
     def client(self, language):
-        if language not in self.clients:
+        return self.client_for_locale(self._locale_for(language))
+
+    def client_for_locale(self, locale):
+        key = locale.label
+        if key not in self.clients:
             limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
-            self.clients[language] = SearchDiscovery(
-                timeout=20, proxy_pool=self.pool, proxy_profile=self.store.get('proxy_profile', 'private'), language=language,
+            self.clients[key] = SearchDiscovery(
+                timeout=20, proxy_pool=self.pool, proxy_profile=self.store.get('proxy_profile', 'private'), language=locale.language,
+                search_locale=locale,
+                parse_mode=self.store.get('serp_parse_mode', 'light'),
+                time_filter=self.store.get('time_filter', ''),
                 proxy_profiles=self.config.google_proxy_profiles,
                 providers=tuple(self.store.get('google_providers', ['wml','wml_direct','searxng'])), searxng_url=self.config.searxng_url,
                 source_slot_acquirer=self.slot,
@@ -420,8 +489,60 @@ class Runner:
                 google_web_initial_rps=limit if limit > 2 else 1.0, google_web_max_rps=limit,
                 proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
                 source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
-                proxy_provider_attempts=0)
-        return self.clients[language]
+                proxy_provider_attempts=0,
+                session_id='')
+        return self.clients[key]
+
+    def client_for_query(self, row):
+        locale = self.locale_for_query(row)
+        if self.store.get('session_policy') != 'query':
+            return self.client_for_locale(locale)
+        key = (locale.label, row['query'])
+        if key not in self.clients:
+            current = self.client_for_locale(locale)
+            client = SearchDiscovery(
+                timeout=current.timeout, proxy_pool=current.proxy_pool,
+                proxy_profile=current.proxy_profile,
+                proxy_profiles=current.proxy_profiles, language=current.language,
+                search_locale=current.search_locale,
+                global_concurrency=current.discovery_global_concurrency,
+                query_concurrency=current.query_concurrency,
+                google_web_enabled=current.google_web_enabled,
+                google_web_initial_rps=current.google_web_initial_rps,
+                google_web_max_rps=current.google_web_max_rps,
+                google_web_max_pages=current.google_web_max_pages,
+                google_web_pages_per_batch=current.google_web_pages_per_batch,
+                query_cache_seconds=current.query_cache_seconds,
+                proxy_min_interval_seconds=current.proxy_min_interval_seconds,
+                proxy_cooldown_seconds=current.proxy_cooldown_seconds,
+                source_cooldown_seconds=current.source_cooldown_seconds,
+                captcha_threshold=current.captcha_threshold,
+                cache_get=current.cache_get, cache_put=current.cache_put,
+                source_slot_acquirer=current.source_slot_acquirer,
+                source_result_recorder=current.source_result_recorder,
+                proxy_reserver=current.proxy_reserver,
+                proxy_group_reserver=current.proxy_group_reserver,
+                proxy_result_recorder=current.proxy_result_recorder,
+                novelty_counter=current.novelty_counter,
+                page_batch_acquirer=current.page_batch_acquirer,
+                page_result_recorder=current.page_result_recorder,
+                providers=current.providers, searxng_url=current.transport.searxng_url,
+                persistent_browser_enabled=current.transport.persistent_browser_enabled,
+                persistent_browser_profile_root=str(current.transport.persistent_browser_profile_root),
+                persistent_browser_max_contexts=current.transport.persistent_browser_max_contexts,
+                persistent_browser_request_interval_seconds=current.transport.persistent_browser_request_interval_seconds,
+                persistent_browser_max_requests_per_context=current.transport.persistent_browser_max_requests_per_context,
+                persistent_browser_max_context_lifetime_seconds=current.transport.persistent_browser_max_context_lifetime_seconds,
+                persistent_browser_failure_threshold=current.transport.persistent_browser_failure_threshold,
+                google_serp_save_html=current.transport.google_serp_save_html,
+                google_serp_evidence_dir=str(current.transport.google_serp_evidence_dir),
+                serp_attempt_recorder=current.serp_attempt_recorder,
+                proxy_provider_attempts=current.proxy_provider_attempts,
+                parse_mode=current.parse_mode, time_filter=current.time_filter,
+                session_id=f"{locale.label}:{row['query']}",
+            )
+            self.clients[key] = client
+        return self.clients[key]
 
     def search(self, row):
         cached = self.store.cached(row['id'], row['page'], time.time())
@@ -431,14 +552,21 @@ class Runner:
         if cached:
             results = json.loads(cached['results'])
         else:
-            client = self.client(row['language'])
+            client = self.client_for_query(row)
             before = len(client.attempts)
             try:
-                results = [{'url': normalize_url(r.url), 'raw_url': r.url, 'title': r.title} for r in client._discover_google_page(row['query'], row['page'])]
+                fields = ('rank', 'description', 'display_link', 'source', 'date', 'serp_module')
+                results = [{
+                    'url': normalize_url(r.url), 'raw_url': r.url, 'title': r.title,
+                    **{field: getattr(r, field, None) for field in fields},
+                } for r in client._discover_google_page(row['query'], row['page'])]
             except GoogleBlocked as exc:
                 error = exc.reason
                 retry_after = exc.retry_after
             attempts = client.attempts[before:]
+            raw_metadata = client.last_search_evidence
+            metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            metadata.pop('cache_key', None)
             # An empty response from a healthy primary may need confirmation
             # from a cooling fallback. Delay that page, not unrelated searches.
             if error == 'google_provider_cooling' and not any(a.get('success') for a in attempts):
@@ -452,7 +580,10 @@ class Runner:
                     'search_cooling_until',
                     max(self.store.get('search_cooling_until', 0), time.time() + delay),
                 )
-        search_id = self.store.search(row, row['page'], started, results, attempts, error, bool(cached))
+        search_id = self.store.search(
+            row, row['page'], started, results, attempts, error, bool(cached),
+            metadata=metadata,
+        )
         if not self.remote_only:
             export_search(self.store, self.output, search_id)
 
@@ -573,9 +704,10 @@ class Runner:
                         seed_queries(
                             self.store, self.config, now, self.store.get('preflight'),
                             normalize_languages(self.store.get('languages')),
+                            self.locales,
                         )
                     if now >= self.store.get('site_due', 0) and not self.store.get('preflight'):
-                        selected = site_queries(self.store)
+                        selected = site_queries(self.store, self.locales)
                         self.store.set('site_due', now + (21600 if selected else 60))
                     for row in self.store.due_urls(BODY_WORKERS-len(futures), now):
                         lock = self.domain_locks.setdefault(urlsplit(row['url']).hostname, threading.BoundedSemaphore(2))
@@ -653,9 +785,17 @@ def command(args):
         raise ValueError('hours must be >0 and <=24')
     if not 0 < getattr(args, 'search_rps', 2) <= 8:
         raise ValueError('search_rps must be >0 and <=8')
+    requested_languages = normalize_languages(getattr(args, 'languages', None))
+    selected_locales = resolve_experiment_locales(
+        requested_languages,
+        locale_matrix=bool(getattr(args, 'locale_matrix', False)),
+        locales=getattr(args, 'locales', 'auto'),
+        providers=getattr(args, 'google_providers', ['wml', 'wml_direct', 'searxng']),
+    )
+    if getattr(args, 'locale_matrix', False):
+        validate_locale_matrix(selected_locales, requested_languages, getattr(args, 'google_providers', []))
     if not 0 < getattr(args, 'storage_budget_gib', 10) <= 128:
         raise ValueError('storage_budget_gib must be >0 and <=128')
-    requested_languages = normalize_languages(getattr(args, 'languages', None))
     remote_only = bool(getattr(args, 'remote_only', False))
     if remote_only and not args.whale:
         raise ValueError('--remote-only requires --whale')
@@ -681,6 +821,9 @@ def command(args):
         store.set('remote_only', remote_only)
         store.set('preflight', bool(args.preflight))
         store.set('languages', list(requested_languages))
+        locale_matrix = bool(getattr(args, 'locale_matrix', False))
+        store.set('locales', [locale.label for locale in selected_locales] if locale_matrix else None)
+        store.set('locale_matrix', locale_matrix)
         store.set('executor', getattr(args, 'executor', 'legacy'))
         store.set('body_workers', getattr(args, 'body_workers', 24))
         store.set('body_max_rss_mib', getattr(args, 'body_max_rss_mib', 192))
@@ -690,6 +833,9 @@ def command(args):
         store.set('search_rps', getattr(args, 'search_rps', 2.0))
         store.set('storage_budget_gib', getattr(args, 'storage_budget_gib', 10))
         store.set('query_plan', getattr(args, 'query_plan', 'balanced'))
+        store.set('time_filter', getattr(args, 'time_filter', ''))
+        store.set('serp_parse_mode', getattr(args, 'parse_mode', 'light'))
+        store.set('session_policy', getattr(args, 'session_policy', 'thread'))
         store.set('baseline_run_paths', list(args.baseline_run))
         store.set('state', 'initializing')
     if not store.get('baseline_ready'):

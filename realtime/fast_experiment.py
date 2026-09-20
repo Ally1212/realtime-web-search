@@ -219,9 +219,9 @@ def split_full_query(store, row, results):
     with store.db:
         for start, end in ((left, middle), (middle-timedelta(days=1), right)):
             query = row['query'].replace(lower[0], 'after:'+start.isoformat(), 1).replace(upper[0], 'before:'+end.isoformat(), 1)
-            key = digest(f"site:{row['language']}:{query}")[:24]
-            store.db.execute('INSERT OR IGNORE INTO queries(id,family,query,language,topic) VALUES(?,?,?,?,?)',
-                             (key, 'site', query, row['language'], row['topic']))
+            key = store.query_id('site', query, row['language'], row['locale_label'])
+            store.db.execute('INSERT OR IGNORE INTO queries(id,family,query,language,locale_label,topic) VALUES(?,?,?,?,?,?)',
+                             (key, 'site', query, row['language'], row['locale_label'], row['topic']))
             store.db.executemany(
                 'INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)',
                 ((key, page) for page in range(1, SUPPLY_PAGE_COUNT + 1)),
@@ -247,7 +247,7 @@ def supply_query(plan, cursor):
     return query, language, topic
 
 
-def replenish_queries(store, *, low_water=1, batch_size=200, retry_backlog_limit=500):
+def replenish_queries(store, locales, *, low_water=1, batch_size=200, retry_backlog_limit=500):
     """Add a bounded cohort after first attempts, unless failed-page debt is high."""
     plan = store.get('query_supply_cursor')
     if not plan:
@@ -281,15 +281,19 @@ def replenish_queries(store, *, low_water=1, batch_size=200, retry_backlog_limit
             if item is None:
                 break
             query, language, topic = item
-            key = digest(f'site:{language}:{query}')[:24]
-            result = store.db.execute('INSERT OR IGNORE INTO queries(id,family,query,language,topic) VALUES(?,?,?,?,?)',
-                                      (key, 'site', query, language, topic))
-            if result.rowcount:
-                added += 1
-                store.db.executemany(
-                    'INSERT INTO schedule(query_id,page) VALUES(?,?)',
-                    ((key, page) for page in range(1, SUPPLY_PAGE_COUNT + 1)),
+            for locale in (candidate for candidate in locales if candidate.language == language):
+                key = store.query_id('site', query, language, locale.label)
+                result = store.db.execute(
+                    'INSERT OR IGNORE INTO queries(id,family,query,language,locale_label,topic) '
+                    'VALUES(?,?,?,?,?,?)',
+                    (key, 'site', query, language, locale.label, topic)
                 )
+                if result.rowcount:
+                    added += 1
+                    store.db.executemany(
+                        'INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)',
+                        ((key, page) for page in range(1, SUPPLY_PAGE_COUNT + 1)),
+                    )
             plan['cursor'] += 1
         store.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
                          ('query_supply_cursor', json.dumps(plan, ensure_ascii=False)))
@@ -585,7 +589,7 @@ class PipelineRunner(Runner):
 
     def _seed(self):
         languages = normalize_languages(self.store.get('languages'))
-        seed_queries(self.store, self.config, time.time(), self.store.get('preflight'), languages)
+        seed_queries(self.store, self.config, time.time(), self.store.get('preflight'), languages, self.locales)
         if self.store.get('pipeline_seeded') or self.store.get('preflight'):
             return
         # Separate historical years expand finite SERP supply without changing provenance.
@@ -593,13 +597,14 @@ class PipelineRunner(Runner):
         for spec in base_keyword_specs():
             if spec.key.endswith(':topic') and spec.language in languages:
                 for year in range(this_year - 4, this_year):
-                    self.store.add_query('recent', f'{spec.query} after:{year}-01-01 before:{year+1}-01-01 '
-                                         + EXCLUDE.lstrip(), spec.language, spec.query)
+                    for locale in (candidate for candidate in self.locales if candidate.language == spec.language):
+                        self.store.add_query('recent', f'{spec.query} after:{year}-01-01 before:{year+1}-01-01 '
+                                             + EXCLUDE.lstrip(), spec.language, spec.query, locale_label=locale.label)
         domains, domain_audit = ranked_supply_domains(self.store.get('baseline_run_paths', []))
         self.store.set('query_supply_domain_audit', domain_audit)
         if self.store.get('query_plan') == 'dense':
             self.store.set('query_supply_cursor', dense_supply_plan(domains, languages, datetime.now(timezone.utc)))
-            replenish_queries(self.store)
+            replenish_queries(self.store, self.locales)
             self.store.set('query_supply', {'plan': 'dense', 'site_weight': .8,
                                           'queries': self.store.db.execute('SELECT count(*) FROM queries').fetchone()[0]})
             self.store.set('pipeline_seeded', True)
@@ -609,9 +614,11 @@ class PipelineRunner(Runner):
                 topics = ('人工智能', '大模型', '机器学习', '智能体', '生成式AI') if language == 'zh' else (
                     'artificial intelligence', 'large language models', 'machine learning', 'AI agents', 'generative AI')
                 for topic in topics:
-                    self.store.add_query('site', f'site:{host} {topic}', language, topic)
+                    for locale in (candidate for candidate in self.locales if candidate.language == language):
+                        self.store.add_query('site', f'site:{host} {topic}', language, topic, locale_label=locale.label)
         if self.store.get('query_plan') == 'yield':
             self.store.set('query_supply_cursor', supply_plan(domains, languages, datetime.now(timezone.utc)))
+            replenish_queries(self.store, self.locales)
             self.store.set('query_supply', {'plan': 'yield', 'site_weight': .8,
                                           'queries': self.store.db.execute('SELECT count(*) FROM queries').fetchone()[0]})
         self.store.set('pipeline_seeded', True)
@@ -812,7 +819,7 @@ class PipelineRunner(Runner):
                     # record exists, just like inherited fresh coverage. Wait
                     # for all live reservations before deciding the cohort is done.
                     if not self.search_inflight:
-                        replenish_queries(store)
+                        replenish_queries(store, self.locales)
                     metrics = store.counts(detailed=False)
                     if store.get('query_plan') in {'yield', 'dense'}:
                         self.search_families, family_audit = adaptive_family_schedule(store)

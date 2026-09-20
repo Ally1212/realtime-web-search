@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .config import Config
 from .discovery import GoogleBlocked, SearchDiscovery, SearchResult
+from .locales import locale_for_language
 from .fetcher import LiveFetcher, normalize_url, relevant_to
 from .proxy_pool import ProxyPool
 
@@ -103,6 +104,7 @@ def run_free_benchmark(args) -> None:
     for provider in (() if previous else providers):
         clients = {language: SearchDiscovery(
             timeout=args.timeout, providers=(provider,), language=language,
+            search_locale=locale_for_language(language),
             searxng_url=config.searxng_url, proxy_profile=args.profile,
             proxy_pool=ProxyPool(config) if args.profile != "direct" else None,
             source_slot_acquirer=slot, source_cooldown_seconds=1800,
