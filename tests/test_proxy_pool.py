@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from realtime.proxy_pool import (
     ProxyApiClient, ProxyApiError, ProxyCache, ProxyRecord, ProxySynchronizer, ProxyPool,
+    parse_static_proxy, static_proxy_records,
 )
 
 
@@ -143,3 +144,63 @@ class ProxyApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def pool_config(directory: str, static=()):
+    return SimpleNamespace(
+        proxy_api_base="https://proxy.example",
+        proxy_api_key="secret-key",
+        proxy_cache_dir=Path(directory),
+        proxy_sync_seconds=1800,
+        proxy_sort="latency",
+        proxy_selection_window=20,
+        proxy_sticky_seconds=0,
+        proxy_username="",
+        proxy_password="",
+        static_proxies=static,
+    )
+
+
+class StaticProxyTests(unittest.TestCase):
+    def test_parse_static_proxy_with_auth(self):
+        record = parse_static_proxy("socks5://user:p%40ss@203.0.113.9:17889")
+        self.assertEqual(record.protocol, "socks5")
+        self.assertEqual(record.host, "203.0.113.9")
+        self.assertEqual(record.port, 17889)
+        self.assertEqual(record.username, "user")
+        self.assertEqual(record.password, "p@ss")
+        with self.assertRaises(ValueError):
+            parse_static_proxy("ftp://203.0.113.9:21")
+
+    def test_static_sync_materializes_cache_without_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = pool_config(directory, ("http://user:pw@203.0.113.9:8080",))
+            count = ProxySynchronizer(cfg).sync("static")
+            self.assertEqual(count, 1)
+            synced_at, records = ProxyCache(Path(directory)).load("static")
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].username, "user")
+
+    def test_static_records_bypass_freshness_and_merge_into_private(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ProxyCache(Path(directory))
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            cache.publish("static", [ProxyRecord("203.0.113.9", 8080, "http")], None)
+            cache.publish("private", [ProxyRecord("192.0.2.1", 8080, "http", last_checked=now)], None)
+            pool = ProxyPool(pool_config(directory))
+            chosen = pool.choose("private", "example.com")
+            self.assertIsNotNone(chosen)
+            self.assertIn(chosen[1], {"203.0.113.9:8080/http", "192.0.2.1:8080/http"})
+            self.assertEqual(pool.available_count("private", "example.com"), 2)
+
+    def test_record_auth_is_embedded_in_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pool = ProxyPool(pool_config(directory))
+            record = ProxyRecord("203.0.113.9", 17889, "http", username="home", password="s ecret")
+            self.assertEqual(
+                pool._url("private", record),
+                "http://home:s%20ecret@203.0.113.9:17889",
+            )
+            plain = ProxyRecord("192.0.2.1", 8080, "socks5")
+            self.assertEqual(pool._url("private", plain), "socks5h://192.0.2.1:8080")

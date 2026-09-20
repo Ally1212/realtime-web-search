@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 import requests
 
@@ -73,6 +73,8 @@ class ProxyRecord:
     quality: int = 0
     latency_ms: int = 0
     last_checked: str = ""
+    username: str = ""
+    password: str = ""
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ProxyRecord":
@@ -88,6 +90,8 @@ class ProxyRecord:
             quality=int(value.get("qualityScore") or value.get("quality") or 0),
             latency_ms=int(value.get("latencyMs") or value.get("latency_ms") or 0),
             last_checked=str(value.get("lastChecked") or value.get("last_checked") or ""),
+            username=str(value.get("username") or ""),
+            password=str(value.get("password") or ""),
         )
 
     @property
@@ -99,6 +103,30 @@ class ProxyRecord:
         if checked is None:
             return False
         return (datetime.now(timezone.utc) - checked).total_seconds() <= max_minutes * 60
+
+
+def parse_static_proxy(value: str) -> ProxyRecord:
+    """Parse one STATIC_PROXIES entry: scheme://[user:pass@]host:port."""
+    parsed = urlsplit(value.strip())
+    if parsed.scheme not in {"http", "socks5"} or not parsed.hostname or not parsed.port:
+        raise ValueError(f"invalid static proxy entry: {value.split('@')[-1]}")
+    return ProxyRecord(
+        host=parsed.hostname,
+        port=parsed.port,
+        protocol=parsed.scheme,
+        username=unquote(parsed.username or ""),
+        password=unquote(parsed.password or ""),
+    )
+
+
+def static_proxy_records(config) -> list[ProxyRecord]:
+    records = {}
+    for raw in getattr(config, "static_proxies", ()) or ():
+        if not str(raw).strip():
+            continue
+        record = parse_static_proxy(str(raw))
+        records[record.key] = record
+    return list(records.values())
 
 
 class ProxyApiClient:
@@ -206,8 +234,11 @@ class ProxyCache:
 
     def stats(self, profile: str) -> dict[str, object]:
         synced_at, records = self.load(profile)
-        max_age = 120 if profile == "private" else 30
-        fresh = [record for record in records if record.fresh(max_age)]
+        if profile == "static":
+            fresh = records
+        else:
+            max_age = 120 if profile == "private" else 30
+            fresh = [record for record in records if record.fresh(max_age)]
         return {
             "profile": profile,
             "synced_at": synced_at.isoformat() if synced_at else None,
@@ -215,7 +246,10 @@ class ProxyCache:
             "fresh": len(fresh),
             "http": sum(record.protocol == "http" for record in fresh),
             "socks5": sum(record.protocol == "socks5" for record in fresh),
-            "usable": bool(fresh and synced_at and (datetime.now(timezone.utc) - synced_at).total_seconds() <= 7200),
+            "usable": bool(fresh) if profile == "static" else bool(
+                fresh and synced_at
+                and (datetime.now(timezone.utc) - synced_at).total_seconds() <= 7200
+            ),
         }
 
 
@@ -228,6 +262,10 @@ class ProxySynchronizer:
 
     def sync(self, profile: str, force: bool = False) -> int:
         with self._lock:
+            if profile == "static":
+                records = static_proxy_records(self.config)
+                self.cache.publish("static", records, None)
+                return len(records)
             synced_at, current = self.cache.load(profile)
             if not force and synced_at and (
                 datetime.now(timezone.utc) - synced_at
@@ -267,7 +305,7 @@ class ProxyPool:
         """
         host = key.rsplit(':', 1)[0].strip('[]').lower().rstrip('.')
         aliases = {key}
-        for profile in ('private', 'public', 'public_google'):
+        for profile in ('private', 'public', 'public_google', 'static'):
             _, records = self.cache.load(profile)
             aliases.update(record.key for record in records
                            if record.host.strip('[]').lower().rstrip('.') == host)
@@ -289,13 +327,18 @@ class ProxyPool:
         if self._mtime.get(profile) != mtime:
             synced_at, records = self.cache.load(profile)
             max_age = 120 if profile == "private" else 30
-            if not synced_at or (datetime.now(timezone.utc) - synced_at).total_seconds() > 7200:
+            if profile == "static":
+                pass
+            elif not synced_at or (datetime.now(timezone.utc) - synced_at).total_seconds() > 7200:
                 records = []
-            records = [record for record in records if record.fresh(max_age)]
+            else:
+                records = [record for record in records if record.fresh(max_age)]
             self._records[profile] = {record.key: record for record in records}
             self._mtime[profile] = mtime
             self._expires_at[profile] = synced_at.timestamp() + 7200 if synced_at else 0
         # A cache file need not change while its entries expire or sync is failing.
+        if profile == "static":
+            return list(self._records.get(profile, {}).values())
         max_age = 120 if profile == "private" else 30
         self._records[profile] = {
             key: record for key, record in self._records.get(profile, {}).items()
@@ -312,10 +355,12 @@ class ProxyPool:
         now = time.monotonic()
         with self._lock:
             records = self._reload(profile)
+            if profile == "private":
+                records = records + self._reload("static")
             affinity = sticky_key or domain
             sticky = self._sticky.get((profile, affinity))
             if sticky and sticky[1] > now:
-                record = self._records.get(profile, {}).get(sticky[0])
+                record = {item.key: item for item in records}.get(sticky[0])
                 if record and self._cooldown_until(record, domain) <= now:
                     return self._url(profile, record), record.key
             eligible = [
@@ -358,9 +403,12 @@ class ProxyPool:
             return 0
         now = time.monotonic()
         with self._lock:
+            records = self._reload(profile)
+            if profile == "private":
+                records = records + self._reload("static")
             return sum(
                 self._cooldown_until(record, domain) <= now
-                for record in self._reload(profile)
+                for record in records
             )
 
     def defer(self, key: str, domain: str, seconds: float) -> None:
@@ -372,7 +420,7 @@ class ProxyPool:
                 host = key.rsplit(':', 1)[0].strip('[]').lower().rstrip('.')
                 group = ('google-host:' + host, domain)
                 self._cooldown[group] = max(self._cooldown.get(group, 0), until)
-            for profile in ("private", "public", "public_google"):
+            for profile in ("private", "public", "public_google", "static"):
                 for affinity, sticky in list(self._sticky.items()):
                     if affinity[0] == profile and sticky[0] == key:
                         self._sticky.pop(affinity, None)
@@ -380,7 +428,9 @@ class ProxyPool:
     def _url(self, profile: str, record: ProxyRecord) -> str:
         scheme = "socks5h" if record.protocol == "socks5" else "http"
         auth = ""
-        if profile == "private" and self.config.proxy_username and self.config.proxy_password:
+        if record.username or record.password:
+            auth = f"{quote(record.username, safe='')}:{quote(record.password, safe='')}@"
+        elif profile == "private" and self.config.proxy_username and self.config.proxy_password:
             auth = f"{quote(self.config.proxy_username, safe='')}:{quote(self.config.proxy_password, safe='')}@"
         return f"{scheme}://{auth}{record.host}:{record.port}"
 

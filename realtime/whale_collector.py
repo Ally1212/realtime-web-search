@@ -639,13 +639,14 @@ class ContinuousWhaleRunner:
         )
         if self.config.continuous_proxy_profile != "direct":
             try:
+                static_count = ProxySynchronizer(self.config).sync("static", force=True)
                 count = ProxySynchronizer(self.config).sync(
                     self.config.continuous_proxy_profile, force=True
                 )
                 _diagnostic(
                     "continuous_whale_proxy_synced",
                     profile=self.config.continuous_proxy_profile,
-                    count=count,
+                    count=count, static_count=static_count,
                 )
             except ProxyApiError as exc:
                 _diagnostic(
@@ -696,6 +697,7 @@ class ContinuousWhaleRunner:
                 continue
             if self.config.continuous_proxy_profile != "direct":
                 try:
+                    ProxySynchronizer(self.config).sync("static")
                     ProxySynchronizer(self.config).sync(self.config.continuous_proxy_profile)
                 except ProxyApiError as exc:
                     _diagnostic(

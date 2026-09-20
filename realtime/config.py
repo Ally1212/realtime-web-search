@@ -57,6 +57,7 @@ class Config:
     valkey_url: str = os.getenv("VALKEY_URL", "redis://127.0.0.1:6379/0")
     proxy_api_base: str = os.getenv("PROXY_API_BASE", "https://proxyapi.pekpik.com")
     proxy_api_key: str = os.getenv("PRIVATE_READER_API_KEY", os.getenv("PROXY_API_KEY", ""))
+    static_proxies: tuple[str, ...] = _csv("STATIC_PROXIES", "")
     proxy_username: str = os.getenv("SHARED_PROXY_USERNAME", "")
     proxy_password: str = os.getenv("SHARED_PROXY_PASSWORD", "")
     proxy_cache_dir: Path = Path(os.getenv("PROXY_CACHE_DIR", "state/proxies"))
