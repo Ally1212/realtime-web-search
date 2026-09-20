@@ -94,6 +94,20 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(result['default_key'], 'daily-new')
         self.assertEqual([r['key'] for r in result['experiments']], ['daily-new', 'daily-old', 'preflight-new'])
 
+    def test_pre_locale_ledger_counts_aggregate_under_legacy(self):
+        store = self.create('pre-locale')
+        query = store.add_query('topic', 'GDP', 'en', 'GDP')
+        row = store.db.execute('SELECT * FROM queries WHERE id=?', (query,)).fetchone()
+        store.search(row, 1, time.time(), [{'url': 'https://example.org/gdp', 'title': 'GDP'}], [])
+        store.db.execute('DROP INDEX IF EXISTS query_locale')
+        store.db.execute('ALTER TABLE queries DROP COLUMN locale_label')
+        store.db.commit()
+        counts = store.counts()
+        self.assertEqual(list(counts['locales']), ['legacy'])
+        self.assertEqual(counts['locales']['legacy']['candidate_urls'], 1)
+        detail = self.dashboard.detail('pre-locale')
+        self.assertEqual(list(detail['metrics']['locales']), ['legacy'])
+
     def test_empty_and_corrupt_catalog(self):
         self.assertEqual(self.dashboard.catalog()['experiments'], [])
         broken = self.root/'broken'

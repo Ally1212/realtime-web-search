@@ -430,38 +430,46 @@ class ExperimentStore:
             )
         }
         counts['locales'] = {}
+        query_columns = {row[1] for row in self.db.execute("PRAGMA table_info(queries)")}
+        has_locale = 'locale_label' in query_columns
         locale_labels = [row[0] for row in self.db.execute(
             "SELECT DISTINCT locale_label FROM queries ORDER BY locale_label"
-        )]
+        )] if has_locale else ['legacy']
         for label in locale_labels:
+            # Ledgers written before the locale matrix have no locale_label
+            # column; aggregate every query under a single 'legacy' bucket.
+            locale_where = 'WHERE q.locale_label=? AND ' if has_locale else 'WHERE '
+            locale_params = (label,) if has_locale else ()
             counts['locales'][label] = {
                 'scheduled_pages': self.db.execute(
-                    'SELECT count(*) FROM schedule s JOIN queries q ON q.id=s.query_id '
-                    'WHERE q.locale_label=?',
-                    (label,),
+                    'SELECT count(*) FROM schedule s JOIN queries q ON q.id=s.query_id'
+                    + (' WHERE q.locale_label=?' if has_locale else ''),
+                    locale_params,
                 ).fetchone()[0],
                 'successful_pages': self.db.execute(
                     'SELECT count(*) FROM searches s JOIN queries q ON q.id=s.query_id '
-                    "WHERE q.locale_label=? AND s.status='success' AND s.finished<=?",
-                    (label, end),
+                    + locale_where + "s.status='success' AND s.finished<=?",
+                    locale_params + (end,),
                 ).fetchone()[0],
                 'candidate_urls': self.db.execute(
                     'SELECT count(DISTINCT x.url) FROM discoveries x JOIN queries q ON q.id=x.query_id '
-                    'WHERE q.locale_label=? AND x.first_seen<=?',
-                    (label, end),
+                    + locale_where + 'x.first_seen<=?',
+                    locale_params + (end,),
                 ).fetchone()[0],
                 'valid_documents': self.db.execute(
                     "SELECT count(DISTINCT d.id) FROM documents d JOIN discoveries x ON d.url=x.url "
-                    "JOIN queries q ON q.id=x.query_id WHERE q.locale_label=? AND d.quality='[]' "
-                    "AND d.classification='new' AND d.finished<=?",
-                    (label, end),
+                    "JOIN queries q ON q.id=x.query_id "
+                    + locale_where
+                    + "d.quality='[]' AND d.classification='new' AND d.finished<=?",
+                    locale_params + (end,),
                 ).fetchone()[0],
                 'accepted_documents': self.db.execute(
                     "SELECT count(DISTINCT o.document_id) FROM outbox o JOIN documents d ON d.id=o.document_id "
                     "JOIN discoveries x ON d.url=x.url JOIN queries q ON q.id=x.query_id "
-                    "WHERE q.locale_label=? AND d.quality='[]' AND d.classification='new' "
+                    + locale_where
+                    + "d.quality='[]' AND d.classification='new' "
                     "AND o.status IN ('accepted','duplicate') AND o.finished<=?",
-                    (label, end),
+                    locale_params + (end,),
                 ).fetchone()[0],
             }
             item = counts['locales'][label]
