@@ -27,7 +27,7 @@ from .discovery import GoogleBlocked, SearchDiscovery, SearchResult
 from .experiment_audit import write_audit_snapshot
 from .experiment_store import ExperimentStore, digest
 from .fetcher import LiveFetcher, MAX_TEXT_CHARS, normalize_url
-from .keyword_catalog import base_keyword_specs, has_ai_context
+from .keyword_catalog import base_keyword_specs, has_economy_context
 from .locales import (
     LOCALES, SearchLocale, default_locales_for_languages, locale_for_language,
     parse_locales, runner_locales,
@@ -117,8 +117,8 @@ def quality(document: dict | None) -> list[str]:
         warnings.append('possibly_truncated')
     if document.get('language') not in {'zh', 'en'}:
         warnings.append('unsupported_language')
-    if not has_ai_context(document.get('title', ''), text):
-        warnings.append('no_ai_context')
+    if not has_economy_context(document.get('title', ''), text):
+        warnings.append('no_economy_context')
     title = document.get('title', '').casefold()
     if any(marker in title for marker in ('just a moment', 'access denied', 'sign in', 'log in', 'security check')):
         warnings.append('login_or_challenge')

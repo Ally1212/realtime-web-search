@@ -21,8 +21,8 @@ from realtime.locales import (
 
 
 def document(url='https://example.org/ai', text=None):
-    text = text or 'Artificial intelligence research and machine learning experiments. ' * 20
-    return {'url':url, 'title':'AI research', 'content':text, 'content_hash':digest(text), 'summary':text[:500],
+    text = text or 'Central bank inflation data and interest rate decisions. ' * 20
+    return {'url':url, 'title':'Inflation report', 'content':text, 'content_hash':digest(text), 'summary':text[:500],
             'language':'en', 'http_status':200, 'source_engines':['google_web'], 'query':'AI',
             'discovered_at':'2026-09-09T00:00:00+00:00', 'fetched_at':'2026-09-09T00:01:00+00:00', 'document_id':'test'}
 
@@ -60,7 +60,9 @@ class ExperimentTests(unittest.TestCase):
         rows = list(self.store.db.execute(
             "SELECT family,query,locale_label FROM queries WHERE family IN ('topic','event','recent') AND query<>'AI'"
         ))
-        self.assertTrue(any('news research' in r['query'] for r in rows if r['family']=='event'))
+        event_rows = [r for r in rows if r['family']=='event']
+        self.assertTrue(event_rows)
+        self.assertTrue(all(r['query'].startswith('"') for r in event_rows))
         self.assertTrue(all('after:' in r['query'] for r in rows if r['family']=='recent'))
         self.assertTrue(all('-site:youtube.com' in r['query'] for r in rows))
         self.assertTrue(all('-site:linkedin.com' in r['query'] for r in rows))
@@ -156,39 +158,39 @@ class ExperimentTests(unittest.TestCase):
         )
 
     def test_quality_excludes_false_ai_substring_shells_and_short_text(self):
-        self.assertIn('no_ai_context', quality(dict(document(text='Daily mail rain ' * 100), title='Daily mail')))
+        self.assertIn('no_economy_context', quality(dict(document(text='Daily mail rain ' * 100), title='Daily mail')))
         self.assertTrue(quality(document(text='About Press Copyright Contact us ' * 5)))
-        self.assertIn('possibly_truncated',quality(document(text='AI ' * 40000)))
+        self.assertIn('possibly_truncated',quality(document(text='GDP ' * 40000)))
         self.assertEqual(quality(document()), [])
 
-    def test_quality_accepts_specific_ai_terms_without_ambiguous_brand_names(self):
-        for term in ('AI技术', 'LLMs', 'GPT4', 'large language model', 'neural network',
-                     'retrieval-augmented generation', 'OpenAI', 'DeepSeek', '深度学习',
-                     '大语言模型', '检索增强生成', '自然语言处理', '通义千问'):
+    def test_quality_accepts_specific_economy_terms_without_ambiguous_brand_names(self):
+        for term in ('CPI', 'GDP', 'PMI', 'federal reserve', 'treasury yields',
+                     'consumer price index', 'quantitative easing', '美联储', '通货膨胀',
+                     '降息', '供应链', '非农就业', '量化宽松'):
             with self.subTest(term=term):
-                self.assertNotIn('no_ai_context', quality(dict(
+                self.assertNotIn('no_economy_context', quality(dict(
                     document(text=(term + ' research ') * 80), title=term
                 )))
-        for text in ('Claude Monet exhibition', 'Gemini zodiac forecast', 'llama farming guide',
+        for text in ('Claude Monet exhibition', 'Mercury zodiac forecast', 'llama farming guide',
                      'electrical transformer installation'):
             with self.subTest(text=text):
-                self.assertIn('no_ai_context', quality(dict(
+                self.assertIn('no_economy_context', quality(dict(
                     document(text=(text + ' ') * 80), title=text
                 )))
-        self.assertIn('no_ai_context', quality(dict(
-            document(text=('DeepSeek model research ' * 2) + ('database systems ' * 80)),
+        self.assertIn('no_economy_context', quality(dict(
+            document(text=('quantitative easing policy ' * 2) + ('database systems ' * 80)),
             title='Database systems',
         )))
-        self.assertIn('no_ai_context', quality(dict(
-            document(text='DeepSeek navigation ' + ('database systems ' * 80)),
+        self.assertIn('no_economy_context', quality(dict(
+            document(text='quantitative easing navigation ' + ('database systems ' * 80)),
             title='Database systems',
         )))
 
     def test_cross_query_duplicate_and_updates_are_not_new(self):
         self.assertEqual(self.save()[1],'new')
-        self.discover(family='event',text='AI update')
+        self.discover(family='event',text='inflation update')
         self.assertEqual(self.save()[1],'duplicate')
-        changed = document(text='AI changed research result and model evaluation. '*30)
+        changed = document(text='Central bank changed interest rate and inflation outlook. '*30)
         self.assertEqual(self.save(changed)[1],'update')
         counts = self.store.counts()
         self.assertEqual(counts['new'],1)
@@ -250,7 +252,7 @@ class ExperimentTests(unittest.TestCase):
     def test_site_expansion_requires_two_qualified_documents(self):
         self.save()
         self.assertEqual(site_queries(self.store),0)
-        self.save(document(url='https://example.org/second', text='AI agents open source models and science. '*30))
+        self.save(document(url='https://example.org/second', text='Inflation data and central bank policy outlook. '*30))
         self.assertEqual(site_queries(self.store),1)
         row=self.store.db.execute("SELECT query FROM queries WHERE family='site'").fetchone()
         self.assertIn('site:example.org',row[0])

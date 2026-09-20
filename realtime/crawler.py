@@ -17,7 +17,7 @@ from .config import Config
 from .discovery import SearchDiscovery
 from .fetcher import (detect_language, extract_response_text, is_pdf_response,
                       is_public_url, normalize_url, relevant_to)
-from .keyword_catalog import AI_ANCHORS
+from .keyword_catalog import ECONOMY_ANCHORS
 from .proxy_pool import ProxyPool
 from .whale_collector import whale_message
 
@@ -578,7 +578,7 @@ class FocusedSpider(scrapy.Spider):
         if relevant and self.keyword_kind == "trend":
             searchable_text = f"{title} {content}"
             searchable_folded = searchable_text.casefold()
-            relevant = bool(AI_ANCHORS.search(searchable_text)) and any(
+            relevant = bool(ECONOMY_ANCHORS.search(searchable_text)) and any(
                 alias.casefold() in searchable_folded
                 for alias in self.terms if alias.strip()
             )

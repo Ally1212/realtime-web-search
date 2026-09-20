@@ -1,4 +1,4 @@
-"""Bounded, repeatable AI search benchmark. Never uploads benchmark data to Whale."""
+"""Bounded, repeatable economy search benchmark. Never uploads benchmark data to Whale."""
 from __future__ import annotations
 
 import concurrent.futures
@@ -17,12 +17,12 @@ from .fetcher import LiveFetcher, normalize_url, relevant_to
 from .proxy_pool import ProxyPool
 
 
-AI_QUERIES = (
-    "artificial intelligence", "人工智能", "AI agents", "人工智能智能体",
-    "large language models", "大语言模型", "generative AI", "生成式人工智能",
-    "AI chips", "人工智能芯片", "AI safety", "人工智能安全",
-    "open source AI models", "开源大模型", "AI coding assistants", "人工智能编程助手",
-    "multimodal AI", "多模态人工智能", "AI regulation", "人工智能监管",
+ECONOMY_QUERIES = (
+    "中国经济", "Chinese economy", "通货膨胀", "inflation",
+    "美联储", "Federal Reserve", "人民币汇率", "yuan exchange rate",
+    "货币政策", "monetary policy", "房地产市场", "real estate market",
+    "A股", "China A-shares", "关税", "tariffs",
+    "供应链", "supply chain", "黄金价格", "gold price",
 )
 
 
@@ -61,7 +61,7 @@ def run_free_benchmark(args) -> None:
     config = Config()
     providers = tuple(value.strip() for value in args.providers.split(",") if value.strip())
     previous = json.loads(Path(args.resample).read_text(encoding="utf-8")) if args.resample else None
-    queries = tuple(previous["queries"]) if previous else (tuple(args.query) if args.query else AI_QUERIES[:args.query_limit])
+    queries = tuple(previous["queries"]) if previous else (tuple(args.query) if args.query else ECONOMY_QUERIES[:args.query_limit])
     pages = tuple(previous["pages"]) if previous else tuple(int(value) for value in args.pages.split(","))
     if not queries or any(page < 1 or page > 11 for page in pages) or not (0 < args.rps <= 2):
         raise ValueError("benchmark needs queries, pages 1–11, and 0 < rps <= 2")

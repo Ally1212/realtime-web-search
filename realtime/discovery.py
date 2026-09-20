@@ -821,7 +821,7 @@ class SearchDiscovery:
             if self.page_batch_acquirer:
                 try:
                     batch = self.page_batch_acquirer(
-                        query, self.search_locale, page_limit, self.google_web_pages_per_batch
+                        query, self.search_locale.label, page_limit, self.google_web_pages_per_batch
                     )
                 except Exception as exc:
                     errors.append(f"google frontier acquire {type(exc).__name__}")

@@ -6,12 +6,12 @@ from datetime import date
 from pathlib import Path
 
 DEFAULT_CONTINUOUS_AI_KEYWORDS = (
-    "artificial intelligence,AI news,generative AI,OpenAI,AI regulation"
+    "中国经济,GDP,通货膨胀,美联储,人民币汇率"
 )
 
 DEFAULT_CONTINUOUS_AI_EXPANSIONS = (
-    "AI agents,AI chips,AI safety,enterprise AI,AI startups,machine learning,"
-    "large language models,AI search,AI infrastructure,AI policy"
+    "货币政策,财政政策,A股,房地产市场,关税,供应链,"
+    "黄金价格,原油价格,企业财报,货币政策 降息"
 )
 
 

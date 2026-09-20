@@ -21,117 +21,114 @@ class KeywordSpec:
 # Durable concepts generate four bounded searches each: English/Chinese
 # topic searches plus one category-specific event search in each language.
 CONCEPTS: tuple[tuple[str, str, str, str], ...] = (
-    ("artificial-intelligence", "artificial intelligence", "人工智能", "foundations"),
-    ("generative-ai", "generative AI", "生成式人工智能", "foundations"),
-    ("machine-learning", "machine learning", "机器学习", "foundations"),
-    ("deep-learning", "deep learning", "深度学习", "foundations"),
-    ("agi", "artificial general intelligence", "通用人工智能", "foundations"),
-    ("llm", "large language model", "大语言模型", "models"),
-    ("multimodal", "multimodal AI", "多模态人工智能", "models"),
-    ("reasoning-model", "AI reasoning model", "人工智能推理模型", "models"),
-    ("small-language-model", "small language model", "小语言模型", "models"),
-    ("vision-language-model", "vision language model", "视觉语言模型", "models"),
-    ("image-generation", "AI image generation", "人工智能图像生成", "models"),
-    ("video-generation", "AI video generation", "人工智能视频生成", "models"),
-    ("speech-ai", "speech AI", "语音人工智能", "models"),
-    ("rag", "retrieval augmented generation", "检索增强生成", "research"),
-    ("fine-tuning", "AI model fine tuning", "人工智能模型微调", "research"),
-    ("distillation", "AI model distillation", "人工智能模型蒸馏", "research"),
-    ("quantization", "AI model quantization", "人工智能模型量化", "research"),
-    ("synthetic-data", "AI synthetic data", "人工智能合成数据", "research"),
-    ("reinforcement-learning", "AI reinforcement learning", "人工智能强化学习", "research"),
-    ("model-evaluation", "AI model evaluation benchmark", "人工智能模型评测", "research"),
-    ("inference-optimization", "AI inference optimization", "人工智能推理优化", "research"),
-    ("agents", "AI agents", "人工智能智能体", "developer"),
-    ("copilots", "AI copilots", "人工智能助手", "developer"),
-    ("coding", "AI coding", "人工智能编程", "developer"),
-    ("search", "AI search", "人工智能搜索", "developer"),
-    ("api", "AI model API", "人工智能模型接口", "developer"),
-    ("prompt-engineering", "prompt engineering", "提示词工程", "developer"),
-    ("open-source", "open source AI", "开源人工智能", "developer"),
-    ("chips", "AI chips", "人工智能芯片", "infrastructure"),
-    ("gpu", "AI GPU", "人工智能 GPU", "infrastructure"),
-    ("accelerator", "AI accelerator", "人工智能加速器", "infrastructure"),
-    ("data-center", "AI data center", "人工智能数据中心", "infrastructure"),
-    ("cloud", "AI cloud computing", "人工智能云计算", "infrastructure"),
-    ("vector-database", "vector database AI", "人工智能向量数据库", "infrastructure"),
-    ("safety", "AI safety", "人工智能安全", "governance"),
-    ("alignment", "AI alignment", "人工智能对齐", "governance"),
-    ("model-security", "AI model security", "人工智能模型安全", "governance"),
-    ("deepfake", "AI deepfake", "人工智能深度伪造", "governance"),
-    ("privacy", "AI privacy", "人工智能隐私", "governance"),
-    ("copyright", "AI copyright", "人工智能版权", "governance"),
-    ("regulation", "AI regulation", "人工智能监管", "governance"),
-    ("startup", "AI startup", "人工智能创业公司", "business"),
-    ("funding", "AI funding", "人工智能融资", "business"),
-    ("merger", "AI acquisition merger", "人工智能并购", "business"),
-    ("enterprise", "enterprise AI", "企业人工智能", "business"),
-    ("product-launch", "AI product launch", "人工智能产品发布", "business"),
-    ("healthcare", "healthcare AI", "医疗人工智能", "applications"),
-    ("finance", "finance AI", "金融人工智能", "applications"),
-    ("education", "education AI", "教育人工智能", "applications"),
-    ("robotics", "AI robotics", "人工智能机器人", "applications"),
-    ("legal", "legal AI", "法律人工智能", "applications"),
-    ("manufacturing", "manufacturing AI", "制造业人工智能", "applications"),
-    ("retail", "retail AI", "零售人工智能", "applications"),
-    ("media", "media AI", "媒体人工智能", "applications"),
-    ("gaming", "gaming AI", "游戏人工智能", "applications"),
-    ("cybersecurity", "cybersecurity AI", "网络安全人工智能", "applications"),
-    ("science", "AI scientific discovery", "人工智能科学发现", "applications"),
-    ("climate", "climate AI", "气候人工智能", "applications"),
-    ("autonomous-driving", "autonomous driving AI", "自动驾驶人工智能", "applications"),
-    ("openai-chatgpt", "OpenAI ChatGPT", "OpenAI ChatGPT", "models"),
-    ("anthropic-claude", "Anthropic Claude", "Anthropic Claude", "models"),
-    ("google-gemini", "Google Gemini", "谷歌 Gemini", "models"),
-    ("meta-llama", "Meta Llama", "Meta Llama", "models"),
-    ("deepseek", "DeepSeek AI", "DeepSeek 人工智能", "models"),
-    ("qwen", "Alibaba Qwen AI", "阿里通义千问", "models"),
-    ("foundation-model", "AI foundation model", "人工智能基础模型", "models"),
-    ("mixture-of-experts", "mixture of experts AI", "混合专家模型", "models"),
-    ("diffusion-model", "AI diffusion model", "人工智能扩散模型", "models"),
-    ("world-model", "AI world model", "人工智能世界模型", "models"),
-    ("embodied-ai", "embodied AI", "具身智能", "models"),
-    ("neural-network", "neural network AI", "人工智能神经网络", "research"),
-    ("chain-of-thought", "AI chain of thought reasoning", "人工智能思维链", "research"),
-    ("model-compression", "AI model compression", "人工智能模型压缩", "research"),
-    ("training-data", "AI training data", "人工智能训练数据", "research"),
-    ("benchmark", "AI benchmark", "人工智能基准测试", "research"),
-    ("agentic-ai", "agentic AI", "智能体人工智能", "developer"),
-    ("mcp", "AI model context protocol", "人工智能模型上下文协议", "developer"),
-    ("workflow", "AI workflow automation", "人工智能工作流自动化", "developer"),
-    ("no-code", "no code AI", "无代码人工智能", "developer"),
-    ("ai-browser", "AI browser agent", "人工智能浏览器智能体", "developer"),
-    ("npu", "AI NPU", "人工智能 NPU", "infrastructure"),
-    ("tpu", "AI TPU", "人工智能 TPU", "infrastructure"),
-    ("edge-ai", "edge AI computing", "边缘人工智能", "infrastructure"),
-    ("ai-server", "AI server", "人工智能服务器", "infrastructure"),
-    ("hbm", "AI high bandwidth memory", "人工智能高带宽内存", "infrastructure"),
-    ("ethics", "AI ethics", "人工智能伦理", "governance"),
-    ("governance", "AI governance", "人工智能治理", "governance"),
-    ("responsible-ai", "responsible AI", "负责任人工智能", "governance"),
-    ("risk", "AI risk management", "人工智能风险管理", "governance"),
-    ("content-provenance", "AI content provenance", "人工智能内容溯源", "governance"),
-    ("investment", "AI investment", "人工智能投资", "business"),
-    ("market", "AI market", "人工智能市场", "business"),
-    ("commercialization", "AI commercialization", "人工智能商业化", "business"),
-    ("company", "AI company", "人工智能企业", "business"),
-    ("agriculture", "agriculture AI", "农业人工智能", "applications"),
-    ("energy", "energy AI", "能源人工智能", "applications"),
-    ("pharma", "pharmaceutical AI", "医药人工智能", "applications"),
-    ("ecommerce", "ecommerce AI", "电商人工智能", "applications"),
-    ("customer-service", "customer service AI", "客服人工智能", "applications"),
-    ("office", "office automation AI", "办公自动化人工智能", "applications"),
+    ("gdp", "GDP", "国内生产总值", "macro"),
+    ("inflation", "inflation", "通货膨胀", "macro"),
+    ("cpi", "consumer price index", "居民消费价格指数", "macro"),
+    ("ppi", "producer price index", "工业生产者出厂价格", "macro"),
+    ("deflation", "deflation", "通货紧缩", "macro"),
+    ("unemployment", "unemployment rate", "失业率", "macro"),
+    ("jobs-report", "nonfarm payrolls", "非农就业报告", "macro"),
+    ("interest-rates", "interest rates", "利率", "macro"),
+    ("central-bank", "central bank", "中央银行", "macro"),
+    ("federal-reserve", "Federal Reserve", "美联储", "macro"),
+    ("pboc", "People's Bank of China", "中国人民银行", "macro"),
+    ("ecb", "European Central Bank", "欧洲央行", "macro"),
+    ("monetary-policy", "monetary policy", "货币政策", "macro"),
+    ("fiscal-policy", "fiscal policy", "财政政策", "macro"),
+    ("rate-cut", "interest rate cut", "降息", "macro"),
+    ("economic-growth", "economic growth", "经济增长", "macro"),
+    ("recession", "recession", "经济衰退", "macro"),
+    ("economic-forecast", "economic forecast", "经济预测", "macro"),
+    ("consumer-confidence", "consumer confidence", "消费者信心指数", "macro"),
+    ("pmi", "purchasing managers index", "采购经理指数", "macro"),
+    ("retail-sales", "retail sales", "社会消费品零售总额", "macro"),
+    ("industrial-production", "industrial production", "工业增加值", "macro"),
+    ("fixed-asset-investment", "fixed asset investment", "固定资产投资", "macro"),
+    ("government-debt", "government debt", "政府债务", "macro"),
+    ("budget-deficit", "budget deficit", "财政赤字", "macro"),
+    ("stimulus", "economic stimulus", "经济刺激", "macro"),
+    ("liquidity", "market liquidity", "市场流动性", "macro"),
+    ("m2-money-supply", "M2 money supply", "M2 货币供应量", "macro"),
+    ("credit-growth", "credit growth", "信贷增长", "macro"),
+    ("economic-survey", "economic survey", "经济调查", "macro"),
+    ("stock-market", "stock market", "股票市场", "markets"),
+    ("a-shares", "China A-shares", "A股", "markets"),
+    ("hong-kong-stocks", "Hong Kong stocks", "港股", "markets"),
+    ("us-stocks", "US stocks", "美股", "markets"),
+    ("nasdaq", "Nasdaq", "纳斯达克", "markets"),
+    ("sp500", "S&P 500", "标普500", "markets"),
+    ("bond-market", "bond market", "债券市场", "markets"),
+    ("treasury-yields", "treasury yields", "国债收益率", "markets"),
+    ("exchange-rate", "exchange rate", "汇率", "markets"),
+    ("yuan-exchange-rate", "yuan exchange rate", "人民币汇率", "markets"),
+    ("dollar-index", "US dollar index", "美元指数", "markets"),
+    ("gold-price", "gold price", "黄金价格", "markets"),
+    ("oil-price", "crude oil price", "原油价格", "markets"),
+    ("commodity-prices", "commodity prices", "大宗商品价格", "markets"),
+    ("copper-price", "copper price", "铜价", "markets"),
+    ("forex-market", "foreign exchange market", "外汇市场", "markets"),
+    ("etf", "ETF funds", "ETF 基金", "markets"),
+    ("ipo", "IPO market", "IPO 市场", "markets"),
+    ("hedge-fund", "hedge funds", "对冲基金", "markets"),
+    ("quantitative-trading", "quantitative trading", "量化交易", "markets"),
+    ("futures-market", "futures market", "期货市场", "markets"),
+    ("options-market", "options market", "期权市场", "markets"),
+    ("reits", "REITs", "不动产投资信托基金", "markets"),
+    ("bitcoin", "bitcoin", "比特币", "markets"),
+    ("digital-currency", "digital currency", "数字货币", "markets"),
+    ("trade-policy", "trade policy", "贸易政策", "policy"),
+    ("tariffs", "tariffs", "关税", "policy"),
+    ("trade-war", "trade war", "贸易战", "policy"),
+    ("sanctions", "economic sanctions", "经济制裁", "policy"),
+    ("export-controls", "export controls", "出口管制", "policy"),
+    ("antitrust", "antitrust regulation", "反垄断监管", "policy"),
+    ("financial-regulation", "financial regulation", "金融监管", "policy"),
+    ("banking-regulation", "banking regulation", "银行监管", "policy"),
+    ("tax-policy", "tax policy", "税收政策", "policy"),
+    ("industrial-policy", "industrial policy", "产业政策", "policy"),
+    ("subsidy-policy", "government subsidies", "政府补贴", "policy"),
+    ("capital-controls", "capital controls", "资本管制", "policy"),
+    ("debt-ceiling", "debt ceiling", "债务上限", "policy"),
+    ("free-trade-agreement", "free trade agreement", "自由贸易协定", "policy"),
+    ("cbdc", "central bank digital currency", "央行数字货币", "policy"),
+    ("real-estate", "real estate market", "房地产市场", "industry"),
+    ("manufacturing", "manufacturing sector", "制造业", "industry"),
+    ("supply-chain", "supply chain", "供应链", "industry"),
+    ("semiconductor-industry", "semiconductor industry", "半导体产业", "industry"),
+    ("automotive-industry", "automotive industry", "汽车产业", "industry"),
+    ("electric-vehicle-market", "electric vehicle market", "电动汽车市场", "industry"),
+    ("energy-market", "energy market", "能源市场", "industry"),
+    ("renewable-energy", "renewable energy", "可再生能源", "industry"),
+    ("steel-industry", "steel industry", "钢铁行业", "industry"),
+    ("shipping-industry", "shipping industry", "航运业", "industry"),
+    ("logistics", "logistics industry", "物流行业", "industry"),
+    ("agriculture-economy", "agricultural economy", "农业经济", "industry"),
+    ("tourism-industry", "tourism industry", "旅游业", "industry"),
+    ("consumer-market", "consumer market", "消费市场", "industry"),
+    ("labor-market", "labor market", "劳动力市场", "industry"),
+    ("corporate-earnings", "corporate earnings", "企业财报", "business"),
+    ("mergers-acquisitions", "mergers and acquisitions", "企业并购", "business"),
+    ("bankruptcy", "corporate bankruptcy", "企业破产", "business"),
+    ("layoffs", "corporate layoffs", "企业裁员", "business"),
+    ("venture-capital", "venture capital", "风险投资", "business"),
+    ("private-equity", "private equity", "私募股权", "business"),
+    ("banking-sector", "banking sector", "银行业", "business"),
+    ("insurance-industry", "insurance industry", "保险业", "business"),
+    ("fintech", "fintech industry", "金融科技", "business"),
+    ("global-economy", "global economy", "全球经济", "business"),
+    ("china-economy", "Chinese economy", "中国经济", "business"),
+    ("us-economy", "US economy", "美国经济", "business"),
+    ("emerging-markets", "emerging markets", "新兴市场", "business"),
+    ("european-economy", "European economy", "欧洲经济", "business"),
+    ("japan-economy", "Japanese economy", "日本经济", "business"),
 )
 
 EVENT_MODIFIERS = {
-    "foundations": ("news research", "新闻 研究"),
-    "models": ("launch update benchmark", "发布 更新 评测"),
-    "research": ("research paper benchmark", "研究 论文 评测"),
-    "developer": ("release open source update", "发布 开源 更新"),
-    "infrastructure": ("launch investment capacity", "发布 投资 算力"),
-    "governance": ("policy law incident", "政策 法规 事件"),
-    "business": ("funding acquisition partnership", "融资 收购 合作"),
-    "applications": ("deployment product research", "应用 产品 研究"),
+    "macro": ("data outlook", "数据 展望"),
+    "markets": ("rally outlook", "行情 展望"),
+    "policy": ("decision regulation impact", "决议 监管 影响"),
+    "industry": ("output investment outlook", "产量 投资 展望"),
+    "business": ("earnings investment deal", "财报 投资 交易"),
 }
 
 
@@ -159,36 +156,39 @@ def base_keyword_specs() -> tuple[KeywordSpec, ...]:
     return tuple(specs)
 
 
-AI_ANCHORS = re.compile(
-    r"\b(?:ai|artificial intelligence|llm|gpt|machine learning|deep learning)\b|"
-    r"人工智能|大模型|生成式|机器学习|智能体|机器人",
+ECONOMY_ANCHORS = re.compile(
+    r"\b(?:economy|economic|inflation|gdp|central bank|interest rates?|"
+    r"stock market|bonds?|tariffs?|recession|monetary|fiscal)\b|"
+    r"经济|通货膨胀|通胀|央行|利率|股市|债券|关税|财政|货币|金融|汇率|国内生产总值",
     re.IGNORECASE,
 )
 
-# These are precise AI concepts omitted by the original generic guard. They
-# are title-only so navigation links cannot make unrelated bodies eligible.
-AI_SPECIFIC_ANCHORS = re.compile(
+# These are precise economy concepts omitted by the generic guard. They are
+# title-only so navigation links cannot make unrelated bodies eligible.
+ECONOMY_SPECIFIC_ANCHORS = re.compile(
     r"\b(?:"
-    r"large language models?|small language models?|neural networks?|"
-    r"reinforcement learning|foundation models?|diffusion models?|"
-    r"retrieval[- ]augmented generation|natural language processing|"
-    r"computer vision|vision language models?|generative models?|"
-    r"prompt engineering|deepfakes?|model context protocol|"
-    r"openai|chatgpt|deepseek|qwen)\b|"
-    r"大语言模型|深度学习|神经网络|"
-    r"强化学习|扩散模型|检索增强生成|自然语言处理|计算机视觉|视觉语言模型|"
-    r"提示词工程|深度伪造|具身智能|思维链|通义千问",
+    r"federal reserve|consumer price index|producer price index|"
+    r"treasury yields|exchange rates?|supply chains?|venture capital|"
+    r"private equity|mergers and acquisitions|quantitative easing|"
+    r"purchasing managers index|nonfarm payrolls|"
+    r"fixed asset investment|central bank digital currency)\b|"
+    r"美联储|欧洲央行|通货紧缩|居民消费价格指数|采购经理指数|"
+    r"非农就业|供应链|风险投资|私募股权|企业并购|降息|降准|"
+    r"量化宽松|固定资产投资|央行数字货币",
     re.IGNORECASE,
 )
 
-AI_TITLE_ACRONYMS = re.compile(
-    r"(?<![a-z0-9])(?:ai|llms?|gpt(?:-?\d+)?)(?![a-z0-9])",
+ECONOMY_TITLE_ACRONYMS = re.compile(
+    r"(?<![a-z0-9])(?:gdp|cpi|ppi|pmi|etf|ipo|m2|fed)(?![a-z0-9])",
     re.IGNORECASE,
 )
 
 
-def has_ai_context(title: str, text: str) -> bool:
+def has_economy_context(title: str, text: str) -> bool:
     combined = title + ' ' + text
-    if AI_ANCHORS.search(combined):
+    if ECONOMY_ANCHORS.search(combined):
         return True
-    return bool(AI_TITLE_ACRONYMS.search(title) or AI_SPECIFIC_ANCHORS.search(title))
+    return bool(
+        ECONOMY_TITLE_ACRONYMS.search(title)
+        or ECONOMY_SPECIFIC_ANCHORS.search(title)
+    )

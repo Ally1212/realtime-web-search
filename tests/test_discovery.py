@@ -43,6 +43,23 @@ class DiscoveryTests(unittest.TestCase):
             first.close()
             second.close()
 
+    def test_page_batch_acquirer_receives_locale_label_string(self):
+        acquirer = Mock(return_value=None)
+        discovery = SearchDiscovery(
+            providers=('wml',), language='zh',
+            web_query_eligible=True,
+            page_batch_acquirer=acquirer,
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+        )
+        try:
+            discovery._discover('GDP', 3)
+        finally:
+            discovery.close()
+        acquirer.assert_called_once()
+        locale = acquirer.call_args[0][1]
+        self.assertIsInstance(locale, str)
+        self.assertEqual(locale, discovery.search_locale.label)
+
     def test_search_locale_does_not_change_proxy_locale_dimension(self):
         pool = Mock()
         pool.available_count.return_value = 1
