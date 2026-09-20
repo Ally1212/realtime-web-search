@@ -36,6 +36,28 @@ class DiscoveryRuntimeTests(unittest.TestCase):
         finally:
             with self.store.connect() as db:db.execute('DELETE FROM google_proxy_sessions WHERE proxy_key_hash=%s',(key,))
 
+    def test_sync_continuous_keywords_retires_stale_entries(self):
+        from types import SimpleNamespace
+        keep = self.source + "_keep"
+        stale = self.source + "_stale"
+        spec = SimpleNamespace(key=keep, concept_id="c", query="q", aliases=("q",),
+                               language="zh", category="macro", priority=50)
+        try:
+            self.store.sync_continuous_keywords((
+                SimpleNamespace(key=stale, concept_id="c", query="old", aliases=("old",),
+                                language="zh", category="macro", priority=50), spec,
+            ))
+            self.store.sync_continuous_keywords((spec,))
+            with self.store.connect() as db:
+                rows = {r["keyword_key"]: r["state"] for r in db.execute(
+                    "SELECT keyword_key,state FROM continuous_keywords WHERE keyword_key IN (%s,%s)",
+                    (keep, stale),
+                ).fetchall()}
+            self.assertEqual(rows, {keep: "active", stale: "retired"})
+        finally:
+            with self.store.connect() as db:
+                db.execute("DELETE FROM continuous_keywords WHERE keyword_key IN (%s,%s)", (keep, stale))
+
     def test_proxy_aliases_share_pacing_and_keep_legacy_cooldown(self):
         group, a, b = [uuid4().hex.ljust(64, '0') for _ in range(3)]
         try:

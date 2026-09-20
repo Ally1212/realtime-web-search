@@ -1552,8 +1552,14 @@ class CampaignStore:
         return int(row["value"])
 
     def sync_continuous_keywords(self, specs: tuple[Any, ...]) -> None:
+        keys = [spec.key for spec in specs]
         with self.connect() as connection:
             with connection.transaction():
+                connection.execute(
+                    "UPDATE continuous_keywords SET state='retired',updated_at=now() "
+                    "WHERE keyword_key <> ALL(%s) AND state <> 'retired'",
+                    (keys,),
+                )
                 for spec in specs:
                     connection.execute(
                         "INSERT INTO continuous_keywords(keyword_key,concept_id,query,aliases,language,"
