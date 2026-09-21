@@ -97,6 +97,77 @@ class LocalCampaignIntegrationTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(stored["content"], "")
 
+    def test_whale_outbox_merges_updated_payload_and_keeps_receipt(self):
+        task_id = f"test-whale-outbox-{os.getpid()}"
+        campaign_id = self.store.create_whale_campaign(
+            task_id=task_id,
+            dataset_id="test",
+            source_platform="google_search",
+            task_type="keyword_search",
+            query="whale outbox test",
+            aliases=[],
+            daily_target=1,
+            proxy_profile="direct",
+            task_payload={"keyword": "whale outbox test"},
+        )
+        self.campaign_ids.append(campaign_id)
+        source_record_key = f"google_search:{uuid4()}"
+        first = {
+            "source": {"source_record_key": source_record_key, "payload_hash": "sha256:first"},
+            "discovery": {"metadata": {"readiness": {"provided_capabilities": ["identity"]}}},
+            "content": {"title": "First"},
+            "provided_capabilities": ["identity", "title"],
+        }
+        second = {
+            "source": {"source_record_key": source_record_key, "payload_hash": "sha256:second"},
+            "discovery": {"metadata": {"readiness": {"provided_capabilities": ["identity", "body"]}}},
+            "content": {"body_text": "Second body"},
+            "provided_capabilities": ["identity", "body"],
+        }
+
+        self.store.queue_whale_message(task_id, source_record_key, first)
+        self.store.queue_whale_message(task_id, source_record_key, second)
+
+        row = self.store.whale_outbox(task_id, 1)[0]
+        self.assertEqual(row["payload"]["source"]["payload_hash"], "sha256:second")
+        self.assertEqual(
+            row["payload"]["provided_capabilities"],
+            ["identity", "title", "body"],
+        )
+        self.assertTrue(row["payload"]["discovery"]["metadata"]["readiness"]["ready"])
+        self.assertEqual(row["payload"]["content"]["title"], "First")
+        self.assertEqual(row["payload"]["content"]["body_text"], "Second body")
+        self.store.mark_whale_outbox(
+            [row["id"]],
+            status="delivered",
+            receipt_status="queued",
+            receipt={"receipt_status": "queued", "id": "remote-1"},
+        )
+        self.assertEqual(self.store.whale_outbox_counts(task_id), {"delivered": 1})
+        self.assertEqual(self.store.whale_receipt_counts(task_id), {"queued": 1})
+
+    def test_continuous_pause_resume_updates_campaigns_and_tasks(self):
+        task_id = f"continuous:{uuid4().hex[:12]}"
+        campaign_id = self.store.create_whale_campaign(
+            task_id=task_id,
+            dataset_id="test",
+            source_platform="google_search",
+            task_type="keyword_search",
+            query="continuous pause test",
+            aliases=[],
+            daily_target=1,
+            proxy_profile="direct",
+            task_payload={"keyword": "continuous pause test"},
+        )
+        self.campaign_ids.append(campaign_id)
+
+        self.assertEqual(self.store.set_continuous_status("paused"), 1)
+        self.assertTrue(self.store.continuous_is_paused())
+        self.assertEqual(self.store.due_continuous_keywords(1), [])
+
+        self.assertEqual(self.store.set_continuous_status("active"), 1)
+        self.assertFalse(self.store.continuous_is_paused())
+
     def test_legacy_non_html_failure_gets_one_retry_for_pdf_support(self):
         campaign_id = self.store.create_campaign("pdf retry", [], 1, "direct")
         self.campaign_ids.append(campaign_id)

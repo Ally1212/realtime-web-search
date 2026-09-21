@@ -15,6 +15,8 @@ import psycopg
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
 
+from .whale_protocol import merge_messages
+
 
 _POOLS: dict[tuple[str, int, int], ConnectionPool[Any]] = {}
 _POOLS_LOCK = threading.Lock()
@@ -133,6 +135,8 @@ CREATE TABLE IF NOT EXISTS whale_ingest_outbox (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE whale_ingest_outbox ADD COLUMN IF NOT EXISTS receipt_status text;
+ALTER TABLE whale_ingest_outbox ADD COLUMN IF NOT EXISTS receipt jsonb NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS whale_ingest_outbox_pending ON whale_ingest_outbox(task_id, status, id);
 CREATE TABLE IF NOT EXISTS discovery_cursors (
   campaign_id uuid PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -1291,21 +1295,57 @@ class CampaignStore:
 
     def queue_whale_message(self, task_id: str, source_record_key: str, payload: dict[str, Any]) -> None:
         with self.connect() as connection:
-            connection.execute(
-                "INSERT INTO whale_ingest_outbox(task_id,source_record_key,payload) VALUES(%s,%s,%s::jsonb) "
-                "ON CONFLICT (source_record_key) DO NOTHING",
-                (task_id, source_record_key, json.dumps(payload, ensure_ascii=False)),
-            )
+            with connection.transaction():
+                existing = connection.execute(
+                    "SELECT id,payload,status FROM whale_ingest_outbox "
+                    "WHERE source_record_key=%s FOR UPDATE",
+                    (source_record_key,),
+                ).fetchone()
+                if not existing:
+                    connection.execute(
+                        "INSERT INTO whale_ingest_outbox(task_id,source_record_key,payload) "
+                        "VALUES(%s,%s,%s::jsonb)",
+                        (task_id, source_record_key, json.dumps(payload, ensure_ascii=False)),
+                    )
+                    return
+                current = dict(existing["payload"] or {})
+                if not current.get("source"):
+                    connection.execute(
+                        "UPDATE whale_ingest_outbox SET task_id=%s,payload=%s::jsonb,status='pending',"
+                        "attempts=0,last_error=NULL,receipt_status=NULL,receipt='{}'::jsonb,"
+                        "delivered_at=NULL,updated_at=now() WHERE id=%s",
+                        (task_id, json.dumps(payload, ensure_ascii=False), existing["id"]),
+                    )
+                    return
+                current_hash = str(current.get("source", {}).get("payload_hash") or "")
+                incoming_hash = str(payload.get("source", {}).get("payload_hash") or "")
+                if current_hash == incoming_hash:
+                    return
+                merged = merge_messages(current, payload)
+                connection.execute(
+                    "UPDATE whale_ingest_outbox SET task_id=%s,payload=%s::jsonb,status='pending',"
+                    "attempts=0,last_error=NULL,receipt_status=NULL,receipt='{}'::jsonb,"
+                    "delivered_at=NULL,updated_at=now() WHERE id=%s",
+                    (task_id, json.dumps(merged, ensure_ascii=False), existing["id"]),
+                )
 
     def whale_outbox(self, task_id: str, limit: int) -> list[dict[str, Any]]:
         with self.connect() as connection:
             return connection.execute(
-                "SELECT id,source_record_key,payload,attempts FROM whale_ingest_outbox "
+                "SELECT id,source_record_key,payload,attempts,receipt_status,receipt FROM whale_ingest_outbox "
                 "WHERE task_id=%s AND status='pending' ORDER BY id LIMIT %s",
                 (task_id, limit),
             ).fetchall()
 
-    def mark_whale_outbox(self, ids: list[int], *, status: str, error: str | None = None) -> None:
+    def mark_whale_outbox(
+        self,
+        ids: list[int],
+        *,
+        status: str,
+        error: str | None = None,
+        receipt_status: str | None = None,
+        receipt: dict[str, Any] | None = None,
+    ) -> None:
         if not ids:
             return
         delivered = "now()" if status == "delivered" else "NULL"
@@ -1313,8 +1353,14 @@ class CampaignStore:
             scrub = ",payload='{}'::jsonb" if status in {"delivered", "rejected"} else ""
             connection.execute(
                 f"UPDATE whale_ingest_outbox SET status=%s,attempts=attempts+1,last_error=%s,"
-                f"delivered_at={delivered},updated_at=now(){scrub} WHERE id=ANY(%s)",
-                (status, (error or "")[:500] or None, ids),
+                f"receipt_status=%s,receipt=%s::jsonb,delivered_at={delivered},updated_at=now(){scrub} WHERE id=ANY(%s)",
+                (
+                    status,
+                    (error or "")[:500] or None,
+                    receipt_status,
+                    json.dumps(receipt or {}, ensure_ascii=False),
+                    ids,
+                ),
             )
 
     def retry_whale_outbox(self, ids: list[int], error: str) -> None:
@@ -1333,6 +1379,15 @@ class CampaignStore:
                 (task_id,),
             ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
+
+    def whale_receipt_counts(self, task_id: str) -> dict[str, int]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT COALESCE(receipt_status,'unknown') AS receipt_status,count(*) AS count "
+                "FROM whale_ingest_outbox WHERE task_id=%s GROUP BY receipt_status",
+                (task_id,),
+            ).fetchall()
+        return {str(row["receipt_status"]): int(row["count"]) for row in rows}
 
     def pending_whale_task_ids(self, prefix: str = "") -> list[str]:
         with self.connect() as connection:
@@ -1464,6 +1519,39 @@ class CampaignStore:
             )
             return cursor.rowcount == 1
 
+    def set_continuous_status(self, status: str, reason: str = "operator") -> int:
+        if status not in {"active", "paused", "stopped"}:
+            raise ValueError("invalid continuous status")
+        task_status = {"active": "running", "paused": "paused", "stopped": "canceled"}[status]
+        with self.connect() as connection:
+            with connection.transaction():
+                rows = connection.execute(
+                    "UPDATE campaigns c SET status=%s,last_error=NULL,updated_at=now() "
+                    "FROM whale_task_runs w WHERE w.campaign_id=c.id "
+                    "AND w.task_id ~ '^continuous:[0-9a-f]{12}$' RETURNING c.id",
+                    (status,),
+                ).fetchall()
+                connection.execute(
+                    "UPDATE whale_task_runs SET status=%s,updated_at=now() "
+                    "WHERE task_id ~ '^continuous:[0-9a-f]{12}$'",
+                    (task_status,),
+                )
+                connection.execute(
+                    "INSERT INTO continuous_runtime(id,state,reason,updated_at) VALUES(1,%s,%s,now()) "
+                    "ON CONFLICT(id) DO UPDATE SET state=excluded.state,reason=excluded.reason,updated_at=now()",
+                    ("operator_paused" if status == "paused" else status, reason),
+                )
+        return len(rows)
+
+    def continuous_is_paused(self) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(bool_and(c.status='paused'),false) AS paused "
+                "FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
+                "WHERE w.task_id ~ '^continuous:[0-9a-f]{12}$'"
+            ).fetchone()
+        return bool(row and row["paused"])
+
     def increment(self, campaign_id: str, **values: int) -> None:
         if not values or set(values) - self.COUNTERS:
             raise ValueError("invalid campaign counter")
@@ -1578,6 +1666,8 @@ class CampaignStore:
 
     def due_continuous_keywords(self, limit: int) -> list[dict[str, Any]]:
         bounded_limit = max(1, limit)
+        if self.continuous_is_paused():
+            return []
         with self.connect() as connection:
             with connection.transaction():
                 return connection.execute(
@@ -1780,12 +1870,16 @@ class CampaignStore:
                 if existing:
                     page_id = int(existing["id"])
                     stored_content = str(existing["content"] or "") if whale_task_id else page.content
+                    same_url = str(existing["url"]) == page.url
+                    stored_url = page.url if same_url else str(existing["url"])
+                    stored_hash = page.content_hash if same_url else str(existing["content_hash"])
                     connection.execute(
-                        "UPDATE pages SET title=%s,summary=%s,content=%s,language=%s,http_status=%s,"
-                        "fetched_at=%s,source_engines=%s::jsonb WHERE id=%s",
+                        "UPDATE pages SET url=%s,content_hash=%s,title=%s,summary=%s,content=%s,"
+                        "language=%s,http_status=%s,fetched_at=%s,source_engines=%s::jsonb WHERE id=%s",
                         (
-                            page.title, page.summary, stored_content, page.language, page.http_status,
-                            page.fetched_at, json.dumps(page.source_engines), page_id,
+                            stored_url, stored_hash, page.title, page.summary, stored_content,
+                            page.language, page.http_status, page.fetched_at,
+                            json.dumps(page.source_engines), page_id,
                         ),
                     )
                 else:
@@ -1926,6 +2020,11 @@ class CampaignStore:
                 "WHERE w.task_id LIKE 'continuous:%' "
                 "GROUP BY o.status"
             ).fetchall()
+            continuous_receipt_counts = connection.execute(
+                "SELECT COALESCE(o.receipt_status,'unknown') AS receipt_status,count(*) AS count "
+                "FROM whale_ingest_outbox o JOIN whale_task_runs w ON w.task_id=o.task_id "
+                "WHERE w.task_id LIKE 'continuous:%' GROUP BY o.receipt_status"
+            ).fetchall()
             continuous_bottlenecks = connection.execute(
                 "WITH continuous_campaigns AS ("
                 "SELECT c.id FROM campaigns c JOIN whale_task_runs w ON w.campaign_id=c.id "
@@ -2051,6 +2150,7 @@ class CampaignStore:
             campaign["rate_per_second"] = round(recent / recent_window, 3)
             campaign["projected_daily"] = round(campaign["rate_per_second"] * 86400)
         whale_counts = {str(row["status"]): int(row["count"]) for row in continuous_whale_counts}
+        receipt_counts = {str(row["receipt_status"]): int(row["count"]) for row in continuous_receipt_counts}
         bottlenecks = {str(row["reason"]): int(row["count"]) for row in continuous_bottlenecks}
         if continuous and int(continuous.get("keyword_count") or 0):
             if continuous_daily_target is not None:
@@ -2064,6 +2164,9 @@ class CampaignStore:
             continuous["projected_daily"] = round(continuous["rate_per_second"] * 86400)
             continuous["continuous"] = True
             continuous["whale_delivered"] = whale_counts.get("delivered", 0)
+            continuous["whale_accepted"] = receipt_counts.get("accepted", 0)
+            continuous["whale_queued"] = receipt_counts.get("queued", 0)
+            continuous["whale_duplicate_receipts"] = receipt_counts.get("duplicate", 0)
             continuous["whale_delivered_today"] = self.continuous_delivered_today()
             continuous["today"] = continuous["whale_delivered_today"]
             continuous["required_rate"] = (

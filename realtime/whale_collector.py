@@ -17,6 +17,12 @@ from .campaign_store import CampaignStore
 from .config import Config
 from .proxy_pool import ProxyApiError, ProxyCache, ProxySynchronizer
 from .keyword_catalog import KeywordSpec, base_keyword_specs
+from .whale_protocol import (
+    DEFAULT_REQUIRED_CAPABILITIES,
+    payload_hash,
+    readiness,
+    stable_record_key,
+)
 
 
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
@@ -76,16 +82,12 @@ def _diagnostic(event: str, **fields: object) -> None:
     print(f"{event} {rendered}".rstrip(), file=sys.stderr, flush=True)
 
 
-def _sha256(value: object) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def whale_message(item: dict[str, object], task: dict[str, Any], config: Config) -> tuple[str, dict[str, Any]]:
     """Convert one extracted public web page to the documented whale.ingest.v1 envelope."""
     url = str(item["url"])
     content = str(item["content"])
     title = str(item.get("title") or "").strip()
+    source_platform = str(task["source_platform"])
     url_hash = hashlib.sha256(url.encode()).hexdigest()
     external_id = f"url:{url_hash}"
     received_at = str(item["fetched_at"])
@@ -93,9 +95,8 @@ def whale_message(item: dict[str, object], task: dict[str, Any], config: Config)
         'url': url, 'title': title, 'content': content,
         'source_engines': list(item.get('source_engines') or ()),
     }
-    event_hash = _sha256(raw_payload)
-    record_key = f"{task['source_platform']}:{url_hash}:{event_hash}"
-    payload_hash = f"sha256:{event_hash}"
+    event_hash = payload_hash(raw_payload)
+    record_key = stable_record_key(source_platform, url)
     capabilities = ["identity", "body"]
     normalized_content: dict[str, Any] = {
         "external_content_id": external_id,
@@ -111,14 +112,25 @@ def whale_message(item: dict[str, object], task: dict[str, Any], config: Config)
     if title:
         normalized_content["title"] = title
         capabilities.insert(1, "title")
+    if item.get("metrics") is not None:
+        normalized_content["metrics"] = item["metrics"]
+        capabilities.append("metrics")
+    if item.get("subtitles") is not None:
+        normalized_content["subtitles"] = item["subtitles"]
+        capabilities.append("subtitles")
+    required = list(
+        task.get("required_capabilities")
+        or dict(task.get("payload") or {}).get("required_capabilities")
+        or DEFAULT_REQUIRED_CAPABILITIES
+    )
     message: dict[str, Any] = {
         "schema_version": "whale.ingest.v1",
         "dataset_id": str(task["dataset_id"]),
         "source": {
-            "source_platform": str(task["source_platform"]),
+            "source_platform": source_platform,
             "source_name": config.whale_source_name,
             "source_record_key": record_key,
-            "payload_hash": payload_hash,
+            "payload_hash": event_hash,
             "received_at": received_at,
             "trace_id": str(task["task_id"]),
         },
@@ -137,6 +149,7 @@ def whale_message(item: dict[str, object], task: dict[str, Any], config: Config)
         "content": normalized_content,
         "provided_capabilities": capabilities,
     }
+    message["discovery"]["metadata"]["readiness"] = readiness(capabilities, required)
     return record_key, message
 
 
@@ -156,6 +169,13 @@ class WhaleClient:
             timeout=self.config.request_timeout,
         )
 
+    def get(self, path: str) -> requests.Response:
+        return self.session.get(
+            f"{self.base_url}{path}",
+            headers={"Authorization": f"Bearer {self.config.whale_collector_api_key}"},
+            timeout=self.config.request_timeout,
+        )
+
     def register(self, current_load: int = 0) -> None:
         # Agent IDs may be bound when a Collector Key is issued.  Let Whale
         # resolve that binding instead of making a local name guess.
@@ -166,7 +186,7 @@ class WhaleClient:
             "version": "0.2.0",
             "supported_platforms": [self.config.whale_source_platform],
             "supported_task_types": list(self.config.whale_supported_task_types),
-            "declared_capabilities": ["identity", "title", "body"],
+            "declared_capabilities": list(self.config.whale_declared_capabilities),
             "max_concurrency": self.config.whale_max_concurrency,
             "current_load": current_load,
             "metadata": {"crawler": "scrapy", "discovery": ["google_web"]},
@@ -189,7 +209,7 @@ class WhaleClient:
     def claim(self, limit: int) -> list[dict[str, Any]]:
         response = self.post("/v1/collection/tasks/claim", {
             "agent_id": self.agent_id,
-            "declared_capabilities": ["identity", "title", "body"],
+            "declared_capabilities": list(self.config.whale_declared_capabilities),
             "limit": limit,
         })
         response.raise_for_status()
@@ -222,6 +242,21 @@ class WhaleClient:
             raise error
         return list(response.json())
 
+    def verify_source_record(self, source_record_key: str) -> dict[str, Any]:
+        if not self.config.whale_verify_url_template:
+            return {"verified": False, "reason": "verify_endpoint_not_configured"}
+        import urllib.parse
+
+        path = self.config.whale_verify_url_template.format(
+            source_record_key=urllib.parse.quote(source_record_key, safe="")
+        )
+        response = self.get(path)
+        if response.status_code == 404:
+            return {"verified": False, "reason": "not_found"}
+        response.raise_for_status()
+        data = response.json()
+        return {"verified": True, "response": data}
+
 
 class WhaleRunner:
     def __init__(self, config: Config):
@@ -233,6 +268,8 @@ class WhaleRunner:
     def _payload(task: dict[str, Any]) -> tuple[str, list[str], int, str]:
         payload = dict(task.get("payload") or {})
         task_type = str(task["task_type"])
+        if task_type not in {"keyword_search", "content_detail", "backfill"}:
+            raise ValueError(f"unsupported task_type: {task_type}")
         urls = payload.get("urls") or []
         # Whale validates keyword_search tasks using keyword/keywords.  Keep
         # query as a backward-compatible alias for already-created tasks.
@@ -295,17 +332,35 @@ class WhaleRunner:
                 duplicates += 1
             else:
                 rejected.append(int(row["id"]))
-        self.store.mark_whale_outbox(delivered, status="delivered")
-        self.store.mark_whale_outbox(rejected, status="rejected", error="Whale rejected message")
+        for row, result in zip(rows, results):
+            receipt = str(result.get("receipt_status") or "")
+            if receipt in {"queued", "accepted", "duplicate"}:
+                self.store.mark_whale_outbox(
+                    [int(row["id"])],
+                    status="delivered",
+                    receipt_status=receipt,
+                    receipt=dict(result),
+                )
+            else:
+                self.store.mark_whale_outbox(
+                    [int(row["id"])],
+                    status="rejected",
+                    error="Whale rejected message",
+                    receipt_status=receipt or "rejected",
+                    receipt=dict(result),
+                )
         return ingested, duplicates, not rejected
 
     def _stats(self, campaign_id: str, task_id: str) -> dict[str, int]:
         campaign = self.store.campaign(campaign_id) or {}
         outbox = self.store.whale_outbox_counts(task_id)
+        receipts = self.store.whale_receipt_counts(task_id)
+        delivered = int(outbox.get("delivered") or 0)
+        receipt_duplicates = int(receipts.get("duplicate") or 0)
         return {
             "collected_count": int(campaign.get("fetched") or 0),
-            "ingested_count": int(outbox.get("delivered") or 0),
-            "duplicate_count": int(campaign.get("duplicates") or 0),
+            "ingested_count": max(0, delivered - receipt_duplicates),
+            "duplicate_count": int(campaign.get("duplicates") or 0) + receipt_duplicates,
         }
 
     def execute(self, task: dict[str, Any]) -> None:
@@ -325,6 +380,8 @@ class WhaleRunner:
                 raise ValueError("task dataset does not match WHALE_DATASET_ID")
             if source_platform != self.config.whale_source_platform:
                 raise ValueError("task platform does not match WHALE_SOURCE_PLATFORM")
+            if task_type not in self.config.whale_supported_task_types:
+                raise ValueError(f"unsupported task type: {task_type}")
             query, aliases, target, profile = self._payload(task)
             campaign_id = self.store.create_whale_campaign(
                 task_id=task_id, dataset_id=dataset_id,
@@ -682,6 +739,14 @@ class ContinuousWhaleRunner:
         while True:
             started = time.monotonic()
             self._flush_pending()
+            if self.store.continuous_is_paused():
+                self.store.update_continuous_runtime(
+                    enabled=controller.enabled, current=0,
+                    minimum=controller.minimum, maximum=controller.maximum,
+                    state="operator_paused", reason="operator_pause",
+                )
+                time.sleep(max(10, self.config.continuous_interval_seconds))
+                continue
             if (
                 self.config.continuous_daily_target > 0
                 and int(self.store.continuous_delivered_today() or 0)

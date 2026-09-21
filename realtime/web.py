@@ -142,6 +142,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        continuous_action = re.fullmatch(r"/api/continuous/(pause|resume|stop)", path)
+        if continuous_action:
+            operation = continuous_action.group(1)
+            status = {"pause": "paused", "resume": "active", "stop": "stopped"}[operation]
+            count = self.store.set_continuous_status(status, f"api_{operation}")
+            self.send_json({"status": status, "updated": count})
+            return
         action = re.fullmatch(r"/api/campaigns/([0-9a-f-]+)/(pause|resume|stop)", path)
         if action:
             campaign_id, operation = action.groups()
@@ -299,6 +306,10 @@ class Handler(BaseHTTPRequestHandler):
             if continuous:
                 lines.extend([
                     f'realtime_continuous_whale_delivered_today {continuous.get("whale_delivered_today", 0)}',
+                    f'realtime_continuous_whale_accepted_total {continuous.get("whale_accepted", 0)}',
+                    f'realtime_continuous_whale_queued_total {continuous.get("whale_queued", 0)}',
+                    f'realtime_continuous_whale_duplicate_receipts_total {continuous.get("whale_duplicate_receipts", 0)}',
+                    f'realtime_continuous_whale_rejected_total {continuous.get("whale_rejected", 0)}',
                     f'realtime_continuous_required_rate {continuous.get("required_rate", 0)}',
                     f'realtime_continuous_projected_daily {continuous.get("projected_daily", 0)}',
                     f'realtime_continuous_daily_target {continuous.get("daily_target", 0)}',

@@ -54,6 +54,8 @@ Whale 运行在 pull 模式：先在 Whale 的 `/admin/datasets` 创建并启用
 
 服务会注册 `realtime-web-search-01`、认领匹配任务，并使用 `POST /v1/documents/bulk` 上报完整正文。Whale 任务 Payload：`keyword_search`/`backfill` 必须使用 `keyword`（也兼容 `keywords` 与旧的 `query`）；页面默认的 `max_items` 会作为本次目标数量；`content_detail` 需要 `urls` 数组。未设置 `proxy_profile` 时默认直连，生产使用代理时显式传入 `private`。本地 PostgreSQL 使用 Outbox 保留待投递消息，网络重试不会改变 Whale 幂等键。
 
+采集器声明 `identity,title,body,metrics,subtitles` 能力，但网页正文任务通常实际提供 `identity,title,body`；`metrics`、`subtitles` 只在上游 payload 明确提供时随同一稳定身份补充。`source_record_key` 固定为 `source_platform + canonical_url hash`，正文变化只更新 `payload_hash`，用于同一网页的异步补充和版本更新。Outbox 会保留 Whale 原始逐条回执 `accepted`、`queued`、`duplicate` 或拒收原因；`accepted/queued` 表示 Whale 接收 API 已接住，不等于最终索引或查询已完成。若 Whale 提供查询校验接口，可设置 `WHALE_VERIFY_URL_TEMPLATE`，其中 `{source_record_key}` 会被 URL 编码替换；未设置时不会伪造最终可查询结果。
+
 ### 本地 AI 种子持续采集
 
 如果不希望依赖 Whale 持续派发任务，可以让本项目维护约 260 个中英双语固定分类查询，并持续上传 Whale。在 `.env` 中设置：
@@ -62,6 +64,8 @@ Whale 运行在 pull 模式：先在 Whale 的 `/admin/datasets` 创建并启用
 WHALE_ENABLED=true
 COLLECTOR_COMMAND=continuous-whale
 CONTINUOUS_WHALE_ENABLED=true
+WHALE_SUPPORTED_TASK_TYPES=keyword_search,content_detail,backfill
+WHALE_DECLARED_CAPABILITIES=identity,title,body,metrics,subtitles
 CONTINUOUS_AI_KEYWORDS=artificial intelligence,AI news,generative AI,OpenAI,AI regulation
 CONTINUOUS_INTERVAL_SECONDS=60
 CONTINUOUS_DAILY_TARGET=0

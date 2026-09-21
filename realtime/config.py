@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from .whale_protocol import SUPPORTED_CAPABILITIES, SUPPORTED_TASK_TYPES
 
 DEFAULT_CONTINUOUS_AI_KEYWORDS = (
     "中国经济,GDP,通货膨胀,美联储,人民币汇率"
@@ -173,12 +174,20 @@ class Config:
     whale_source_platform: str = os.getenv("WHALE_SOURCE_PLATFORM", "google_search")
     whale_source_name: str = os.getenv("WHALE_SOURCE_NAME", "realtime-web-search")
     whale_supported_task_types: tuple[str, ...] = tuple(
-        value.strip() for value in os.getenv("WHALE_SUPPORTED_TASK_TYPES", "keyword_search").split(",") if value.strip()
+        value.strip() for value in os.getenv(
+            "WHALE_SUPPORTED_TASK_TYPES", ",".join(SUPPORTED_TASK_TYPES)
+        ).split(",") if value.strip()
+    )
+    whale_declared_capabilities: tuple[str, ...] = tuple(
+        value.strip() for value in os.getenv(
+            "WHALE_DECLARED_CAPABILITIES", ",".join(SUPPORTED_CAPABILITIES)
+        ).split(",") if value.strip()
     )
     whale_max_concurrency: int = int(os.getenv("WHALE_MAX_CONCURRENCY", "2"))
     whale_claim_limit: int = int(os.getenv("WHALE_CLAIM_LIMIT", "2"))
     whale_heartbeat_seconds: int = int(os.getenv("WHALE_HEARTBEAT_SECONDS", "20"))
     whale_ingest_batch_size: int = int(os.getenv("WHALE_INGEST_BATCH_SIZE", "50"))
+    whale_verify_url_template: str = os.getenv("WHALE_VERIFY_URL_TEMPLATE", "")
     continuous_whale_enabled: bool = _enabled("CONTINUOUS_WHALE_ENABLED", False)
     continuous_date_slicing_enabled: bool = _enabled(
         "CONTINUOUS_DATE_SLICING_ENABLED", False

@@ -1,9 +1,10 @@
 import unittest
 from unittest.mock import MagicMock, patch
+import hashlib
 
 from realtime.config import Config
 from realtime.whale_collector import (
-    AdaptiveConcurrencyController, ContinuousWhaleRunner, WhaleRunner, whale_message,
+    AdaptiveConcurrencyController, ContinuousWhaleRunner, WhaleClient, WhaleRunner, whale_message,
 )
 
 
@@ -40,13 +41,40 @@ class WhaleCollectorTests(unittest.TestCase):
 
         record_key, message = whale_message(item, task, config)
 
-        self.assertTrue(record_key.startswith("website:" + __import__("hashlib").sha256(item["url"].encode()).hexdigest() + ":"))
+        self.assertEqual(record_key, "website:" + hashlib.sha256(item["url"].encode()).hexdigest())
         self.assertEqual(message["schema_version"], "whale.ingest.v1")
         self.assertEqual(message["dataset_id"], "web_raw")
         self.assertNotIn("collection_task_id", message["source"])
         self.assertEqual(message["content"]["canonical_url"], item["url"])
         self.assertEqual(message["content"]["body_text"], item["content"])
         self.assertEqual(message["provided_capabilities"], ["identity", "title", "body"])
+        self.assertTrue(message["discovery"]["metadata"]["readiness"]["ready"])
+
+        changed = dict(item, content="B" * 120)
+        changed_key, changed_message = whale_message(changed, task, config)
+        self.assertEqual(changed_key, record_key)
+        self.assertNotEqual(
+            changed_message["source"]["payload_hash"],
+            message["source"]["payload_hash"],
+        )
+
+    def test_message_marks_missing_required_capability(self):
+        config = Config()
+        task = {
+            "task_id": "ctask_1", "dataset_id": "web_raw", "source_platform": "website",
+            "task_type": "keyword_search", "required_capabilities": ["identity", "body", "metrics"],
+        }
+        item = {
+            "campaign_id": "campaign_1", "url": "https://example.com/article",
+            "title": "Example", "content": "A" * 120, "content_hash": "a" * 64,
+            "language": "en", "fetched_at": "2026-09-02T00:00:00+00:00",
+            "discovered_at": "2026-09-02T00:00:00+00:00", "query": "example",
+            "source_engines": ("google_web",),
+        }
+        _, message = whale_message(item, task, config)
+        readiness = message["discovery"]["metadata"]["readiness"]
+        self.assertFalse(readiness["ready"])
+        self.assertEqual(readiness["missing_capabilities"], ["metrics"])
 
     def test_task_payload_validation(self):
         task = {"task_type": "content_detail", "payload": {"urls": ["https://example.com"]}}
@@ -58,6 +86,9 @@ class WhaleCollectorTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             WhaleRunner._payload({"task_type": "keyword_search", "payload": {}})
+
+        with self.assertRaises(ValueError):
+            WhaleRunner._payload({"task_type": "unknown", "payload": {"keyword": "AI"}})
 
     def test_keyword_payload_is_supported(self):
         query, aliases, target, profile = WhaleRunner._payload({
@@ -117,6 +148,13 @@ class WhaleCollectorTests(unittest.TestCase):
         self.assertTrue(kwargs["reactivate_existing"])
         self.assertEqual(kwargs["task_id"], "continuous:b5ffddc26966")
         store.update_whale_task.assert_not_called()
+
+    def test_verify_source_record_is_explicitly_optional(self):
+        client = WhaleClient(Config(whale_collector_api_key="key"))
+        self.assertEqual(
+            client.verify_source_record("google_search:abc"),
+            {"verified": False, "reason": "verify_endpoint_not_configured"},
+        )
 
 
 if __name__ == "__main__":
