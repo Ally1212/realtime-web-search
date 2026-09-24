@@ -22,6 +22,11 @@ _DISCOVERY_LIMITERS_LOCK = threading.Lock()
 SERP_PARSER_VERSION = "google-serp-v2"
 SERP_PARSE_MODES = frozenset({"fast", "light", "full"})
 GOOGLE_TIME_FILTERS = frozenset({"qdr:h", "qdr:d", "qdr:w", "qdr:m", "qdr:y"})
+BLOCKED_RESULT_DOMAINS = (
+    "youtube.com", "youtu.be", "linkedin.com", "facebook.com", "reddit.com",
+    "x.com", "instagram.com", "tiktok.com", "quora.com", "pinterest.com",
+    "google.com", "baidu.com",
+)
 
 
 def _discovery_limiter(limit: int) -> threading.BoundedSemaphore:
@@ -402,7 +407,13 @@ class SearchDiscovery:
                 values = parse_qs(urlsplit(href).query)
                 href = str((values.get("q") or values.get("url") or [""])[0])
             host = (urlsplit(href).hostname or "").lower()
-            if not href.startswith(("http://", "https://")) or host.endswith("google.com"):
+            if (
+                not href.startswith(("http://", "https://"))
+                or any(
+                    host == domain or host.endswith("." + domain)
+                    for domain in BLOCKED_RESULT_DOMAINS
+                )
+            ):
                 continue
             title_node = anchor.find(["h3", "h2"])
             if title_node:

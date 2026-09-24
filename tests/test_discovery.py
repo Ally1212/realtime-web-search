@@ -190,6 +190,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(results[0].description, "New AI research")
         self.assertEqual(results[0].display_link, "example.com")
 
+    def test_parsing_filters_zero_yield_social_and_search_domains(self):
+        content = (
+            '<a href="https://www.youtube.com/watch?v=1"><h3>Video</h3></a>'
+            '<a href="https://www.quora.com/answer"><h3>Question</h3></a>'
+            '<a href="https://www.baidu.com/baike/item/ai"><h3>Encyclopedia</h3></a>'
+            '<a href="https://example.com/article"><h3>Article</h3></a>'
+        )
+
+        results = SearchDiscovery._parse_google_html(content)
+
+        self.assertEqual([row.url for row in results], ["https://example.com/article"])
 
     def test_http_200_captcha_opens_block_path(self):
         response = Mock(status_code=200, content=b"Our systems have detected unusual traffic")
