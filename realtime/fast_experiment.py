@@ -387,17 +387,6 @@ class PipelineRunner(Runner):
         self.threads = []
         self.search_thread_count = 0
         self.search_families = YIELD_FAMILIES if self.store.get('query_plan') in {'yield', 'dense'} else FAMILIES
-        self._search_clients: dict[str, SearchRunner] = {}
-        self._search_clients_lock = threading.Lock()
-
-    def _search_client(self, runner: SearchRunner, language: str):
-        """Share provider cooldown state while retaining per-thread ledgers."""
-        with self._search_clients_lock:
-            client = self._search_clients.get(language)
-            if client is None:
-                client = runner.client(language)
-                self._search_clients[language] = client
-            return client
 
     def _stage(self, kind):
         store = None
@@ -411,11 +400,6 @@ class PipelineRunner(Runner):
                 store, self.config, self.production, self.output,
                 proxy_pool=self.pool,
             )
-            if kind == 'search':
-                # Every thread keeps its own SQLite store, but all threads share
-                # one SearchDiscovery per language so OpenSERP provider cooldown
-                # is process-global instead of resetting per thread.
-                runner.client = lambda language, runner=runner: self._search_client(runner, language)
             if kind != 'upload':
                 runner.whale = None
             while not self.shutdown.is_set():
@@ -445,7 +429,7 @@ class PipelineRunner(Runner):
         except Exception as exc:
             self.events.put(('stage_error', kind + ':' + type(exc).__name__))
         finally:
-            if runner and not any(runner is shared for shared in self._search_clients.values()):
+            if runner:
                 for client in runner.clients.values():
                     client.close()
                 if runner.whale:
@@ -675,11 +659,6 @@ class PipelineRunner(Runner):
             pool.close()
             for thread in self.threads:
                 thread.join(timeout=30)
-            with self._search_clients_lock:
-                clients = list(self._search_clients.values())
-                self._search_clients.clear()
-            for client in clients:
-                client.close()
             with store.db:
                 store.db.execute("UPDATE urls SET state='pending' WHERE state='fetching'")
             if store.get('state') != 'storage_stopped':
