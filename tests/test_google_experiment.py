@@ -33,6 +33,29 @@ class ExperimentTests(unittest.TestCase):
         self.store.set('output', str(self.root/'export'))
         self.query = self.store.add_query('topic','AI','en','AI')
 
+    def test_baseline_tsv_import_skips_blank_and_malformed_rows(self):
+        from realtime.google_experiment import import_baselines
+        path = self.root / 'baseline.tsv'
+        path.write_text('https://example.com/a\thash-a\n\nbad-row\nhttps://example.com/b\thash-b\n', encoding='utf-8')
+        store = ExperimentStore(self.root / 'baseline-run', create=True)
+        args = SimpleNamespace(baseline_run=[], baseline_export=[], baseline_tsv=[str(path)])
+        class Production:
+            def connect(self):
+                class Empty:
+                    def __enter__(self): return self
+                    def __exit__(self, *args): return False
+                    def execute(self, *args):
+                        class Result:
+                            def fetchall(self): return []
+                        return Result()
+                return Empty()
+        try:
+            import_baselines(store, Production(), args)
+            self.assertEqual(store.db.execute('select count(*) from baseline_urls').fetchone()[0], 2)
+            self.assertEqual(store.db.execute('select count(*) from baseline_hashes').fetchone()[0], 2)
+        finally:
+            store.db.close()
+
     def tearDown(self):
         self.store.db.close()
         self.tmp.cleanup()

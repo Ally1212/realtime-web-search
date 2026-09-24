@@ -61,6 +61,8 @@ def main() -> None:
     experiment.add_argument("--preflight", action="store_true", help="Bounded two-page pilot, not a 24h result")
     experiment.add_argument("--baseline-run", action="append", default=[])
     experiment.add_argument("--baseline-export", action="append", default=[])
+    experiment.add_argument("--baseline-tsv", action="append", default=[],
+                            help="TSV file with url/content_hash columns")
     purge = commands.add_parser("purge-non-google-web")
     purge.add_argument("--apply", action="store_true")
     purge.add_argument("--manifest-directory", type=Path, default=Path("state"))

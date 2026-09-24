@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import csv
 import fcntl
 import json
 import os
@@ -244,6 +245,13 @@ def import_baselines(store: ExperimentStore, production: CampaignStore, args):
         store.baseline((r[0] for r in other.db.execute('SELECT url FROM urls')),
                        (r[0] for r in other.db.execute("SELECT hash FROM documents WHERE hash<>''")))
         other.db.close()
+    for path in getattr(args, 'baseline_tsv', []):
+        rows = []
+        with Path(path).open(encoding='utf-8', newline='') as handle:
+            for row in csv.reader(handle, delimiter='\t'):
+                if len(row) >= 2 and row[0] and row[1]:
+                    rows.append((row[0], row[1]))
+        store.baseline((normalize_url(url) for url, _ in rows), (hash_ for _, hash_ in rows))
     for directory in args.baseline_export:
         for path in (Path(directory) / 'documents').glob('*.md'):
             data = json.JSONDecoder().raw_decode(path.read_text(encoding='utf-8').split('```text\n', 1)[1])[0]
