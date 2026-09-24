@@ -69,7 +69,7 @@ def run_free_benchmark(args) -> None:
         file_queries = tuple(dict.fromkeys(item.strip() for item in value))
     if args.query and args.queries_file:
         raise ValueError("use either --query or --queries-file, not both")
-    queries = tuple(previous["queries"]) if previous else (tuple(args.query) or file_queries or ECONOMY_QUERIES[:args.query_limit])
+    queries = tuple(previous["queries"]) if previous else (tuple(args.query or ()) or file_queries or ECONOMY_QUERIES[:args.query_limit])
     pages = tuple(previous["pages"]) if previous else tuple(int(value) for value in args.pages.split(","))
     if not queries or any(page < 1 or page > 11 for page in pages) or not (0 < args.rps <= 2):
         raise ValueError("benchmark needs queries, pages 1–11, and 0 < rps <= 2")
