@@ -178,6 +178,16 @@ class ProxyCache:
     def path(self, profile: str) -> Path:
         return self.directory / f"{profile}.json"
 
+    @staticmethod
+    def _valid_cached_record(value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        try:
+            ProxyRecord.from_dict(value)
+        except (ValueError, TypeError):
+            return False
+        return True
+
     def publish(self, profile: str, records: list[ProxyRecord], request_id: str | None) -> None:
         payload = {
             "version": 1,
@@ -199,7 +209,16 @@ class ProxyCache:
         try:
             payload = json.loads(self.path(profile).read_text(encoding="utf-8"))
             synced_at = _parse_time(payload.get("synced_at"))
-            records = [ProxyRecord(**value) for value in payload.get("records", [])]
+            records = [
+                ProxyRecord(
+                    host=value.get("host"), port=value.get("port"),
+                    protocol=value.get("protocol"), quality=value.get("qualityScore") or value.get("quality"),
+                    latency_ms=value.get("latencyMs") or value.get("latency_ms"),
+                    last_checked=value.get("lastChecked") or value.get("last_checked"),
+                )
+                for value in payload.get("records", [])
+                if self._valid_cached_record(value)
+            ]
             return synced_at, records
         except (OSError, ValueError, TypeError, KeyError):
             return None, []

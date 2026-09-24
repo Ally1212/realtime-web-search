@@ -1,4 +1,5 @@
 import tempfile
+import json
 import hashlib
 import unittest
 from pathlib import Path
@@ -26,6 +27,10 @@ def config(directory: str = "/tmp"):
 
 
 class ProxyApiTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
     def test_proxy_relay_ports_are_unique_stable_and_http_only(self):
         records = [
             ProxyRecord('192.0.2.2', 8080, 'http'),
@@ -153,6 +158,21 @@ class ProxyApiTests(unittest.TestCase):
                 self.assertEqual(len(pool._reload("private")), 1)
             with patch.object(ProxyRecord, "fresh", return_value=False):
                 self.assertEqual(pool._reload("private"), [])
+
+    def test_load_accepts_legacy_cached_credentials_without_failing_whole_pool(self):
+        cache = ProxyCache(Path(self.tmp.name))
+        record = {"host": "proxy.example", "port": 8080, "protocol": "http", "quality": 90,
+                  "latency_ms": 100, "last_checked": "2026-01-01T00:00:00Z",
+                  "username": "ignored", "password": "ignored"}
+        cache.publish("private", [ProxyRecord.from_dict(record)], "request")
+        path = Path(self.tmp.name) / "private.json"
+        raw = json.loads(path.read_text())
+        raw["synced_at"] = record["last_checked"]
+        raw["records"] = [record]
+        path.write_text(json.dumps(raw))
+        synced_at, records = cache.load("private")
+        self.assertEqual(synced_at.isoformat(), "2026-01-01T00:00:00+00:00")
+        self.assertEqual([row.key for row in records], ["proxy.example:8080/http"])
 
     def test_reads_complete_cursor_chain_without_changing_filters(self):
         first = Mock(status_code=200, headers={"X-Request-ID": "r1"})
