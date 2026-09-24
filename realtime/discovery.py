@@ -847,35 +847,44 @@ class SearchDiscovery:
                     page_end = min(page_limit, int(batch["end_page"]))
                 else:
                     page_start, page_end = 1, 0
-            for page in range(page_start, page_end + 1):
-                try:
-                    page_results = self._discover_google_page(query, page)
-                    for result in page_results:
-                        found.setdefault(result.url, result)
-                    novel = (
-                        self.novelty_counter([row.url for row in page_results])
-                        if self.novelty_counter else len(page_results)
-                    )
-                    if batch and self.page_result_recorder:
-                        advanced = self.page_result_recorder(
-                            batch, page, success=True, result_count=len(page_results),
-                            unique_count=len({row.url for row in page_results}),
-                            novel_count=novel,
+            pages = tuple(range(page_start, page_end + 1))
+            # A frontier lease owns a page batch, not a serial page cursor. Run
+            # the batch concurrently so one page cannot leave the global RPS
+            # limiter idle while unrelated workers also have runnable pages.
+            page_workers = max(1, min(self.google_web_pages_per_batch, len(pages)))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=page_workers) as page_executor:
+                futures = {
+                    page: page_executor.submit(self._discover_google_page, query, page)
+                    for page in pages
+                }
+                for page, future in futures.items():
+                    try:
+                        page_results = future.result()
+                        for result in page_results:
+                            found.setdefault(result.url, result)
+                        novel = (
+                            self.novelty_counter([row.url for row in page_results])
+                            if self.novelty_counter else len(page_results)
                         )
-                        if advanced is False:
-                            raise RuntimeError("google_frontier_lease_lost")
-                except Exception as exc:
-                    reason = exc.reason if isinstance(exc, GoogleBlocked) else type(exc).__name__
-                    errors.append(f"page {page}: google web {reason}")
-                    if batch and self.page_result_recorder:
-                        try:
-                            self.page_result_recorder(
-                                batch, page, success=False, error=reason,
-                                captcha=isinstance(exc, GoogleBlocked) and exc.captcha,
+                        if batch and self.page_result_recorder:
+                            advanced = self.page_result_recorder(
+                                batch, page, success=True, result_count=len(page_results),
+                                unique_count=len({row.url for row in page_results}),
+                                novel_count=novel,
                             )
-                        except Exception as frontier_exc:
-                            errors.append(f"google frontier release {type(frontier_exc).__name__}")
-                    break
+                            if advanced is False:
+                                raise RuntimeError("google_frontier_lease_lost")
+                    except Exception as exc:
+                        reason = exc.reason if isinstance(exc, GoogleBlocked) else type(exc).__name__
+                        errors.append(f"page {page}: google web {reason}")
+                        if batch and self.page_result_recorder:
+                            try:
+                                self.page_result_recorder(
+                                    batch, page, success=False, error=reason,
+                                    captcha=isinstance(exc, GoogleBlocked) and exc.captcha,
+                                )
+                            except Exception as frontier_exc:
+                                errors.append(f"google frontier release {type(frontier_exc).__name__}")
         return list(found.values()), list(dict.fromkeys(errors))
 
     def discover(self, query: str, pages: int) -> tuple[list[SearchResult], list[str]]:

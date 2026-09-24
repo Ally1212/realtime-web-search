@@ -284,7 +284,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(recorder.call_args.args[1], 6)
         self.assertTrue(recorder.call_args.kwargs["success"])
 
-    def test_frontier_failure_keeps_later_pages_unrequested(self):
+    def test_frontier_failure_records_each_page_in_batch(self):
         recorder = Mock(return_value=True)
         discovery = SearchDiscovery(
             google_web_max_pages=11,
@@ -301,9 +301,12 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(results, [])
         self.assertIn("page 7: google web google_captcha", errors)
-        discovery._discover_google_page.assert_called_once_with("AI", 7)
-        self.assertFalse(recorder.call_args.kwargs["success"])
-        self.assertTrue(recorder.call_args.kwargs["captcha"])
+        self.assertEqual(discovery._discover_google_page.call_count, 3)
+        self.assertEqual(
+            sorted(call.args[1] for call in recorder.call_args_list), [7, 8, 9]
+        )
+        self.assertTrue(all(not call.kwargs["success"] for call in recorder.call_args_list))
+        self.assertTrue(any(call.kwargs["captcha"] for call in recorder.call_args_list))
 
 
     def test_fallback_records_each_attempt_and_caches_only_success(self):
