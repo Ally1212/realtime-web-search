@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -261,12 +262,12 @@ QUERY_VARIANTS_ZH: tuple[tuple[str, str], ...] = (
 
 
 def expanded_keyword_specs() -> tuple[KeywordSpec, ...]:
-    """Return base concepts plus bounded, deterministic query variants.
+    """Return base concepts plus bounded, deterministic query variants."""
+    return base_keyword_specs() + _variant_specs()
 
-    Variants keep the original concept aliases for relevance filtering. The
-    stable variant key makes restarts idempotent and prevents duplicate work.
-    """
-    specs = list(base_keyword_specs())
+
+def _variant_specs() -> tuple[KeywordSpec, ...]:
+    specs: list[KeywordSpec] = []
     for concept_id, english, chinese, category in CONCEPTS:
         for language, phrase in (("en", english), ("zh", chinese)):
             aliases = tuple(dict.fromkeys((phrase, chinese if language == "en" else english)))
@@ -280,11 +281,36 @@ def expanded_keyword_specs() -> tuple[KeywordSpec, ...]:
     return tuple(specs)
 
 
-def catalog_keyword_specs() -> tuple[KeywordSpec, ...]:
+def _rolling_specs(now: datetime | None = None) -> tuple[KeywordSpec, ...]:
+    """Generate a fresh, bounded query set for each UTC day.
+
+    Keeping yesterday and today avoids retiring jobs while the UTC boundary
+    crosses a running collector. Older day keys are retired on the next sync.
+    """
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+    specs: list[KeywordSpec] = []
+    for offset, day in enumerate((current - timedelta(days=1), current)):
+        following = day + timedelta(days=1)
+        window = f"after:{day.isoformat()} before:{following.isoformat()}"
+        freshness = 72 if day == current else 68
+        for concept_id, english, chinese, category in CONCEPTS:
+            for language, phrase in (("en", english), ("zh", chinese)):
+                aliases = tuple(dict.fromkeys((phrase, chinese if language == "en" else english)))
+                variants = QUERY_VARIANTS if language == "en" else QUERY_VARIANTS_ZH
+                for variant_type, modifier in variants:
+                    specs.append(KeywordSpec(
+                        f"{_key(concept_id, language, 'rolling')}:{day.isoformat()}:{variant_type}:{modifier}",
+                        concept_id, f'"{phrase}" {modifier} {window}', aliases, language, category,
+                        priority=freshness,
+                    ))
+    return tuple(specs)
+
+
+def catalog_keyword_specs(now: datetime | None = None) -> tuple[KeywordSpec, ...]:
     if os.getenv("CONTINUOUS_QUERY_VARIANTS_ENABLED", "false").strip().lower() in {
         "1", "true", "yes", "on"
     }:
-        return expanded_keyword_specs()
+        return expanded_keyword_specs() + _rolling_specs(now)
     return base_keyword_specs()
 
 

@@ -693,6 +693,7 @@ class ContinuousWhaleRunner:
     def run(self) -> None:
         if not self.config.continuous_whale_enabled:
             raise ValueError("CONTINUOUS_WHALE_ENABLED must be true to run continuous-whale")
+        catalog_generation = datetime.now(timezone.utc).date().isoformat()
         catalog = self._catalog()
         if not catalog:
             raise ValueError("CONTINUOUS_AI_KEYWORDS must contain at least one keyword")
@@ -771,6 +772,16 @@ class ContinuousWhaleRunner:
 
         while True:
             started = time.monotonic()
+            generation = datetime.now(timezone.utc).date().isoformat()
+            if generation != catalog_generation:
+                old_generation, catalog_generation = catalog_generation, generation
+                catalog = self._catalog()
+                self.store.sync_continuous_keywords(catalog)
+                _diagnostic(
+                    "continuous_whale_catalog_rolled",
+                    old_generation=old_generation, generation=generation,
+                    keywords=len(catalog),
+                )
             self._flush_pending()
             if self.store.continuous_is_paused():
                 self.store.update_continuous_runtime(

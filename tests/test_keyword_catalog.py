@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timezone
 
 from realtime.keyword_catalog import (
     base_keyword_specs, catalog_keyword_specs, expanded_keyword_specs,
@@ -26,13 +27,40 @@ class KeywordCatalogTests(unittest.TestCase):
         self.assertIn('base:gdp:en:variant:analysis:latest report', {spec.key for spec in specs})
         self.assertIn('"GDP" latest report', {spec.query for spec in specs})
 
+    def test_rolling_catalog_generates_a_fresh_two_day_window(self):
+        old = os.environ.get("CONTINUOUS_QUERY_VARIANTS_ENABLED")
+        now = datetime(2026, 9, 24, tzinfo=timezone.utc)
+        try:
+            os.environ["CONTINUOUS_QUERY_VARIANTS_ENABLED"] = "true"
+            specs = catalog_keyword_specs(now)
+        finally:
+            if old is None:
+                os.environ.pop("CONTINUOUS_QUERY_VARIANTS_ENABLED", None)
+            else:
+                os.environ[old] = old
+        self.assertEqual(len(specs), 29_200)
+        self.assertEqual(len({spec.key for spec in specs}), len(specs))
+        rolling = [spec for spec in specs if ":rolling:" in spec.key]
+        self.assertEqual(len(rolling), 19_200)
+        self.assertEqual(
+            {spec.key.split(":rolling:", 1)[1][:10] for spec in rolling},
+            {"2026-09-23", "2026-09-24"},
+        )
+        self.assertTrue(all("after:" in spec.query and "before:" in spec.query for spec in rolling))
+        self.assertGreater(
+            min(spec.priority for spec in rolling if ":2026-09-24:" in spec.key),
+            max(spec.priority for spec in rolling if ":2026-09-23:" in spec.key),
+        )
+
     def test_variants_are_disabled_by_default_and_enabled_by_environment(self):
         old = os.environ.get("CONTINUOUS_QUERY_VARIANTS_ENABLED")
         try:
             os.environ.pop("CONTINUOUS_QUERY_VARIANTS_ENABLED", None)
             self.assertEqual(catalog_keyword_specs(), base_keyword_specs())
             os.environ["CONTINUOUS_QUERY_VARIANTS_ENABLED"] = "true"
-            self.assertEqual(catalog_keyword_specs(), expanded_keyword_specs())
+            enabled = catalog_keyword_specs(datetime(2026, 9, 24, tzinfo=timezone.utc))
+            self.assertEqual(enabled[:len(expanded_keyword_specs())], expanded_keyword_specs())
+            self.assertGreater(len(enabled), len(expanded_keyword_specs()))
         finally:
             if old is None:
                 os.environ.pop("CONTINUOUS_QUERY_VARIANTS_ENABLED", None)
