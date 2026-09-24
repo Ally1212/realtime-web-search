@@ -357,6 +357,11 @@ class ProxyPool:
             records = self._reload(profile)
             if profile == "private":
                 records = records + self._reload("static")
+            elif profile in {"public", "public_google"}:
+                # Static endpoints are operator-curated and do not consume the
+                # public API allocation. Keep them available as a small reserve
+                # whenever all public profiles are enabled together.
+                records = records + self._reload("static")
             affinity = sticky_key or domain
             sticky = self._sticky.get((profile, affinity))
             if sticky and sticky[1] > now:
@@ -418,6 +423,11 @@ class ProxyPool:
         with self._lock:
             records = self._reload(profile)
             if profile == "private":
+                records = records + self._reload("static")
+            elif profile in {"public", "public_google"}:
+                # Static endpoints are operator-curated and do not consume the
+                # public API allocation. Keep them available as a small reserve
+                # whenever all public profiles are enabled together.
                 records = records + self._reload("static")
             return sum(
                 self._cooldown_until(record, domain) <= now

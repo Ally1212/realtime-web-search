@@ -200,6 +200,18 @@ class StaticProxyTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0].username, "user")
 
+    def test_static_records_merge_into_enabled_google_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ProxyCache(Path(directory))
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            cache.publish("static", [ProxyRecord("203.0.113.9", 8080, "http")], None)
+            cache.publish("private", [ProxyRecord("198.51.100.1", 8080, "http", last_checked=now)], None)
+            cache.publish("public_google", [ProxyRecord("192.0.2.1", 8080, "http", last_checked=now)], None)
+            pool = ProxyPool(pool_config(directory))
+            for profile in ("private", "public_google"):
+                self.assertEqual(pool.available_count(profile, "example.com"), 2)
+
     def test_static_records_bypass_freshness_and_merge_into_private(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = ProxyCache(Path(directory))

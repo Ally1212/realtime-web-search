@@ -729,25 +729,15 @@ class ContinuousWhaleRunner:
             state=controller.state, reason=controller.reason,
         )
         if self.config.continuous_proxy_profile != "direct":
-            try:
-                static_count = ProxySynchronizer(self.config).sync("static", force=True)
-                count = ProxySynchronizer(self.config).sync(
-                    self.config.continuous_proxy_profile, force=True
-                )
-                _diagnostic(
-                    "continuous_whale_proxy_synced",
-                    profile=self.config.continuous_proxy_profile,
-                    count=count, static_count=static_count,
-                )
-            except ProxyApiError as exc:
-                _diagnostic(
-                    "continuous_whale_proxy_sync_failed",
-                    status=exc.status or "transport",
-                )
-                if not ProxyCache(self.config.proxy_cache_dir).stats(
-                    self.config.continuous_proxy_profile
-                )["usable"]:
-                    raise
+            synchronizer = ProxySynchronizer(self.config)
+            static_count = synchronizer.sync("static", force=True)
+            counts = {profile: synchronizer.sync(profile, force=True) for profile in self.config.google_proxy_profiles}
+            _diagnostic(
+                "continuous_whale_proxy_synced",
+                profile=self.config.continuous_proxy_profile,
+                profiles=",".join(self.config.google_proxy_profiles),
+                counts=counts, static_count=static_count,
+            )
         _diagnostic(
             "continuous_whale_registered", agent_id=self.runner.client.agent_id,
             keywords=len(catalog),
@@ -806,8 +796,10 @@ class ContinuousWhaleRunner:
                 continue
             if self.config.continuous_proxy_profile != "direct":
                 try:
-                    ProxySynchronizer(self.config).sync("static")
-                    ProxySynchronizer(self.config).sync(self.config.continuous_proxy_profile)
+                    synchronizer = ProxySynchronizer(self.config)
+                    synchronizer.sync("static")
+                    for profile in self.config.google_proxy_profiles:
+                        synchronizer.sync(profile)
                 except ProxyApiError as exc:
                     _diagnostic(
                         "continuous_whale_proxy_sync_failed",
