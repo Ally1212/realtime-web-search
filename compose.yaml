@@ -10,8 +10,8 @@ services:
       - ./openserp/config.yaml:/usr/src/app/config.yaml:ro
     environment:
       OPENSERP_APP_MAX_PROCESSES: ${OPENSERP_MAX_PROCESSES:-12}
-      OPENSERP_GOOGLE_RATE_REQUESTS: ${OPENSERP_GOOGLE_RATE_REQUESTS:-120}
-      OPENSERP_GOOGLE_RATE_BURST: ${OPENSERP_GOOGLE_RATE_BURST:-2}
+      OPENSERP_GOOGLE_RATE_REQUESTS: ${OPENSERP_GOOGLE_RATE_REQUESTS:-360}
+      OPENSERP_GOOGLE_RATE_BURST: ${OPENSERP_GOOGLE_RATE_BURST:-24}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:7000/ready"]
