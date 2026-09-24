@@ -27,6 +27,7 @@ def main() -> None:
     free.add_argument("--profile", choices=("direct", "private", "public"), default="direct")
     free.add_argument("--rps", type=float, default=0.5)
     free.add_argument("--timeout", type=int, default=15)
+    free.add_argument("--duration-seconds", type=float, default=0, help="Stop after this many scheduled search attempts; 0 runs the full matrix")
     free.add_argument("--fetch-samples", type=int, default=20)
     free.add_argument("--output", default="state/benchmarks")
     free.add_argument("--resample", help="Reuse a saved search report and only resample article bodies")

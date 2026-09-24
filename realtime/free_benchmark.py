@@ -71,6 +71,7 @@ def run_free_benchmark(args) -> None:
         raise ValueError("use either --query or --queries-file, not both")
     queries = tuple(previous["queries"]) if previous else (tuple(args.query or ()) or file_queries or ECONOMY_QUERIES[:args.query_limit])
     pages = tuple(previous["pages"]) if previous else tuple(int(value) for value in args.pages.split(","))
+    duration = max(0.0, float(getattr(args, "duration_seconds", 0) or 0))
     if not queries or any(page < 1 or page > 11 for page in pages) or not (0 < args.rps <= 2):
         raise ValueError("benchmark needs queries, pages 1–11, and 0 < rps <= 2")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -82,7 +83,8 @@ def run_free_benchmark(args) -> None:
     report = {"started_at": stamp, "finished": False, "profile": args.profile,
               "queries": list(queries), "pages": pages, "rps_limit": args.rps,
               "search_engine": "google", "cache_enabled": False,
-              "rows": rows, "body_samples": bodies, "summary": []}
+              "rows": rows, "body_samples": bodies, "summary": [],
+              "duration_limit_seconds": duration, "stopped_reason": ""}
     if previous:
         report["search_started_at"] = previous.get("search_started_at", previous["started_at"])
         report["profile"] = previous["profile"]
@@ -109,6 +111,7 @@ def run_free_benchmark(args) -> None:
         os.replace(temporary, report_path)
 
     started = time.monotonic()
+    stopped_reason = ""
     for provider in (() if previous else providers):
         clients = {language: SearchDiscovery(
             timeout=args.timeout, providers=(provider,), language=language,
@@ -135,15 +138,20 @@ def run_free_benchmark(args) -> None:
                                  "attempted": attempted, "success": not error, "error": error,
                                  "seconds": round(elapsed, 3), "count": len(results), "urls": urls,
                                  "titles": [row.title for row in results]})
+                    if duration and time.monotonic() - started >= duration:
+                        stopped_reason = "duration_limit"
+                        break
                     for item in results[:2]:
                         candidates.setdefault(normalize_url(item.url), (item, query))
                     if attempted:
                         print(json.dumps({k: rows[-1][k] for k in ("provider", "query", "page", "seconds", "count", "error")}, ensure_ascii=False), flush=True)
                     save()
         finally:
+            report["stopped_reason"] = stopped_reason
             for client in clients.values():
                 client._close_browser()
     report["search_wall_seconds"] = previous["search_wall_seconds"] if previous else round(time.monotonic() - started, 3)
+    report["stopped_reason"] = report.get("stopped_reason") or "matrix_complete"
     # Public page sampling, bounded to two URLs per query and four concurrent downloads.
     # LiveFetcher includes robots checks, public-address validation and size limits.
     fetcher = LiveFetcher(config.user_agent, timeout=args.timeout)
