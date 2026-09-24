@@ -320,6 +320,7 @@ class FocusedSpider(scrapy.Spider):
             google_web_pages_per_batch=self.config.google_web_pages_per_batch,
             query_cache_seconds=self.config.google_web_query_cache_seconds,
             proxy_min_interval_seconds=self.config.google_web_proxy_min_interval_seconds,
+            proxy_sticky_seconds=self.config.google_proxy_sticky_seconds,
             proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
             source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
             captcha_threshold=self.config.google_web_captcha_threshold,

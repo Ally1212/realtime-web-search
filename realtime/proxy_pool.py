@@ -383,10 +383,23 @@ class ProxyPool:
                     )
                 )
             if full_pool:
-                # Cycle through the complete healthy pool; randomize only ties
-                # so concurrent crawler processes do not all start on one IP.
-                oldest = min(self._last_used.get(item.key, 0) for item in eligible)
-                top = [item for item in eligible if self._last_used.get(item.key, 0) == oldest]
+                # Cycle by host, not by endpoint alias. Private pools commonly
+                # expose HTTP and SOCKS5 on the same host; treating those as
+                # independent oldest candidates makes the next reservation hit
+                # the same egress and fail its durable minimum interval.
+                host_last_used: dict[str, float] = {}
+                for item in eligible:
+                    host = item.host.strip("[]").lower().rstrip(".")
+                    host_last_used[host] = max(
+                        host_last_used.get(host, 0.0),
+                        self._last_used.get(item.key, 0.0),
+                    )
+                oldest = min(host_last_used.values())
+                oldest_hosts = {host for host, used_at in host_last_used.items() if used_at == oldest}
+                top = [
+                    item for item in eligible
+                    if item.host.strip("[]").lower().rstrip(".") in oldest_hosts
+                ]
             else:
                 top = eligible[: max(1, min(self.config.proxy_selection_window, len(eligible)))]
             record = random.choice(top)

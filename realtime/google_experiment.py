@@ -488,6 +488,7 @@ class Runner:
                 ),
                 google_web_initial_rps=limit if limit > 2 else 1.0, google_web_max_rps=limit,
                 proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
+                proxy_sticky_seconds=self.config.google_proxy_sticky_seconds,
                 source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
                 proxy_provider_attempts=0,
                 session_id='')
@@ -514,6 +515,7 @@ class Runner:
                 google_web_pages_per_batch=current.google_web_pages_per_batch,
                 query_cache_seconds=current.query_cache_seconds,
                 proxy_min_interval_seconds=current.proxy_min_interval_seconds,
+                proxy_sticky_seconds=current.proxy_sticky_seconds,
                 proxy_cooldown_seconds=current.proxy_cooldown_seconds,
                 source_cooldown_seconds=current.source_cooldown_seconds,
                 captcha_threshold=current.captcha_threshold,

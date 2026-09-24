@@ -36,6 +36,25 @@ class ProxyApiTests(unittest.TestCase):
                 self.assertEqual(pool.available_count('private', 'www.google.com'), 0)
                 self.assertEqual(pool.available_count('private', 'example.com'), 2)
 
+    def test_full_pool_rotation_skips_same_host_protocol_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            records = [
+                ProxyRecord("192.0.2.1", 8080, "http", quality=100),
+                ProxyRecord("192.0.2.1", 1080, "socks5", quality=90),
+                ProxyRecord("192.0.2.2", 8080, "http", quality=80),
+            ]
+            cache = ProxyCache(Path(directory))
+            cache.publish("private", records, None)
+            pool = ProxyPool(pool_config(directory))
+            with patch.object(ProxyRecord, "fresh", return_value=True), patch("realtime.proxy_pool.time.monotonic", return_value=100):
+                first = pool.choose("private", "www.google.com", full_pool=True)
+                self.assertIsNotNone(first)
+                second = pool.choose("private", "www.google.com", full_pool=True)
+                self.assertIsNotNone(second)
+                first_host = first[1].rsplit(":", 1)[0]
+                second_host = second[1].rsplit(":", 1)[0]
+                self.assertNotEqual(first_host, second_host)
+
     def test_google_identity_includes_stale_cross_profile_aliases(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = ProxyCache(Path(directory))

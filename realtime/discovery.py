@@ -155,6 +155,7 @@ class SearchDiscovery:
         google_web_pages_per_batch: int = 3,
         query_cache_seconds: int = 21600,
         proxy_min_interval_seconds: int = 30,
+        proxy_sticky_seconds: int = 0,
         proxy_cooldown_seconds: int = 300,
         source_cooldown_seconds: int = 1800,
         captcha_threshold: float = 0.02,
@@ -213,6 +214,7 @@ class SearchDiscovery:
         self.google_web_pages_per_batch = max(1, google_web_pages_per_batch)
         self.query_cache_seconds = max(1, query_cache_seconds)
         self.proxy_min_interval_seconds = max(0, proxy_min_interval_seconds)
+        self.proxy_sticky_seconds = max(0, proxy_sticky_seconds)
         self.proxy_cooldown_seconds = max(1, proxy_cooldown_seconds)
         self.source_cooldown_seconds = max(1, source_cooldown_seconds)
         self.captcha_threshold = max(0.0, captcha_threshold)
@@ -477,7 +479,7 @@ class SearchDiscovery:
             count = self.proxy_pool.available_count(profile, "www.google.com")
             for _ in range(max(1, count)):
                 selected = self.proxy_pool.choose(
-                    profile, "www.google.com", sticky_seconds=120,
+                    profile, "www.google.com", sticky_seconds=self.proxy_sticky_seconds,
                     sticky_key=self._proxy_sticky_key(), full_pool=True,
                 )
                 if not selected:
