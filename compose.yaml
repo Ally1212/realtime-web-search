@@ -73,7 +73,7 @@ services:
     command: ["serve"]
     environment:
       PROCESS_ROLE: web
-      GOOGLE_FREE_PROVIDERS: ${GOOGLE_FREE_PROVIDERS:-openserp}
+      GOOGLE_FREE_PROVIDERS: ${GOOGLE_FREE_PROVIDERS:-openserp,wml}
       OPENSERP_URL: ${OPENSERP_URL:-http://openserp:7000}
       OPENSERP_REQUEST_TIMEOUT_SECONDS: ${OPENSERP_REQUEST_TIMEOUT_SECONDS:-60}
       OPENSERP_PROXY_RELAY_HOST: ${OPENSERP_PROXY_RELAY_HOST:-proxy-relay}
@@ -95,7 +95,7 @@ services:
       WEB_PORT: "8091"
       PYTHONUNBUFFERED: "1"
     ports:
-      - "127.0.0.1:8091:8091"
+      - "127.0.0.1:${WEB_PORT:-8091}:8091"
     volumes:
       - ./state:/app/state
       # SQLite WAL requires native filesystem locking; a macOS bind mount can
@@ -124,7 +124,7 @@ services:
     command: ["Xvfb :99 -screen 0 1280x900x24 >/tmp/xvfb.log 2>&1 & exec python -m realtime.cli worker"]
     environment:
       PROCESS_ROLE: local-worker
-      GOOGLE_FREE_PROVIDERS: ${GOOGLE_FREE_PROVIDERS:-openserp}
+      GOOGLE_FREE_PROVIDERS: ${GOOGLE_FREE_PROVIDERS:-openserp,wml}
       OPENSERP_URL: ${OPENSERP_URL:-http://openserp:7000}
       OPENSERP_REQUEST_TIMEOUT_SECONDS: ${OPENSERP_REQUEST_TIMEOUT_SECONDS:-60}
       OPENSERP_PROXY_RELAY_HOST: ${OPENSERP_PROXY_RELAY_HOST:-proxy-relay}
@@ -197,7 +197,7 @@ services:
     command: ["Xvfb :99 -screen 0 1280x900x24 >/tmp/xvfb.log 2>&1 & exec python -m realtime.cli ${COLLECTOR_COMMAND:-whale-worker}"]
     environment:
       PROCESS_ROLE: collector
-      GOOGLE_FREE_PROVIDERS: ${GOOGLE_FREE_PROVIDERS:-openserp}
+      GOOGLE_FREE_PROVIDERS: ${GOOGLE_FREE_PROVIDERS:-openserp,wml}
       OPENSERP_URL: ${OPENSERP_URL:-http://openserp:7000}
       OPENSERP_REQUEST_TIMEOUT_SECONDS: ${OPENSERP_REQUEST_TIMEOUT_SECONDS:-60}
       OPENSERP_PROXY_RELAY_HOST: ${OPENSERP_PROXY_RELAY_HOST:-proxy-relay}

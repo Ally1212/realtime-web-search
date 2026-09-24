@@ -94,7 +94,7 @@ class Config:
     )
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
     google_web_enabled: bool = _enabled("GOOGLE_WEB_ENABLED", True)
-    google_free_providers: tuple[str, ...] = _csv("GOOGLE_FREE_PROVIDERS", "openserp")
+    google_free_providers: tuple[str, ...] = _csv("GOOGLE_FREE_PROVIDERS", "openserp,wml")
     openserp_url: str = os.getenv("OPENSERP_URL", "http://127.0.0.1:7000")
     openserp_request_timeout_seconds: int = int(
         os.getenv("OPENSERP_REQUEST_TIMEOUT_SECONDS", "60")

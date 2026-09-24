@@ -378,7 +378,7 @@ class Runner:
                 google_web_initial_rps=limit if limit > 2 else 1.0, google_web_max_rps=limit,
                 proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
                 source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
-                proxy_provider_attempts=0)
+                proxy_provider_attempts=3)
         return self.clients[language]
 
     def search(self, row):

@@ -52,6 +52,35 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(d.transport.fetch.call_count, 2)
         pool.defer.assert_called_once_with("proxy-1", "www.google.com", 300)
 
+    def test_openserp_failures_fall_back_to_wml(self):
+        pool = Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ("http://proxy.example:80", "proxy-key")
+        pool.google_identity_for_scope.return_value = ("group", ["alias"])
+        pool.google_identity.return_value = ("group", ["alias"])
+        expected = [SearchResult("https://example.com/ai", "AI", ("google_web",))]
+        d = SearchDiscovery(
+            providers=("openserp", "wml"), proxy_pool=pool,
+            proxy_profile="private", proxy_provider_attempts=3,
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+        )
+        d.transport.fetch = Mock(side_effect=[
+            GoogleBlocked("google_http_429"),
+            GoogleBlocked("google_captcha", captcha=True),
+            GoogleBlocked("google_http_429"),
+            expected,
+        ])
+        self.assertEqual(d._discover_google_page("AI", 1), expected)
+        self.assertEqual(
+            [call.args[0] for call in d.transport.fetch.call_args_list],
+            ["openserp", "openserp", "openserp", "wml"],
+        )
+        self.assertEqual(
+            [row["provider"] for row in d.attempts],
+            ["openserp", "openserp", "openserp", "wml"],
+        )
+
     def test_http_200_parse_failure_does_not_quarantine_exit_or_cache_empty_result(self):
         for code, status, cooldown in [('google_unrecognized_page', 200, 30),
                                        ('google_unrecognized_page', None, 300),
