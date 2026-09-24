@@ -274,6 +274,8 @@ class SearchDiscovery:
         # Zero means exhaust every currently available rotating proxy before
         # moving to a direct/shared-exit fallback.
         self.proxy_provider_attempts = max(0, proxy_provider_attempts)
+        if self.proxy_provider_attempts == 0:
+            self.proxy_provider_attempts = max(1, min(80, global_concurrency))
         self.attempts: list[dict[str, Any]] = []
         self._attempt_lock = threading.Lock()
         self._local_next_request = 0.0

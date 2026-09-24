@@ -363,6 +363,13 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(d.transport.fetch.call_count, 3)
         self.assertNotIn("wml", d._local_cooldowns)
 
+    def test_unbounded_proxy_attempts_use_the_global_limiter_bound(self):
+        discovery = SearchDiscovery(
+            providers=("wml",), global_concurrency=24,
+            proxy_profile="private", proxy_provider_attempts=0,
+        )
+        self.assertEqual(discovery.proxy_provider_attempts, 24)
+
     def test_rotating_proxy_captcha_does_not_open_source_circuit(self):
         pool = Mock()
         pool.available_count.return_value = 1
