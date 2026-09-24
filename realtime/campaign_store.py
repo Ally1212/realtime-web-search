@@ -87,9 +87,13 @@ CREATE TABLE IF NOT EXISTS pages (
   http_status integer NOT NULL,
   fetched_at timestamptz NOT NULL,
   source_engines jsonb NOT NULL DEFAULT '[]'::jsonb,
+  published_at timestamptz,
+  publication_source text,
   indexed_at timestamptz
 );
 ALTER TABLE pages ADD COLUMN IF NOT EXISTS indexed_at timestamptz;
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS published_at timestamptz;
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS publication_source text;
 ALTER TABLE pages ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS campaign_pages (
   campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -109,6 +113,8 @@ CREATE TABLE IF NOT EXISTS crawl_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS crawl_events_recent ON crawl_events(campaign_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS crawl_events_url_processed
+  ON crawl_events(campaign_id, url, status, error_code);
 CREATE TABLE IF NOT EXISTS whale_task_runs (
   task_id text PRIMARY KEY,
   campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -406,6 +412,8 @@ class PageRecord:
     http_status: int
     fetched_at: str
     source_engines: tuple[str, ...]
+    published_at: str | None = None
+    publication_source: str | None = None
 
 
 class CampaignStore:
@@ -1875,21 +1883,27 @@ class CampaignStore:
                     stored_hash = page.content_hash if same_url else str(existing["content_hash"])
                     connection.execute(
                         "UPDATE pages SET url=%s,content_hash=%s,title=%s,summary=%s,content=%s,"
-                        "language=%s,http_status=%s,fetched_at=%s,source_engines=%s::jsonb WHERE id=%s",
+                        "language=%s,http_status=%s,fetched_at=%s,source_engines=%s::jsonb,"
+                        "published_at=COALESCE(pages.published_at,%s),publication_source="
+                        "COALESCE(pages.publication_source,%s) WHERE id=%s",
                         (
                             stored_url, stored_hash, page.title, page.summary, stored_content,
                             page.language, page.http_status, page.fetched_at,
-                            json.dumps(page.source_engines), page_id,
+                            json.dumps(page.source_engines), page.published_at,
+                            page.publication_source, page_id,
                         ),
                     )
                 else:
                     stored_content = "" if whale_task_id else page.content
                     row = connection.execute(
-                        "INSERT INTO pages(url,content_hash,title,summary,content,language,http_status,fetched_at,source_engines) "
-                        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING RETURNING id",
+                        "INSERT INTO pages(url,content_hash,title,summary,content,language,http_status,"
+                        "fetched_at,source_engines,published_at,publication_source) "
+                        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s) "
+                        "ON CONFLICT DO NOTHING RETURNING id",
                         (
                             page.url, page.content_hash, page.title, page.summary, stored_content, page.language,
                             page.http_status, page.fetched_at, json.dumps(page.source_engines),
+                            page.published_at, page.publication_source,
                         ),
                     ).fetchone()
                     if row:

@@ -15,8 +15,10 @@ from twisted.internet.task import LoopingCall
 from .campaign_store import CampaignStore, PageRecord
 from .config import Config
 from .discovery import SearchDiscovery
-from .fetcher import (detect_language, extract_response_text, is_pdf_response,
-                      is_public_url, normalize_url, relevant_to)
+from .fetcher import (
+    detect_language, extract_response_text, is_pdf_response, is_public_url,
+    normalize_url, publication_metadata_for, relevant_to,
+)
 from .keyword_catalog import ECONOMY_ANCHORS
 from .proxy_pool import ProxyPool
 from .whale_collector import whale_message
@@ -132,6 +134,13 @@ class PagePipeline:
             http_status=int(item["http_status"]),
             fetched_at=str(item["fetched_at"]),
             source_engines=tuple(item.get("source_engines") or ()),
+            published_at=(
+                str(item["published_at"]) if item.get("published_at") else None
+            ),
+            publication_source=(
+                str(item["publication_source"])
+                if item.get("publication_source") else None
+            ),
         )
         whale_task = self.store.whale_task_for_campaign(campaign_id)
         record_key = None
@@ -493,6 +502,7 @@ class FocusedSpider(scrapy.Spider):
         self._increment(fetched=1)
         content_type = response.headers.get(b"Content-Type", b"").decode(errors="ignore").lower()
         is_pdf = is_pdf_response(response.body, content_type)
+        is_html = "html" in content_type or not bool(response.headers.get(b"Content-Type"))
         extraction_started = time.monotonic()
         try:
             title, content = extract_response_text(
@@ -508,6 +518,17 @@ class FocusedSpider(scrapy.Spider):
                     response.url,
                     tuple(response.meta.get('source_engines') or ()),
                     short_retry=True,
+                )
+                return
+            # Unsupported/protected artifacts cannot improve on retry. A
+            # permanent event lets processed_urls suppress future scheduling.
+            if any(marker in str(exc) for marker in (
+                "PDF 已加密", "PDF 超过 300 页限制", "不支持的内容类型"
+            )):
+                self.store.record_domain_result(response.url, False)
+                self.store.record_event(
+                    self.campaign_id, response.url, "permanent_failed",
+                    response.status, str(exc)[:120],
                 )
                 return
             self.store.record_domain_result(response.url, False)
@@ -570,6 +591,7 @@ class FocusedSpider(scrapy.Spider):
             )
             return
         language = detect_language(content)
+        publication = publication_metadata_for(response.body) if is_html else (None, None)
         if response.meta.get("playwright"):
             self.store.record_browser_result(
                 (urlsplit(response.url).hostname or "").lower(), True
@@ -606,6 +628,8 @@ class FocusedSpider(scrapy.Spider):
                 "http_status": response.status,
                 "content_hash": content_hash,
                 "language": language,
+                "published_at": publication[0],
+                "publication_source": publication[1],
             }
             if (
                 self.daily_target > 0
@@ -628,8 +652,17 @@ class FocusedSpider(scrapy.Spider):
             )
         self.store.record_domain_result(request.url, False)
         self._increment(failed=1)
+        error_code = type(failure.value).__name__
+        if "HttpError" in error_code:
+            # Scrapy exhausted configured retry policy for this URL. Persistent
+            # events prevent hourly re-fetching of the same 403/404/410 target.
+            self.store.record_event(
+                self.campaign_id, request.url, "permanent_failed",
+                getattr(failure.value, "status", None), error_code,
+            )
+            return
         self.store.record_event(
-            self.campaign_id, request.url, "retryable_failed", error_code=type(failure.value).__name__
+            self.campaign_id, request.url, "retryable_failed", error_code=error_code
         )
 
     def ignore_error(self, failure):  # type: ignore[no-untyped-def]

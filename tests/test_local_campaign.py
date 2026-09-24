@@ -6,6 +6,55 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from realtime.campaign_store import CampaignStore, PageRecord
+from realtime.config import Config
+from realtime.whale_collector import whale_message
+
+
+class WhaleMessageTests(unittest.TestCase):
+    def test_whale_message_uses_explicit_site_publication_time(self):
+        task = {
+            "task_id": "task-1",
+            "dataset_id": "dataset",
+            "source_platform": "google_search",
+            "task_type": "keyword_search",
+        }
+        item = {
+            "campaign_id": "campaign",
+            "url": "https://example.com/article",
+            "title": "Article",
+            "content": "Body",
+            "source_engines": ("google_web",),
+            "discovered_at": "2026-09-23T00:00:00+00:00",
+            "fetched_at": "2026-09-24T00:00:00+00:00",
+            "published_at": "2026-09-23T08:00:00+08:00",
+            "publication_source": "jsonld:datePublished",
+        }
+        _, message = whale_message(item, task, Config(database_url="postgresql://invalid"))
+        self.assertEqual(message["content"]["published_at"], "2026-09-23T08:00:00+08:00")
+        metadata = message["discovery"]["metadata"]
+        self.assertEqual(metadata["publication_source"], "jsonld:datePublished")
+        self.assertFalse(metadata["published_at_is_collector_fallback"])
+
+    def test_whale_message_falls_back_to_collector_time(self):
+        task = {
+            "task_id": "task-1",
+            "dataset_id": "dataset",
+            "source_platform": "google_search",
+            "task_type": "keyword_search",
+        }
+        item = {
+            "campaign_id": "campaign",
+            "url": "https://example.com/article",
+            "content": "Body",
+            "discovered_at": "2026-09-23T00:00:00+00:00",
+            "fetched_at": "2026-09-24T00:00:00+00:00",
+        }
+        _, message = whale_message(item, task, Config(database_url="postgresql://invalid"))
+        self.assertEqual(message["content"]["published_at"], "2026-09-24T00:00:00+00:00")
+        metadata = message["discovery"]["metadata"]
+        self.assertEqual(metadata["publication_source"], "collector:fetched_at")
+        self.assertTrue(metadata["published_at_is_collector_fallback"])
+
 
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "requires TEST_DATABASE_URL")

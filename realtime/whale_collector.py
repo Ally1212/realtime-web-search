@@ -91,6 +91,8 @@ def whale_message(item: dict[str, object], task: dict[str, Any], config: Config)
     url_hash = hashlib.sha256(url.encode()).hexdigest()
     external_id = f"url:{url_hash}"
     received_at = str(item["fetched_at"])
+    published_at = str(item.get("published_at") or "").strip() or received_at
+    publication_source = str(item.get("publication_source") or "").strip() or "collector:fetched_at"
     raw_payload = {
         'url': url, 'title': title, 'content': content,
         'source_engines': list(item.get('source_engines') or ()),
@@ -106,7 +108,7 @@ def whale_message(item: dict[str, object], task: dict[str, Any], config: Config)
         "language": str(item.get("language") or "unknown"),
         "source_url": url,
         "canonical_url": url,
-        "published_at": received_at,
+        "published_at": published_at,
         "status": "active",
     }
     if title:
@@ -144,6 +146,8 @@ def whale_message(item: dict[str, object], task: dict[str, Any], config: Config)
                 "query": str(item.get("query") or ""),
                 "source_engines": list(item.get("source_engines") or ()),
                 "campaign_id": str(item["campaign_id"]),
+                "publication_source": publication_source,
+                "published_at_is_collector_fallback": publication_source == "collector:fetched_at",
             },
         },
         "content": normalized_content,

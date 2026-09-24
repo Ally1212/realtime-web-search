@@ -125,6 +125,72 @@ class FetcherTests(unittest.TestCase):
         self.assertGreater(len(items[0]['content']), 500)
         spider.store.record_domain_result.assert_called_once_with(url, True)
 
+    def test_scrapy_item_carries_explicit_publication_time(self):
+        body = 'Artificial intelligence research and machine learning results. ' * 12
+        url = 'https://example.com/report'
+        request = Request(url, meta={'source_engines': ('google_web',)})
+        response = Response(
+            url,
+            status=200,
+            headers={'Content-Type': 'text/html'},
+            body=(
+                '<html><head><title>AI policy</title>'
+                '<meta property="article:published_time" content="2026-09-01T10:00:00+08:00">'
+                f'</head><body>{body}</body></html>'
+            ).encode(),
+            request=request,
+        )
+        spider = object.__new__(FocusedSpider)
+        spider.page_responses = 0
+        spider.browser_requests = 0
+        spider.store = Mock()
+        spider.campaign_id = 'test'
+        spider.config = Mock(trafilatura_enabled=True, crawler_min_content_chars=100)
+        spider.terms = ('artificial intelligence',)
+        spider.keyword_kind = 'base'
+        spider.daily_target = 0
+        spider.starting_daily_count = 0
+        spider.pending_accepts = 0
+        spider._pending_counters = {}
+        spider._pending_stages = {}
+        spider.query = 'AI policy'
+
+        items = list(spider.parse_page(response))
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['published_at'], '2026-09-01T10:00:00+08:00')
+        self.assertEqual(items[0]['publication_source'], 'html:datePublished')
+
+    def test_encrypted_pdf_is_recorded_as_permanent_failure(self):
+        url = 'https://example.com/encrypted.pdf'
+        request = Request(url, meta={'source_engines': ('google_web',)})
+        response = Response(
+            url,
+            status=200,
+            headers={'Content-Type': 'application/pdf'},
+            body=self._writer_pdf(1, password='secret'),
+            request=request,
+        )
+        spider = object.__new__(FocusedSpider)
+        spider.page_responses = 0
+        spider.browser_requests = 0
+        spider.store = Mock()
+        spider.campaign_id = 'test'
+        spider.config = Mock(trafilatura_enabled=True, crawler_min_content_chars=100)
+        spider.terms = ('artificial intelligence',)
+        spider.keyword_kind = 'base'
+        spider.daily_target = 0
+        spider.starting_daily_count = 0
+        spider.pending_accepts = 0
+        spider._pending_counters = {}
+        spider._pending_stages = {}
+        spider.query = 'AI report'
+
+        self.assertEqual(list(spider.parse_page(response)), [])
+        spider.store.record_event.assert_called_once_with(
+            'test', url, 'permanent_failed', 200, 'PDF 已加密'
+        )
+
     def test_rejects_encrypted_pdf(self):
         raw = self._writer_pdf(1, password='secret')
         with self.assertRaisesRegex(ValueError, 'PDF 已加密'):

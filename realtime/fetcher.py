@@ -17,6 +17,8 @@ import requests
 from bs4 import BeautifulSoup, SoupStrainer
 from trafilatura import bare_extraction
 
+from .publication import publication_metadata
+
 
 MAX_DOWNLOAD_BYTES = 5_000_000
 MAX_PDF_DOWNLOAD_BYTES = 12_000_000
@@ -26,6 +28,14 @@ PDF_MEDIA_TYPES = {'application/pdf', 'application/x-pdf', 'text/pdf', 'text/x-p
 TRACKING_PARAMS = {
     "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src", "srsltid",
 }
+
+
+def publication_metadata_for(raw: bytes) -> tuple[str | None, str | None]:
+    """Best-effort explicit publication metadata from an HTML response."""
+    try:
+        return publication_metadata(raw, parser="lxml")
+    except Exception:
+        return None, None
 
 
 @dataclass(frozen=True)
