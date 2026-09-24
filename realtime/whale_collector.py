@@ -16,7 +16,7 @@ import requests
 from .campaign_store import CampaignStore
 from .config import Config
 from .proxy_pool import ProxyApiError, ProxyCache, ProxySynchronizer
-from .keyword_catalog import KeywordSpec, base_keyword_specs
+from .keyword_catalog import KeywordSpec, catalog_keyword_specs
 from .whale_protocol import (
     DEFAULT_REQUIRED_CAPABILITIES,
     payload_hash,
@@ -537,7 +537,7 @@ class ContinuousWhaleRunner:
         return f"{self.TASK_PREFIX}:{keyword_hash}"
 
     def _catalog(self) -> tuple[KeywordSpec, ...]:
-        specs = list(base_keyword_specs())
+        specs = list(catalog_keyword_specs())
         # Keep operator-provided seeds as auditable custom concepts.
         configured = self.config.continuous_ai_keywords
         if self.config.continuous_expand_keywords:

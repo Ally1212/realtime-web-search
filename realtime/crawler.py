@@ -356,6 +356,7 @@ class FocusedSpider(scrapy.Spider):
                 )
             ),
             page_result_recorder=self.store.record_google_page_result,
+            proxy_provider_attempts=0,
             providers=self.config.google_free_providers,
             searxng_url=self.config.searxng_url,
             persistent_browser_enabled=self.config.persistent_browser_enabled,

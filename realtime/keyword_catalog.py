@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -154,6 +155,137 @@ def base_keyword_specs() -> tuple[KeywordSpec, ...]:
                 f'"{phrase}" {event}', aliases, language, category, priority=55,
             ))
     return tuple(specs)
+
+
+QUERY_VARIANTS: tuple[tuple[str, str], ...] = (
+    ("analysis", "latest report"),
+    ("analysis", "weekly outlook"),
+    ("analysis", "monthly data"),
+    ("analysis", "market analysis"),
+    ("analysis", "policy impact"),
+    ("analysis", "investment research"),
+    ("analysis", "risk assessment"),
+    ("analysis", "industry analysis"),
+    ("analysis", "earnings update"),
+    ("analysis", "forecast 2026"),
+    ("analysis", "data release"),
+    ("analysis", "expert commentary"),
+    ("source", "Reuters report"),
+    ("source", "Bloomberg analysis"),
+    ("source", "Financial Times article"),
+    ("source", "WSJ story"),
+    ("source", "Nikkei Asia article"),
+    ("source", "SCMP report"),
+    ("source", "Caixin article"),
+    ("source", "Yicai report"),
+    ("source", "Reuters exclusive"),
+    ("source", "Bloomberg research"),
+    ("source", "FT commentary"),
+    ("source", "WSJ analysis"),
+    ("region", "United States"),
+    ("region", "China"),
+    ("region", "Eurozone"),
+    ("region", "Japan"),
+    ("region", "India"),
+    ("region", "emerging markets"),
+    ("region", "Asia Pacific"),
+    ("region", "Europe"),
+    ("region", "global economy"),
+    ("region", "US China"),
+    ("region", "G20"),
+    ("region", "ASEAN"),
+    ("timing", "breaking news"),
+    ("timing", "latest update"),
+    ("timing", "weekly review"),
+    ("timing", "monthly outlook"),
+    ("timing", "quarterly review"),
+    ("timing", "annual outlook"),
+    ("timing", "five year forecast"),
+    ("timing", "historical data"),
+    ("timing", "statistics database"),
+    ("timing", "press release"),
+    ("timing", "official statement"),
+    ("timing", "research summary"),
+)
+
+QUERY_VARIANTS_ZH: tuple[tuple[str, str], ...] = (
+    ("analysis", "最新 报告"),
+    ("analysis", "每周 展望"),
+    ("analysis", "月度 数据"),
+    ("analysis", "市场 分析"),
+    ("analysis", "政策 影响"),
+    ("analysis", "投资 研究"),
+    ("analysis", "风险 评估"),
+    ("analysis", "行业 分析"),
+    ("analysis", "财报 更新"),
+    ("analysis", "2026 预测"),
+    ("analysis", "数据 发布"),
+    ("analysis", "专家 解读"),
+    ("source", "路透 报道"),
+    ("source", "彭博 分析"),
+    ("source", "金融时报 文章"),
+    ("source", "华尔街日报 报道"),
+    ("source", "日经亚洲 文章"),
+    ("source", "南华早报 报道"),
+    ("source", "财新 文章"),
+    ("source", "第一财经 报道"),
+    ("source", "路透 独家"),
+    ("source", "彭博 研究"),
+    ("source", "金融时报 评论"),
+    ("source", "华尔街日报 分析"),
+    ("region", "美国"),
+    ("region", "中国"),
+    ("region", "欧元区"),
+    ("region", "日本"),
+    ("region", "印度"),
+    ("region", "新兴市场"),
+    ("region", "亚太"),
+    ("region", "欧洲"),
+    ("region", "全球经济"),
+    ("region", "中美"),
+    ("region", "G20"),
+    ("region", "东盟"),
+    ("timing", "最新 消息"),
+    ("timing", "最新 更新"),
+    ("timing", "每周 回顾"),
+    ("timing", "月度 展望"),
+    ("timing", "季度 回顾"),
+    ("timing", "年度 展望"),
+    ("timing", "五年 预测"),
+    ("timing", "历史 数据"),
+    ("timing", "统计 数据库"),
+    ("timing", "新闻 发布会"),
+    ("timing", "官方 声明"),
+    ("timing", "研究 摘要"),
+)
+
+
+def expanded_keyword_specs() -> tuple[KeywordSpec, ...]:
+    """Return base concepts plus bounded, deterministic query variants.
+
+    Variants keep the original concept aliases for relevance filtering. The
+    stable variant key makes restarts idempotent and prevents duplicate work.
+    """
+    specs = list(base_keyword_specs())
+    for concept_id, english, chinese, category in CONCEPTS:
+        for language, phrase in (("en", english), ("zh", chinese)):
+            aliases = tuple(dict.fromkeys((phrase, chinese if language == "en" else english)))
+            variants = QUERY_VARIANTS if language == "en" else QUERY_VARIANTS_ZH
+            for variant_type, modifier in variants:
+                specs.append(KeywordSpec(
+                    f"{_key(concept_id, language, 'variant')}:{variant_type}:{modifier}",
+                    concept_id, f'"{phrase}" {modifier}', aliases, language, category,
+                    priority=60,
+                ))
+    return tuple(specs)
+
+
+def catalog_keyword_specs() -> tuple[KeywordSpec, ...]:
+    if os.getenv("CONTINUOUS_QUERY_VARIANTS_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return expanded_keyword_specs()
+    return base_keyword_specs()
 
 
 ECONOMY_ANCHORS = re.compile(
