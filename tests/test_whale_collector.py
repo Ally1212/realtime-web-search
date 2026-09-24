@@ -1,8 +1,10 @@
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 import hashlib
 
 from realtime.config import Config
+from realtime.keyword_catalog import KeywordSpec
 from realtime.whale_collector import (
     AdaptiveConcurrencyController, ContinuousWhaleRunner, WhaleClient, WhaleRunner, whale_message,
 )
@@ -148,6 +150,29 @@ class WhaleCollectorTests(unittest.TestCase):
         self.assertTrue(kwargs["reactivate_existing"])
         self.assertEqual(kwargs["task_id"], "continuous:b5ffddc26966")
         store.update_whale_task.assert_not_called()
+
+    def test_continuous_dispatch_reuses_finished_slots(self):
+        runner = MagicMock()
+        runner.runner.client.agent_id = "agent-1"
+        order = []
+
+        def run(keyword, agent_id):
+            name = keyword.query
+            order.append((name, "start"))
+            time.sleep(0.02 if name == "q0" else 0.12)
+            order.append((name, "end"))
+
+        runner._run_keyword_with_agent = run
+        keywords = tuple(
+            KeywordSpec(f"k{i}", f"c{i}", f"q{i}", (), "en", "macro")
+            for i in range(3)
+        )
+        ContinuousWhaleRunner._dispatch_round(
+            runner, keywords, 2, lambda: None
+        )
+        # Fast q0 frees its slot before slow q1 exits; with the old barrier q2
+        # could only start after both q0 and q1 completed.
+        self.assertLess(order.index(("q2", "start")), order.index(("q1", "end")))
 
     def test_verify_source_record_is_explicitly_optional(self):
         client = WhaleClient(Config(whale_collector_api_key="key"))

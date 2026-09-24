@@ -661,6 +661,35 @@ class ContinuousWhaleRunner:
         child.executor = self.executor
         child._run_keyword(keyword)
 
+    def _dispatch_round(
+        self, keywords: tuple[KeywordSpec, ...], workers: int,
+        evaluate_adaptive,
+    ) -> None:
+        # Keywords finish at very different times (a fast query can end in
+        # seconds while a slow site fetch runs for minutes). A round barrier
+        # idles search slots, so release each completed slot immediately.
+        pending: set[concurrent.futures.Future] = set()
+        queue = list(keywords)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            while queue or pending:
+                while queue and len(pending) < workers:
+                    pending.add(
+                        pool.submit(
+                            self._run_keyword_with_agent,
+                            queue.pop(0),
+                            self.runner.client.agent_id,
+                        )
+                    )
+                done, _ = concurrent.futures.wait(
+                    pending, timeout=10,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    pending.remove(future)
+                    future.result()
+                    self._flush_pending()
+                    evaluate_adaptive()
+
     def run(self) -> None:
         if not self.config.continuous_whale_enabled:
             raise ValueError("CONTINUOUS_WHALE_ENABLED must be true to run continuous-whale")
@@ -785,15 +814,7 @@ class ContinuousWhaleRunner:
                 controller.current,
                 len(keywords),
             )
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [
-                    pool.submit(self._run_keyword_with_agent, keyword, self.runner.client.agent_id)
-                    for keyword in keywords
-                ]
-                for future in concurrent.futures.as_completed(futures):
-                    future.result()
-                    self._flush_pending()
-                    evaluate_adaptive()
+            self._dispatch_round(keywords, workers, evaluate_adaptive)
             elapsed = time.monotonic() - started
             sleep_seconds = max(0, self.config.continuous_interval_seconds - elapsed)
             _diagnostic("continuous_whale_round_sleep", seconds=round(sleep_seconds, 2))
