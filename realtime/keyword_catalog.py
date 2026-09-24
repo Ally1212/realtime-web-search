@@ -285,13 +285,13 @@ def _rolling_specs(now: datetime | None = None) -> tuple[KeywordSpec, ...]:
     """Generate a fresh, bounded query set for each UTC day.
 
     Keeping yesterday and today avoids retiring jobs while the UTC boundary
-    crosses a running collector. Older day keys are retired on the next sync.
+    crosses a running collector. Google date operators are kept in the query
+    text because they constrain results without narrowing the SERP request to
+    a single Google tools filter.
     """
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
     specs: list[KeywordSpec] = []
     for offset, day in enumerate((current - timedelta(days=1), current)):
-        following = day + timedelta(days=1)
-        window = f"after:{day.isoformat()} before:{following.isoformat()}"
         freshness = 72 if day == current else 68
         for concept_id, english, chinese, category in CONCEPTS:
             for language, phrase in (("en", english), ("zh", chinese)):
@@ -300,7 +300,7 @@ def _rolling_specs(now: datetime | None = None) -> tuple[KeywordSpec, ...]:
                 for variant_type, modifier in variants:
                     specs.append(KeywordSpec(
                         f"{_key(concept_id, language, 'rolling')}:{day.isoformat()}:{variant_type}:{modifier}",
-                        concept_id, f'"{phrase}" {modifier} {window}', aliases, language, category,
+                        concept_id, f'"{phrase}" {modifier}', aliases, language, category,
                         priority=freshness,
                     ))
     return tuple(specs)

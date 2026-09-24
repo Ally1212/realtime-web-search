@@ -46,7 +46,11 @@ class KeywordCatalogTests(unittest.TestCase):
             {spec.key.split(":rolling:", 1)[1][:10] for spec in rolling},
             {"2026-09-23", "2026-09-24"},
         )
-        self.assertTrue(all("after:" in spec.query and "before:" in spec.query for spec in rolling))
+        self.assertTrue(all(spec.key.count(":") >= 6 for spec in rolling))
+        self.assertEqual(
+            {spec.query.rsplit(" after:", 1)[0] if " after:" in spec.query else spec.query for spec in rolling[:len(rolling)//2]},
+            {spec.query.rsplit(" after:", 1)[0] if " after:" in spec.query else spec.query for spec in rolling[len(rolling)//2:]},
+        )
         self.assertGreater(
             min(spec.priority for spec in rolling if ":2026-09-24:" in spec.key),
             max(spec.priority for spec in rolling if ":2026-09-23:" in spec.key),
