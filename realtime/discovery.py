@@ -377,6 +377,7 @@ class SearchDiscovery:
                 "openserp_unavailable", "openserp_not_configured",
                 "openserp_invalid_response", "openserp_parser_failure",
                 "openserp_engine_error", "openserp_bad_request",
+                "google_http_403", "google_http_429",
             } or code.startswith("openserp_http_")
             classification = evidence.get("classification") or (
                 ("results" if results else "empty") if failure is None
@@ -390,6 +391,9 @@ class SearchDiscovery:
                 # cool the whole provider and prevent trying another exit.
                 if service_failure or (not proxy_hash and (streak >= 3 or captcha)):
                     self._local_cooldowns[provider] = time.monotonic() + self.source_cooldown_seconds
+                # Google blocks are exit-specific, but repeatedly burning slots
+                # on a provider whose every exit is blocked is worse than a
+                # short provider canary cooldown. WML remains the fallback.
                 attempt_record = {
                     "provider": provider, "query": query, "page": page,
                     "success": failure is None, "results": len(results),

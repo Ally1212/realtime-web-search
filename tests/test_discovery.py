@@ -65,20 +65,21 @@ class DiscoveryTests(unittest.TestCase):
             proxy_group_reserver=Mock(return_value=(True, 0)),
             source_slot_acquirer=Mock(return_value={"allowed": True}),
         )
+        # The first Google block opens a short local canary cooldown, so the
+        # current page falls through immediately instead of spending all three
+        # rotating-exit attempts on a provider that is currently blocked.
         d.transport.fetch = Mock(side_effect=[
-            GoogleBlocked("google_http_429"),
-            GoogleBlocked("google_captcha", captcha=True),
             GoogleBlocked("google_http_429"),
             expected,
         ])
         self.assertEqual(d._discover_google_page("AI", 1), expected)
         self.assertEqual(
             [call.args[0] for call in d.transport.fetch.call_args_list],
-            ["openserp", "openserp", "openserp", "wml"],
+            ["openserp", "wml"],
         )
         self.assertEqual(
             [row["provider"] for row in d.attempts],
-            ["openserp", "openserp", "openserp", "wml"],
+            ["openserp", "wml"],
         )
 
     def test_http_200_parse_failure_does_not_quarantine_exit_or_cache_empty_result(self):
@@ -344,3 +345,18 @@ class DiscoveryTests(unittest.TestCase):
             d._discover_google_page("AI", 1)
         self.assertEqual(recorder.call_args.args[0], hashlib.sha256(b"proxy-key").hexdigest())
         self.assertFalse(recorder.call_args.kwargs["success"])
+
+    def test_openserp_google_blocks_enable_short_local_canary_cooldown(self):
+        pool = Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
+        pool.google_identity_for_scope.return_value = ('group', ['alias'])
+        d = SearchDiscovery(
+            providers=('openserp',), proxy_pool=pool, proxy_profile='private',
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+        )
+        d.transport.fetch = Mock(side_effect=GoogleBlocked('google_http_429'))
+        with self.assertRaisesRegex(GoogleBlocked, 'google_http_429'):
+            d._attempt('openserp', 'AI', 1)
+        self.assertIn('openserp', d._local_cooldowns)
