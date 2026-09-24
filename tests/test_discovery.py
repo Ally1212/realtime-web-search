@@ -360,3 +360,14 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(GoogleBlocked, 'google_http_429'):
             d._attempt('openserp', 'AI', 1)
         self.assertIn('openserp', d._local_cooldowns)
+
+    def test_google_sticky_interval_comes_from_configuration(self):
+        pool = Mock()
+        pool.available_count.return_value = 2
+        pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
+        d = SearchDiscovery(
+            providers=('wml',), proxy_pool=pool, proxy_profile='private',
+            proxy_sticky_seconds=0, source_slot_acquirer=Mock(return_value={'allowed': True}),
+        )
+        d._select_proxy('wml')
+        self.assertEqual(pool.choose.call_args.kwargs['sticky_seconds'], 0)
