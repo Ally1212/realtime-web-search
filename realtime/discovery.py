@@ -727,7 +727,9 @@ class SearchDiscovery:
                 novel = self.novelty_counter([row.url for row in results]) if self.novelty_counter and results else len(results)
                 for name in (f"google_web:{selected_profile}", f"{source}:{selected_profile}"):
                     self.source_result_recorder(
-                        name, success=failure is None, limited=limited, captcha=captcha,
+                        name, success=failure is None,
+                        limited=limited and not bool(proxy_hash),
+                        captcha=captcha and not bool(proxy_hash),
                         result_count=len(results), novel_count=novel,
                         maximum_rps=self.google_web_max_rps, captcha_threshold=self.captcha_threshold,
                         source_cooldown_seconds=self.source_cooldown_seconds,

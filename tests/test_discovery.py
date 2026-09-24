@@ -363,6 +363,27 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(d.transport.fetch.call_count, 3)
         self.assertNotIn("wml", d._local_cooldowns)
 
+    def test_rotating_proxy_captcha_does_not_open_source_circuit(self):
+        pool = Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ("http://proxy-1.example:80", "proxy-1")
+        recorder = Mock()
+        d = SearchDiscovery(
+            providers=("wml",), proxy_pool=pool, proxy_profile="private",
+            proxy_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+            source_result_recorder=recorder,
+        )
+        d.transport.fetch = Mock(side_effect=GoogleBlocked("google_captcha", captcha=True))
+
+        with self.assertRaises(GoogleBlocked):
+            d._discover_google_page("AI", 1)
+
+        calls = [call for call in recorder.call_args_list if call.args[0] == "google_wml:private"]
+        self.assertTrue(calls)
+        self.assertFalse(any(call.kwargs.get("captcha") for call in calls))
+        self.assertFalse(any(call.kwargs.get("limited") for call in calls))
+
     def test_exhausts_proxy_pool_before_direct_fallback(self):
         pool = Mock()
         pool.available_count.return_value = 3
