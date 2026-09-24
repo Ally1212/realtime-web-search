@@ -21,6 +21,7 @@ def main() -> None:
     free = commands.add_parser("benchmark-free")
     free.add_argument("--providers", default="wml_direct,searxng,curl,browser")
     free.add_argument("--query", action="append")
+    free.add_argument("--queries-file", type=Path)
     free.add_argument("--query-limit", type=int, default=20)
     free.add_argument("--pages", default="1,3,11")
     free.add_argument("--profile", choices=("direct", "private", "public"), default="direct")

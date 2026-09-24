@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import concurrent.futures
-import hashlib
 import json
+import hashlib
 import math
 import os
 import time
@@ -61,7 +61,15 @@ def run_free_benchmark(args) -> None:
     config = Config()
     providers = tuple(value.strip() for value in args.providers.split(",") if value.strip())
     previous = json.loads(Path(args.resample).read_text(encoding="utf-8")) if args.resample else None
-    queries = tuple(previous["queries"]) if previous else (tuple(args.query) if args.query else ECONOMY_QUERIES[:args.query_limit])
+    file_queries: tuple[str, ...] = ()
+    if args.queries_file:
+        value = json.loads(args.queries_file.read_text(encoding="utf-8"))
+        if not isinstance(value, list) or not value or any(not isinstance(item, str) or not item.strip() for item in value):
+            raise ValueError("queries file must be a non-empty JSON array of strings")
+        file_queries = tuple(dict.fromkeys(item.strip() for item in value))
+    if args.query and args.queries_file:
+        raise ValueError("use either --query or --queries-file, not both")
+    queries = tuple(previous["queries"]) if previous else (tuple(args.query) or file_queries or ECONOMY_QUERIES[:args.query_limit])
     pages = tuple(previous["pages"]) if previous else tuple(int(value) for value in args.pages.split(","))
     if not queries or any(page < 1 or page > 11 for page in pages) or not (0 < args.rps <= 2):
         raise ValueError("benchmark needs queries, pages 1–11, and 0 < rps <= 2")
