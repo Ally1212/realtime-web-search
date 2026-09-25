@@ -74,6 +74,14 @@ class ExperimentTests(unittest.TestCase):
         return self.store.save_document({'requested_url':doc['url'], 'document':doc, 'status':'success',
                                         'seconds':.1, 'finished':finished or time.time()},quality(doc),self.store.get('deadline'))
 
+    def test_add_query_backfills_missing_pages_for_existing_query(self):
+        key = self.store.add_query('site', 'site:example.com AI', 'zh', 'AI', pages=3)
+        self.store.add_query('site', 'site:example.com AI', 'zh', 'AI')
+        pages = [row[0] for row in self.store.db.execute(
+            'SELECT page FROM schedule WHERE query_id=? ORDER BY page', (key,)
+        )]
+        self.assertEqual(pages, list(range(1, 12)))
+
     def test_event_query_is_not_collapsed_and_dates_are_explicit(self):
         seed_queries(self.store,Config(),time.time())
         rows = list(self.store.db.execute("SELECT family,query FROM queries WHERE family IN ('event','recent')"))

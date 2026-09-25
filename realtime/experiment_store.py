@@ -73,7 +73,10 @@ class ExperimentStore:
             self.db.execute("INSERT OR IGNORE INTO queries(id,family,query,language,topic) VALUES(?,?,?,?,?)",
                             (key, family, query, language, topic))
             self.db.execute("UPDATE queries SET enabled=1 WHERE id=?", (key,))
-            self.db.executemany("INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)", ((key, p) for p in range(1, pages + 1)))
+            # add_query is also used to refresh existing keyword catalogs. Backfill
+            # newly required pages so restored keyword IDs cannot stay at an old
+            # page limit (for example site searches previously created with 3 pages).
+            self.db.executemany("INSERT OR IGNORE INTO schedule(query_id,page,due) VALUES(?,?,0)", ((key, p) for p in range(1, pages + 1)))
         return key
 
     def due_query(self, family: str, now: float):
