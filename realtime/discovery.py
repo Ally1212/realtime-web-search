@@ -40,6 +40,23 @@ class GoogleBlocked(RuntimeError):
         self.captcha = captcha
 
 
+class ProviderCooldownRegistry:
+    """Process-wide provider cooldowns shared by thread-local discovery clients."""
+
+    def __init__(self):
+        self._deadlines: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def cooling(self, provider: str) -> bool:
+        with self._lock:
+            return self._deadlines.get(provider, 0.0) > time.monotonic()
+
+    def cool(self, provider: str, seconds: int | float) -> None:
+        deadline = time.monotonic() + max(1.0, float(seconds))
+        with self._lock:
+            self._deadlines[provider] = max(deadline, self._deadlines.get(provider, 0.0))
+
+
 class SearchDiscovery:
     """Google-only discovery with durable caching and cross-process throttling hooks."""
 
@@ -94,6 +111,7 @@ class SearchDiscovery:
         google_serp_evidence_dir: str = "state/serp-evidence",
         serp_attempt_recorder: Callable[..., None] | None = None,
         proxy_provider_attempts: int = 1,
+        provider_cooldowns: ProviderCooldownRegistry | None = None,
     ):
         self.timeout = timeout
         self.proxy_pool = proxy_pool
@@ -164,7 +182,7 @@ class SearchDiscovery:
         self._attempt_lock = threading.Lock()
         self._local_next_request = 0.0
         self._local_failures: dict[str, int] = {}
-        self._local_cooldowns: dict[str, float] = {}
+        self._provider_cooldowns = provider_cooldowns or ProviderCooldownRegistry()
         self._thread_state = threading.local()
 
     @property
@@ -348,9 +366,8 @@ class SearchDiscovery:
 
     def _attempt(self, provider: str, query: str, page: int) -> list[SearchResult]:
         source = f"google_{provider}"
-        with self._attempt_lock:
-            if self._local_cooldowns.get(provider, 0) > time.monotonic():
-                raise GoogleBlocked("google_provider_cooling")
+        if self._provider_cooldowns.cooling(provider):
+            raise GoogleBlocked("google_provider_cooling")
         self._reserve_source(source)
         self._reserve_source("google_web")
         proxy_url, proxy_key = self._select_proxy(provider)
@@ -381,6 +398,12 @@ class SearchDiscovery:
                 "openserp_engine_error", "openserp_bad_request",
                 "google_http_403", "google_http_429",
             } or code.startswith("openserp_http_")
+            # With OpenSERP, a Google CAPTCHA/HTTP block indicates that this
+            # request shape is currently recognized by Google. It is a provider
+            # canary failure, not evidence that this particular proxy is bad.
+            openserp_google_block = provider == "openserp" and (
+                captcha or code in {"google_http_403", "google_http_429", "google_consent"}
+            )
             classification = evidence.get("classification") or (
                 ("results" if results else "empty") if failure is None
                 else "timeout" if code == "google_timeout"
@@ -391,8 +414,8 @@ class SearchDiscovery:
                 self._local_failures[provider] = streak
                 # A failed rotating proxy is quarantined below; it must not
                 # cool the whole provider and prevent trying another exit.
-                if service_failure or (not proxy_hash and (streak >= 3 or captcha)):
-                    self._local_cooldowns[provider] = time.monotonic() + self.source_cooldown_seconds
+                if service_failure or openserp_google_block or (not proxy_hash and (streak >= 3 or captcha)):
+                    self._provider_cooldowns.cool(provider, self.source_cooldown_seconds)
                 # Google blocks are exit-specific, but repeatedly burning slots
                 # on a provider whose every exit is blocked is worse than a
                 # short provider canary cooldown. WML remains the fallback.
@@ -444,14 +467,15 @@ class SearchDiscovery:
                     "google_timeout", "google_transport_error",
                 }
                 parse_only_failure = code == 'google_unrecognized_page' and evidence.get('http_status') == 200
-                proxy_delay = self.proxy_cooldown_seconds if limited else (
+                skip_proxy_health = service_failure or openserp_google_block
+                proxy_delay = 0 if skip_proxy_health else self.proxy_cooldown_seconds if limited else (
                     300 if proxy_failure else max(30, self.proxy_min_interval_seconds) if parse_only_failure
-                    else 0 if service_failure else 300 if failure else 0)
+                    else 300 if failure else 0)
                 if failure and proxy_delay:
                     self.proxy_pool.defer(proxy_key, "www.google.com", proxy_delay)
                 elif failure is None:
                     self.proxy_pool.mark_success(proxy_key, "www.google.com")
-                if self.proxy_result_recorder and not service_failure:
+                if self.proxy_result_recorder and not skip_proxy_health:
                     self.proxy_result_recorder(
                         proxy_hash, success=failure is None,
                         cooldown_seconds=proxy_delay,

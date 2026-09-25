@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from .config import Config
 from .discovery import SearchResult
 from .experiment_store import ExperimentStore, digest
+from .discovery import ProviderCooldownRegistry
 from .google_experiment import (
     DatedFetcher, FAMILIES, FINAL_STATES, Runner, export_report, iso,
     normalize_languages, seed_queries,
@@ -350,6 +351,11 @@ def retry_delay(record):
 
 
 class SearchRunner(Runner):
+    def __init__(self, *args, proxy_pool=None, provider_cooldowns=None):
+        super().__init__(*args, proxy_pool=proxy_pool)
+        if provider_cooldowns is not None:
+            self.provider_cooldowns = provider_cooldowns
+
     def client(self, language):
         client = super().client(language)
         client.proxy_provider_attempts = 2
@@ -391,6 +397,7 @@ class PipelineRunner(Runner):
         self.search_inflight = 0
         self.threads = []
         self.search_thread_count = 0
+        self.provider_cooldowns = ProviderCooldownRegistry()
         self.search_families = YIELD_FAMILIES if self.store.get('query_plan') in {'yield', 'dense'} else FAMILIES
 
     def _stage(self, kind):
@@ -403,7 +410,7 @@ class PipelineRunner(Runner):
             # thread. PostgreSQL still coordinates with other processes.
             runner = SearchRunner(
                 store, self.config, self.production, self.output,
-                proxy_pool=self.pool,
+                proxy_pool=self.pool, provider_cooldowns=self.provider_cooldowns,
             )
             if kind != 'upload':
                 runner.whale = None

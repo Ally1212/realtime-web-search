@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from realtime.discovery import GoogleBlocked, SearchDiscovery, SearchResult
+from realtime.discovery import GoogleBlocked, ProviderCooldownRegistry, SearchDiscovery, SearchResult
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -28,7 +28,51 @@ class DiscoveryTests(unittest.TestCase):
             d._discover_google_page("AI", 1)
         pool.defer.assert_not_called()
         recorder.assert_not_called()
-        self.assertIn("openserp", d._local_cooldowns)
+        self.assertTrue(d._provider_cooldowns.cooling("openserp"))
+
+    def test_shared_openserp_cooldown_blocks_other_thread_local_clients(self):
+        pool = Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
+        pool.google_identity_for_scope.return_value = ('group', ['alias'])
+        registry = ProviderCooldownRegistry()
+        first = SearchDiscovery(
+            providers=('openserp',), proxy_pool=pool, proxy_profile='private',
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+            provider_cooldowns=registry,
+        )
+        second = SearchDiscovery(
+            providers=('openserp',), proxy_pool=pool, proxy_profile='private',
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+            provider_cooldowns=registry,
+        )
+        first.transport.fetch = Mock(side_effect=GoogleBlocked('google_captcha', captcha=True))
+        second.transport.fetch = Mock()
+        with self.assertRaisesRegex(GoogleBlocked, 'google_captcha'):
+            first._attempt('openserp', 'AI', 1)
+        with self.assertRaisesRegex(GoogleBlocked, 'google_provider_cooling'):
+            second._attempt('openserp', 'AI', 1)
+        second.transport.fetch.assert_not_called()
+
+    def test_openserp_google_block_does_not_penalize_shared_proxy_health(self):
+        pool, recorder = Mock(), Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
+        pool.google_identity_for_scope.return_value = ('group', ['alias'])
+        d = SearchDiscovery(
+            providers=('openserp',), proxy_pool=pool, proxy_profile='private',
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+            proxy_result_recorder=recorder,
+        )
+        d.transport.fetch = Mock(side_effect=GoogleBlocked('google_captcha', captcha=True))
+        with self.assertRaisesRegex(GoogleBlocked, 'google_captcha'):
+            d._discover_google_page('AI', 1)
+        pool.defer.assert_not_called()
+        recorder.assert_not_called()
+        self.assertTrue(d._provider_cooldowns.cooling('openserp'))
 
     def test_openserp_proxy_failure_rotates_to_next_exit(self):
         pool = Mock()
@@ -268,7 +312,7 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(d._discover_google_page("AI", 1), expected)
         self.assertEqual(d.transport.fetch.call_count, 3)
-        self.assertNotIn("wml", d._local_cooldowns)
+        self.assertFalse(d._provider_cooldowns.cooling("wml"))
 
     def test_exhausts_proxy_pool_before_direct_fallback(self):
         pool = Mock()
@@ -359,7 +403,7 @@ class DiscoveryTests(unittest.TestCase):
         d.transport.fetch = Mock(side_effect=GoogleBlocked('google_http_429'))
         with self.assertRaisesRegex(GoogleBlocked, 'google_http_429'):
             d._attempt('openserp', 'AI', 1)
-        self.assertIn('openserp', d._local_cooldowns)
+        self.assertTrue(d._provider_cooldowns.cooling('openserp'))
 
     def test_google_sticky_interval_comes_from_configuration(self):
         pool = Mock()

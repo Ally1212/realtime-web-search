@@ -24,7 +24,7 @@ from bs4 import BeautifulSoup, SoupStrainer
 
 from .campaign_store import CampaignStore
 from .config import Config
-from .discovery import GoogleBlocked, SearchDiscovery, SearchResult
+from .discovery import GoogleBlocked, ProviderCooldownRegistry, SearchDiscovery, SearchResult
 from .experiment_store import ExperimentStore, digest
 from .fetcher import LiveFetcher, MAX_TEXT_CHARS, normalize_url
 from .keyword_catalog import AI_ANCHORS, base_keyword_specs
@@ -349,6 +349,7 @@ class Runner:
         self.next_request = 0.0
         self.stop = False
         self.domain_locks = {}
+        self.provider_cooldowns = ProviderCooldownRegistry()
 
     def slot(self, source, initial_rps):
         if time.time() >= self.store.get('deadline') or self.store.get('state') != 'running':
@@ -387,7 +388,8 @@ class Runner:
                 proxy_sticky_seconds=self.config.google_proxy_sticky_seconds,
                 proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
                 source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
-                proxy_provider_attempts=3)
+                proxy_provider_attempts=3,
+                provider_cooldowns=self.provider_cooldowns)
         return self.clients[language]
 
     def search(self, row):
