@@ -226,6 +226,20 @@ class FreeGoogleTests(unittest.TestCase):
         self.assertEqual(transport.local.sessions, {})
         session.close.assert_called_once()
 
+    def test_transport_failure_evidence_includes_exception_context(self):
+        transport = GoogleTransport(5, "en", "")
+        failure = GoogleBlocked("google_unrecognized_page", 200)
+        def fetch(*args, **kwargs):
+            transport.local.last_evidence = {"classification": "parse_failure"}
+            raise failure
+        with patch.object(transport, "_fetch", side_effect=fetch), patch.dict(
+            "os.environ", {"GOOGLE_SERP_SAVE_HTML": "1"}
+        ):
+            with self.assertRaises(GoogleBlocked):
+                transport.fetch("wml", "AI", 1, None)
+        self.assertEqual(transport.last_evidence["exception"], "GoogleBlocked:google_unrecognized_page")
+        self.assertIn("GoogleBlocked", transport.last_evidence["traceback"])
+
     def test_curl_session_reuses_same_exit_and_rejects_js_shell(self):
         session = Mock()
         response = session.get.return_value

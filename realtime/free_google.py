@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 import threading
 import time
+import traceback
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlsplit
 
 import requests
@@ -85,6 +86,18 @@ class GoogleTransport:
         *, proxy_key: str | None = None,
     ) -> list[SearchResult]:
         self.local.last_evidence = {}
+        try:
+            return self._fetch(provider, query, page, proxy_url, proxy_key=proxy_key)
+        except Exception as exc:
+            if bool(os.getenv("GOOGLE_SERP_SAVE_HTML")) and isinstance(exc, GoogleBlocked):
+                self.local.last_evidence.setdefault("exception", f"{type(exc).__name__}:{exc.reason}")
+                self.local.last_evidence.setdefault("traceback", traceback.format_exc(limit=8))
+            raise
+
+    def _fetch(
+        self, provider: str, query: str, page: int, proxy_url: str | None,
+        *, proxy_key: str | None = None,
+    ) -> list[SearchResult]:
         if provider == "openserp":
             return self.openserp(query, page, proxy_url, proxy_key)
         if provider == "searxng":
