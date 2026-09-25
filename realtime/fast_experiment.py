@@ -330,6 +330,7 @@ class BodyPool:
                 w['completed'] += 1
                 if self._recycle_due(w):
                     self._retire(w)
+                    continue
         for w in list(self.workers):
             if w['row'] is not None and time.monotonic() - w['started'] >= self.deadline:
                 completed.append({'requested_url': w['row']['url'], 'status': 'failed',
