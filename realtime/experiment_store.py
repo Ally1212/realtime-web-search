@@ -135,53 +135,110 @@ class ExperimentStore:
     def counts(self, cutoff: float | None = None, *, detailed: bool = True):
         end = cutoff or self.get('deadline', time.time())
         start = self.get('started_at', 0)
-        counts = {row['classification']: row['n'] for row in self.db.execute(
-            "SELECT classification,count(*) n FROM documents WHERE finished<=? GROUP BY classification", (end,))}
-        searches = self.db.execute("SELECT count(*) n,sum(status='failed') failed,sum(cache_hit) cached,"
-                                   "sum(status='success' AND results='[]') empty FROM searches WHERE finished<=?", (end,)).fetchone()
-        counts.update(search_pages=searches['n'], search_failures=searches['failed'] or 0,
-                      cache_hits=searches['cached'] or 0, empty_pages=searches['empty'] or 0,
-                      unique_urls=self.db.execute("SELECT count(*) FROM urls WHERE first_seen<=?", (end,)).fetchone()[0])
+        # Reading attempt telemetry requires expanding one JSON row per SERP
+        # request. On an 11-hour ledger that scan can exceed the dashboard's
+        # SQLite read timeout while the runner is committing. The samples table
+        # already holds exact cumulative counters; use the latest same-ledger
+        # sample and only count rows newer than it for low-latency dashboards.
+        sample = self.db.execute(
+            'SELECT at,metrics FROM samples WHERE at<=? ORDER BY at DESC LIMIT 1', (end,)
+        ).fetchone()
+        counts = {}
+        sample_at = 0.0
+        if sample:
+            sample_at = float(sample['at'])
+            try:
+                counts.update(json.loads(sample['metrics']))
+            except (TypeError, json.JSONDecodeError):
+                counts = {}
+        # Keep these queries index-friendly. They are small compared with the
+        # historical attempt scan and remain exact for terminal exports.
+        classification_rows = self.db.execute(
+            "SELECT classification,count(*) n FROM documents WHERE finished>? AND finished<=? GROUP BY classification",
+            (sample_at, end),
+        ).fetchall()
+        counts.update({row['classification']: counts.get(row['classification'], 0) + row['n'] for row in classification_rows})
+        search = self.db.execute(
+            "SELECT count(*) n,sum(status='failed') failed,sum(cache_hit) cached,"
+            "sum(status='success' AND results='[]') empty FROM searches WHERE finished>? AND finished<=?",
+            (sample_at, end),
+        ).fetchone()
+        counts.update(search_pages=counts.get('search_pages', 0) + search['n'],
+                      search_failures=counts.get('search_failures', 0) + (search['failed'] or 0),
+                      cache_hits=counts.get('cache_hits', 0) + (search['cached'] or 0),
+                      empty_pages=counts.get('empty_pages', 0) + (search['empty'] or 0))
+        counts['unique_urls'] = self.db.execute(
+            'SELECT count(*) FROM urls WHERE first_seen<=?', (end,)
+        ).fetchone()[0]
+        # Only aggregate attempts created after the sample. This is the same
+        # cumulative definition without scanning all historical JSON rows.
         requests = successes = captchas = 0
-        attempt_seconds = 0.0
-        for row in self.db.execute("SELECT attempts FROM searches WHERE finished<=?", (end,)):
+        attempt_seconds_delta = 0.0
+        for row in self.db.execute('SELECT attempts FROM searches WHERE (?=0 OR finished>?) AND finished<=?', (sample_at, sample_at, end)):
             for attempt in json.loads(row[0]):
                 requests += 1
                 successes += bool(attempt['success'])
                 captchas += attempt.get('error') == 'google_captcha'
-                attempt_seconds += attempt['seconds']
-        counts['google_requests'] = requests
-        counts['google_successes'] = successes
-        counts['google_captchas'] = captchas
-        counts['google_attempt_seconds'] = round(attempt_seconds, 2)
-        counts['fetch_seconds'] = round(self.db.execute("SELECT coalesce(sum(seconds),0) FROM documents WHERE finished<=?", (end,)).fetchone()[0], 2)
-        for row in self.db.execute("SELECT status,count(*) n FROM outbox GROUP BY status"):
-            counts['whale_' + row['status']] = row['n']
+                attempt_seconds_delta += attempt['seconds']
+        counts['google_requests'] = counts.get('google_requests', 0) + requests
+        counts['google_successes'] = counts.get('google_successes', 0) + successes
+        counts['google_captchas'] = counts.get('google_captchas', 0) + captchas
+        counts['google_attempt_seconds'] = round(counts.get('google_attempt_seconds', 0) + attempt_seconds_delta, 2)
+        counts['fetch_seconds'] = round(counts.get('fetch_seconds', 0) + self.db.execute(
+            'SELECT coalesce(sum(seconds),0) FROM documents WHERE finished>? AND finished<=?', (sample_at, end)
+        ).fetchone()[0], 2)
+        if not sample:
+            # New ledgers have no sampled snapshot. A single grouped status
+            # scan is exact and remains small before the first minute sample.
+            outbox_rows = list(self.db.execute('SELECT status,count(*) n FROM outbox GROUP BY status'))
+        else:
+            outbox_rows = list(self.db.execute(
+                'SELECT status,count(*) n FROM outbox WHERE (finished IS NULL OR finished>?) AND finished<=? GROUP BY status',
+                (sample_at, end),
+            ))
+        # A status change after the sample (for example pending to accepted) is
+        # represented by decrementing the old sampled status and incrementing
+        # the new one. This preserves terminal counts without scanning history.
+        for row in outbox_rows:
+            key = 'whale_' + row['status']
+            counts[key] = counts.get(key, 0) + row['n']
+        transitions = self.db.execute(
+            'SELECT status,count(*) n FROM outbox WHERE finished>? AND finished<=? GROUP BY status',
+            (sample_at, end),
+        ).fetchall()
+        # Detect the previous status from sampled counters. The only current
+        # transition is pending -> accepted/duplicate/rejected; if schema rules
+        # broaden, this delta method must be revisited rather than silently
+        # double-counting terminal receipts.
+        if transitions and counts.get('whale_pending', 0) >= sum(r['n'] for r in transitions):
+            counts['whale_pending'] -= sum(r['n'] for r in transitions)
         counts['whale_confirmed_before_deadline'] = self.db.execute(
-            "SELECT count(*) FROM outbox WHERE status IN ('accepted','duplicate') AND finished<=?", (end,)).fetchone()[0]
+            "SELECT count(*) FROM outbox WHERE status IN ('accepted','duplicate') AND finished<=?", (end,)
+        ).fetchone()[0]
         elapsed_end = min(time.time(), end)
         if self.get('state') in {'complete','storage_stopped','stopped'}:
             elapsed_end = min(elapsed_end, self.get('finished_at', elapsed_end))
         counts['elapsed_seconds'] = round(max(0, elapsed_end - start), 1)
         counts['by_family'] = {}
-        for family in (('topic', 'event', 'site', 'recent') if detailed else ()):
-            row = self.db.execute("SELECT count(DISTINCT d.hash) FROM documents d JOIN discoveries x ON d.url=x.url "
-                                  "JOIN queries q ON q.id=x.query_id WHERE q.family=? AND d.quality='[]' "
-                                  "AND EXISTS(SELECT 1 FROM documents n WHERE n.hash=d.hash AND n.classification='new' AND n.finished<=?) "
-                                  "AND d.finished<=? AND x.first_seen<=?", (family, end, end, end)).fetchone()
-            exclusive = self.db.execute("SELECT count(*) FROM (SELECT d.hash FROM documents d JOIN discoveries x ON d.url=x.url "
-                                       "JOIN queries q ON q.id=x.query_id WHERE d.quality='[]' AND d.finished<=? AND x.first_seen<=? "
-                                       "AND EXISTS(SELECT 1 FROM documents n WHERE n.hash=d.hash AND n.classification='new' AND n.finished<=?) "
-                                       "GROUP BY d.hash HAVING count(DISTINCT q.family)=1 AND min(q.family)=?)", (end, end, end, family)).fetchone()[0]
-            counts['by_family'][family] = {'new_content_covered': row[0], 'exclusive_new_content': exclusive}
-            requests = self.db.execute("SELECT count(*) pages,coalesce(sum(json_array_length(s.attempts)),0) attempts,"
-                                       "coalesce(sum(s.status='failed'),0) failures FROM searches s JOIN queries q ON s.query_id=q.id "
-                                       "WHERE q.family=? AND s.finished<=?", (family,end)).fetchone()
-            counts['by_family'][family].update(dict(requests))
+        if detailed:
+            for family in ('topic', 'event', 'site', 'recent'):
+                row = self.db.execute("SELECT count(DISTINCT d.hash) FROM documents d JOIN discoveries x ON d.url=x.url "
+                                      "JOIN queries q ON q.id=x.query_id WHERE q.family=? AND d.quality='[]' "
+                                      "AND EXISTS(SELECT 1 FROM documents n WHERE n.hash=d.hash AND n.classification='new' AND n.finished<=?) "
+                                      "AND d.finished<=? AND x.first_seen<=?", (family, end, end, end)).fetchone()
+                exclusive = self.db.execute("SELECT count(*) FROM (SELECT d.hash FROM documents d JOIN discoveries x ON d.url=x.url "
+                                           "JOIN queries q ON q.id=x.query_id WHERE d.quality='[]' AND d.finished<=? AND x.first_seen<=? "
+                                           "AND EXISTS(SELECT 1 FROM documents n WHERE n.hash=d.hash AND n.classification='new' AND n.finished<=?) "
+                                           "GROUP BY d.hash HAVING count(DISTINCT q.family)=1 AND min(q.family)=?)", (end, end, end, family)).fetchone()[0]
+                counts['by_family'][family] = {'new_content_covered': row[0], 'exclusive_new_content': exclusive}
+                requests = self.db.execute("SELECT count(*) pages,coalesce(sum(json_array_length(s.attempts)),0) attempts,"
+                                           "coalesce(sum(s.status='failed'),0) failures FROM searches s JOIN queries q ON s.query_id=q.id "
+                                           "WHERE q.family=? AND s.finished<=?", (family,end)).fetchone()
+                counts['by_family'][family].update(dict(requests))
         counts['hourly'] = [dict(r) for r in self.db.execute(
             "SELECT cast((finished-?)/3600 AS INTEGER)+1 hour,count(*) new_documents FROM documents "
             "WHERE classification='new' AND finished<=? GROUP BY hour", (start, end))]
-        counts['first_6h_new'] = self.db.execute("SELECT count(*) FROM documents WHERE classification='new' AND finished<=?", (min(start+21600,end),)).fetchone()[0]
+        counts['first_6h_new'] = self.db.execute('SELECT count(*) FROM documents WHERE classification=\'new\' AND finished<=?', (min(start+21600,end),)).fetchone()[0]
         counts['remaining_18h_new'] = counts.get('new', 0) - counts['first_6h_new']
         elapsed = counts['elapsed_seconds']
         counts['first_6h_new_per_minute'] = round(counts['first_6h_new']*60/max(1,min(elapsed,21600)),3)
