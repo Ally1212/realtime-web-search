@@ -42,6 +42,64 @@ def _with_proxy_auth(header: bytes, username: str, password: str) -> bytes:
     return b"\r\n".join(lines) + separator + tail
 
 
+def _parse_connect_target(header: bytes) -> tuple[str, int]:
+    request = header.split(b"\r\n", 1)[0].decode("ascii", "strict")
+    parts = request.split()
+    if len(parts) != 3 or parts[0].upper() != "CONNECT":
+        raise ValueError("only HTTP CONNECT is supported")
+    host, separator, port = parts[1].rpartition(":")
+    if not separator or not host:
+        raise ValueError("invalid CONNECT target")
+    try:
+        parsed_port = int(port)
+    except ValueError as exc:
+        raise ValueError("invalid CONNECT port") from exc
+    return host.strip("[]"), parsed_port
+
+async def _socks5_connect(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+) -> None:
+    writer.write(b"\x05\x01\x02")
+    await writer.drain()
+    method = await asyncio.wait_for(reader.readexactly(2), timeout=15)
+    if method != b"\x05\x02":
+        raise OSError("socks5 username/password authentication is unavailable")
+    user, secret = username.encode(), password.encode()
+    if len(user) > 255 or len(secret) > 255:
+        raise ValueError("socks5 credentials are too long")
+    writer.write(b"\x01" + len(user).to_bytes(1, "big") + user + len(secret).to_bytes(1, "big") + secret)
+    await writer.drain()
+    auth = await asyncio.wait_for(reader.readexactly(2), timeout=15)
+    if auth != b"\x01\x00":
+        raise OSError("socks5 authentication failed")
+    host_bytes = host.encode("idna")
+    if len(host_bytes) > 255:
+        raise ValueError("socks5 target host is too long")
+    writer.write(
+        b"\x05\x01\x00\x03" + len(host_bytes).to_bytes(1, "big") + host_bytes
+        + port.to_bytes(2, "big")
+    )
+    await writer.drain()
+    reply = await asyncio.wait_for(reader.readexactly(4), timeout=15)
+    if len(reply) != 4 or reply[1] != 0:
+        raise OSError(f"socks5 connect failed: {reply[1]}")
+    address_type = reply[3]
+    if address_type == 1:
+        await reader.readexactly(4)
+    elif address_type == 3:
+        size = (await reader.readexactly(1))[0]
+        await reader.readexactly(size)
+    elif address_type == 4:
+        await reader.readexactly(16)
+    else:
+        raise OSError("invalid socks5 bind address")
+    await reader.readexactly(2)
+
 async def relay_connection(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
@@ -54,11 +112,19 @@ async def relay_connection(
         header = await asyncio.wait_for(client_reader.readuntil(b"\r\n\r\n"), timeout=15)
         if len(header) > HEADER_LIMIT:
             raise ValueError("proxy header too large")
+        host, port = _parse_connect_target(header)
         upstream_reader, upstream_writer = await asyncio.wait_for(
             asyncio.open_connection(record.host, record.port), timeout=15,
         )
-        upstream_writer.write(_with_proxy_auth(header, username, password))
-        await upstream_writer.drain()
+        if record.protocol == "http":
+            upstream_writer.write(_with_proxy_auth(header, username, password))
+            await upstream_writer.drain()
+        else:
+            await _socks5_connect(
+                upstream_reader, upstream_writer, host, port, username, password,
+            )
+            client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await client_writer.drain()
         await asyncio.gather(
             _pipe(client_reader, upstream_writer),
             _pipe(upstream_reader, client_writer),
@@ -105,7 +171,7 @@ async def run(args: argparse.Namespace) -> None:
 
     async def reconcile() -> None:
         _, records = cache.load("private")
-        records_by_key = {record.key: record for record in records if record.protocol == "http"}
+        records_by_key = {record.key: record for record in records if record.protocol in {"http", "socks5"}}
         ports = proxy_relay_ports(
             list(records_by_key.values()), port_start=args.port_start, port_count=args.port_count,
         )

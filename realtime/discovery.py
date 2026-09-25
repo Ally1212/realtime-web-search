@@ -309,9 +309,9 @@ class SearchDiscovery:
             return None, ""
         if not self.proxy_pool:
             raise GoogleBlocked("google_proxy_unavailable")
-        # OpenSERP browser mode rejects authenticated SOCKS proxies. Filtering
-        # here also avoids counting the HTTP/SOCKS alias of one host twice.
-        protocols = frozenset({"http"}) if provider == "openserp" else None
+        # All OpenSERP exits go through the credential-hiding relay, which
+        # can speak either HTTP CONNECT or authenticated SOCKS5 upstream.
+        protocols = None
         available = self.proxy_pool.available_count(
             self.proxy_profile, "www.google.com", protocols=protocols,
         )

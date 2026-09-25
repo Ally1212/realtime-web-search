@@ -31,7 +31,7 @@ class ProxyApiTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
-    def test_proxy_relay_ports_are_unique_stable_and_http_only(self):
+    def test_proxy_relay_ports_are_unique_stable_and_support_socks(self):
         records = [
             ProxyRecord('192.0.2.2', 8080, 'http'),
             ProxyRecord('192.0.2.1', 8080, 'http'),
@@ -40,8 +40,8 @@ class ProxyApiTests(unittest.TestCase):
         first = proxy_relay_ports(records, port_start=20000, port_count=100)
         second = proxy_relay_ports(list(reversed(records)), port_start=20000, port_count=100)
         self.assertEqual(first, second)
-        self.assertEqual(len(first), 2)
-        self.assertEqual(len(set(first.values())), 2)
+        self.assertEqual(len(first), 3)
+        self.assertEqual(len(set(first.values())), 3)
         self.assertTrue(all(20000 <= port < 20100 for port in first.values()))
 
     def test_openserp_relay_url_hides_upstream_credentials(self):

@@ -272,7 +272,7 @@ def proxy_relay_ports(
     """Assign stable local ports to HTTP endpoints without exposing credentials."""
     if not (1 <= port_start <= 65535) or port_count <= 0 or port_start + port_count > 65536:
         raise ValueError("invalid proxy relay port range")
-    keys = sorted({record.key for record in records if record.protocol == "http"})
+    keys = sorted({record.key for record in records if record.protocol in {"http", "socks5"}})
     if len(keys) > port_count:
         raise ValueError("proxy relay port range is exhausted")
     assigned: dict[str, int] = {}

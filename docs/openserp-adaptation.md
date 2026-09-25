@@ -18,7 +18,7 @@ CAPTCHA、Google 403/429 和明确的代理网络错误会隔离对应出口；O
 schema 错误或 parser failure 只冷却 OpenSERP provider，不污染代理健康度。审计保存请求 ID、
 版本、内部尝试次数、缓存状态、网络字节数和响应体哈希，绝不保存代理凭据。
 
-OpenSERP 浏览器模式不接受带认证的 SOCKS 代理，因此私有池只调度 HTTP 端点；同一主机的
+OpenSERP 统一通过内部 `proxy-relay` 访问 HTTP 和带认证 SOCKS5 出口；同一主机的
 HTTP/SOCKS 别名仍合并为一个出口。pipeline 的所有搜索线程共享同一轮换与本地冷却状态，
 确保先覆盖可用出口再复用，跨进程继续由 PostgreSQL 串行化。OpenSERP 的代理健康记录使用
 独立命名空间，旧 WML/轻量页面的历史成功不会掩盖标准 Google 的 429/CAPTCHA。没有兼容
@@ -26,8 +26,8 @@ HTTP/SOCKS 别名仍合并为一个出口。pipeline 的所有搜索线程共享
 由于带认证的代理需要独立 Chrome，OpenSERP 冷启动会串行创建浏览器；客户端使用 60 秒超时
 覆盖并发冷启动队列。通过完整响应契约的出口进入进程内优先集，按 30 秒主机间隔复用；一旦
 出现 429、CAPTCHA 或网络失败即移出优先集并进入原有退避。
-私有 HTTP 代理先经过内部 `proxy-relay` 去除传给浏览器的认证信息，再由 relay 注入上游
-Basic Auth。OpenSERP 因此可以用同一个 Chrome 的隔离 Context 承载全部出口，避免 80 个
+私有 HTTP/SOCKS5 代理先经过内部 `proxy-relay` 去除传给浏览器的认证信息，再由 relay
+分别注入 Basic Auth 或 SOCKS5 用户名密码。OpenSERP 因此可以用同一个 Chrome 的隔离 Context 承载全部出口，避免 80 个
 认证 IP 触发 Chrome 进程反复冷启动；物理出口键、30 秒间隔和 PostgreSQL 冷却账本保持不变。
 
 当前暂停的 `million-yield-v5-20260915` 保留原账本，不迁移 provider，也不会自动恢复。
