@@ -225,9 +225,14 @@ class BodyPool:
         self.domains = Counter()
 
     def _spawn(self):
-        process = subprocess.Popen([sys.executable, '-m', 'realtime.fast_experiment', 'fetch'],
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            process = subprocess.Popen([sys.executable, '-m', 'realtime.fast_experiment', 'fetch'],
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            # Body submission is opportunistic. If the process limit is reached,
+            # leave this URL pending instead of crashing a multi-hour experiment.
+            return None
         os.set_blocking(process.stdout.fileno(), False)
         worker = {'process': process, 'row': None, 'buffer': b'', 'hosts': set(), 'completed': 0}
         self.selector.register(process.stdout, selectors.EVENT_READ, worker)

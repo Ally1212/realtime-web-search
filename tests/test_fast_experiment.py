@@ -566,6 +566,16 @@ class PipelineTests(unittest.TestCase):
             finally:
                 store.db.close()
 
+    def test_body_pool_survives_process_spawn_failure(self):
+        pool = BodyPool(size=1, per_domain=1)
+        try:
+            with patch('realtime.fast_experiment.subprocess.Popen', side_effect=OSError(24, 'Too many open files')):
+                self.assertFalse(pool.submit({'url': 'https://one.example/a'}))
+                self.assertEqual(pool.busy, 0)
+                self.assertEqual(pool.domains['one.example'], 0)
+        finally:
+            pool.close()
+
 
 if __name__ == '__main__':
     unittest.main()
