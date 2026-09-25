@@ -82,13 +82,15 @@ def publication_metadata(raw: bytes, *, parser: str = "html.parser") -> tuple[st
     candidates: list[tuple[object, str]] = []
     for tag in soup.select('meta[property="article:published_time"],meta[itemprop="datePublished"],time[itemprop="datePublished"]'):
         candidates.append((tag.get("content") or tag.get("datetime"), "html:datePublished"))
-    for tag in soup.select("meta[name],meta[property],time[pubdate][datetime]"):
+    for tag in soup.select("meta[name],meta[property],time[datetime]"):
         field = (tag.get("name") or tag.get("property") or "").casefold()
         if field in {"pubdate", "publishdate", "publish_date", "publication_date", "datepublished",
                      "dc.date.issued", "dcterms.issued", "parsely-pub-date", "sailthru.date"}:
             candidates.append((tag.get("content"), "html:" + field))
-        elif tag.name == "time":
-            candidates.append((tag.get("datetime"), "html:time.pubdate"))
+        elif field in {"date", "og:date"}:
+            candidates.append((tag.get("content"), "html:" + field))
+        elif tag.name == "time" and (tag.get("datetime") or tag.get("content")):
+            candidates.append((tag.get("datetime") or tag.get("content"), "html:time.datetime"))
     soup.decompose()
 
     script_soup = BeautifulSoup(raw, parser, parse_only=SoupStrainer("script", attrs={"type": "application/ld+json"}))

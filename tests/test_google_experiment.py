@@ -174,6 +174,10 @@ class ExperimentTests(unittest.TestCase):
         value,source=publication_metadata(b'<meta property="article:published_time" content="2026-09-01T10:00:00+08:00">')
         self.assertEqual(value,'2026-09-01T10:00:00+08:00')
         self.assertIsNotNone(source)
+        self.assertEqual(publication_metadata(b'<time datetime="2026-09-01T10:00:00+08:00">Published</time>')[0],
+                         '2026-09-01T10:00:00+08:00')
+        self.assertEqual(publication_metadata(b'<meta name="date" content="2026-09-01T10:00:00Z">')[0],
+                         '2026-09-01T10:00:00+00:00')
         self.assertEqual(publication_metadata(b'<meta property="article:modified_time" content="2026-09-01T10:00:00Z">'),(None,None))
         self.assertEqual(publication_metadata(b'<meta property="article:published_time" content="2026-09-01">'),(None,None))
         msg=experiment_message(dict(document(),published_at=value),'run','AI',['topic'],Config())
