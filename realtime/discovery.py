@@ -310,9 +310,10 @@ class SearchDiscovery:
             return None, ""
         if not self.proxy_pool:
             raise GoogleBlocked("google_proxy_unavailable")
-        # All OpenSERP exits go through the credential-hiding relay, which
-        # can speak either HTTP CONNECT or authenticated SOCKS5 upstream.
-        protocols = None
+        # OpenSERP uses Chrome through the credential-hiding relay. Authenticated
+        # HTTP CONNECT is less reliable there; authenticated SOCKS5 preserves
+        # per-exit lanes and measured substantially better in isolation.
+        protocols = frozenset({"socks5"}) if provider == "openserp" else None
         available = self.proxy_pool.available_count(
             self.proxy_profile, "www.google.com", protocols=protocols,
         )

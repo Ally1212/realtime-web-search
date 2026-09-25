@@ -1,8 +1,12 @@
 import time
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
+from realtime.config import Config
 from realtime.discovery import GoogleBlocked, ProviderCooldownRegistry, SearchDiscovery, SearchResult
+from realtime.proxy_pool import ProxyCache, ProxyPool, ProxyRecord
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -12,6 +16,22 @@ class DiscoveryTests(unittest.TestCase):
             SearchDiscovery._proxy_hash('openserp', key),
             SearchDiscovery._proxy_hash('wml', key),
         )
+
+    def test_openserp_selects_only_socks_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            http = ProxyRecord('192.0.2.1', 8080, 'http')
+            socks = ProxyRecord('192.0.2.2', 1080, 'socks5')
+            cache = ProxyCache(Path(directory))
+            cache.publish('private', [http, socks], None)
+            pool = ProxyPool(Config(proxy_cache_dir=Path(directory), openserp_proxy_relay_host='proxy-relay'))
+            discovery = SearchDiscovery(
+                providers=("openserp",), proxy_pool=pool, proxy_profile="private",
+                proxy_reserver=lambda *args, **kwargs: (True, 0),
+            )
+            with patch.object(ProxyRecord, 'fresh', return_value=True):
+                selected = discovery._select_proxy('openserp')
+                self.assertEqual(selected[1], socks.key)
+                self.assertEqual(selected[0].count('socks5'), 0)
 
     def test_openserp_captcha_cools_shared_provider_before_wml(self):
         pool = Mock()
