@@ -7,7 +7,7 @@ from realtime.free_google import GoogleTransport
 
 class FreeGoogleTests(unittest.TestCase):
     @staticmethod
-    def _openserp_response(session, *, results=None, page=3):
+    def _openserp_response(session, *, results=None, page=3, query="人工智能"):
         response = session.get.return_value
         response.status_code = 200
         response.content = b'{"openserp":"response"}'
@@ -18,8 +18,8 @@ class FreeGoogleTests(unittest.TestCase):
         def payload():
             request_id = session.get.call_args.kwargs["headers"]["X-Request-ID"]
             response.headers["X-Request-ID"] = request_id
-            return {
-                "query": {"text": "人工智能", "engines_requested": ["google"]},
+            payload = {
+                "query": {"text": query, "engines_requested": ["google"]},
                 "meta": {"request_id": request_id, "version": "2.2", "engines_failed": []},
                 "results": results if results is not None else [{
                     "type": "organic", "engine": "google", "title": "AI 研究",
@@ -27,6 +27,9 @@ class FreeGoogleTests(unittest.TestCase):
                 }],
                 "pagination": {"page": page, "has_more": True, "next_start": 30},
             }
+            session.last_openserp_payload = payload
+            session.last_openserp_request_id = request_id
+            return payload
 
         response.json.side_effect = payload
         return response
@@ -74,6 +77,32 @@ class FreeGoogleTests(unittest.TestCase):
                 with patch("realtime.free_google.requests.Session", return_value=session):
                     with self.assertRaisesRegex(GoogleBlocked, "openserp_invalid_response"):
                         GoogleTransport(5, "zh", "").openserp("人工智能", 3, None, None)
+
+    def test_openserp_resolves_wrapped_google_results_once(self):
+        session = MagicMock()
+        session.__enter__.return_value = session
+        results = [
+            {"type": "organic", "engine": "google", "title": "Target", "url": "https://www.google.com/goto?token=1"},
+            {"type": "organic", "engine": "google", "title": "Blocked", "url": "https://www.google.com/goto?token=2"},
+        ]
+        response = self._openserp_response(session, results=results, page=1, query="Target")
+        redirects = [
+            response,
+            Mock(status_code=302, headers={"Location": "https://example.com/target"}),
+            Mock(status_code=429, headers={}),
+        ]
+        session.get.side_effect = redirects
+        with patch("realtime.free_google.requests.Session", return_value=session):
+            transport = GoogleTransport(5, "en", "")
+            parsed = transport.openserp("Target", 1, "http://proxy.example:80", None)
+        self.assertEqual([row.url for row in parsed], ["https://example.com/target"])
+        self.assertEqual(session.get.call_count, 3)
+        first = session.get.call_args_list[1]
+        self.assertFalse(first.kwargs["allow_redirects"])
+        self.assertTrue(first.kwargs["stream"])
+        self.assertEqual(first.kwargs["proxies"]["https"], "http://proxy.example:80")
+        self.assertEqual(transport.last_evidence["wrapped_google_results"], 2)
+        self.assertEqual(transport.last_evidence["resolved_google_results"], 1)
 
     def test_openserp_maps_captcha_without_exposing_error_body(self):
         session = MagicMock()

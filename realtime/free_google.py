@@ -107,7 +107,7 @@ class GoogleTransport:
 
     def _openserp_evidence(
         self, response: requests.Response | None, raw: bytes, classification: str,
-        request_url: str, payload: object = None,
+        request_url: str, payload: object = None, **extra: object,
     ) -> None:
         headers = response.headers if response is not None else {}
         meta = payload.get("meta") if isinstance(payload, dict) else None
@@ -124,7 +124,37 @@ class GoogleTransport:
             upstream_attempts=(self._positive_int(headers.get("X-Proxy-Attempts")) or 1) if response is not None else None,
             upstream_cache_status=str(headers.get("X-Cache") or "").strip().upper() or None,
             network_bytes=self._positive_int(headers.get("X-Network-Bytes")),
+            **extra,
         )
+
+    def _resolve_google_goto(
+        self, session: requests.Session, url: str, proxy_url: str | None,
+    ) -> str:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        if host != "google.com" and not host.endswith(".google.com"):
+            return url
+        if parsed.path.rstrip("/") != "/goto":
+            return url
+        response: requests.Response | None = None
+        try:
+            response = session.get(
+                url,
+                allow_redirects=False,
+                stream=True,
+                timeout=min(self.openserp_request_timeout_seconds, 15),
+                proxies=({"http": proxy_url, "https": proxy_url} if proxy_url else None),
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                return ""
+            location = urljoin(url, str(response.headers.get("Location") or "").strip())
+            return location if public_result(location) else ""
+        except requests.RequestException:
+            return ""
+        finally:
+            if response is not None:
+                response.close()
 
     @staticmethod
     def _openserp_error(status: int, payload: object) -> GoogleBlocked:
@@ -237,6 +267,8 @@ class GoogleTransport:
             ):
                 raise GoogleBlocked("openserp_invalid_response", 200)
             results: dict[str, SearchResult] = {}
+            wrapped_google_results = 0
+            resolved_google_results = 0
             for item in rows:
                 if not isinstance(item, dict):
                     continue
@@ -246,10 +278,21 @@ class GoogleTransport:
                     continue
                 url = str(item.get("url") or "").strip()
                 title = str(item.get("title") or "").strip()
-                if title and public_result(url) and url not in results:
+                if not title:
+                    continue
+                if (urlsplit(url).hostname or "").lower().endswith("google.com") and urlsplit(url).path.rstrip("/") == "/goto":
+                    wrapped_google_results += 1
+                    url = self._resolve_google_goto(session, url, proxy_url)
+                    if url:
+                        resolved_google_results += 1
+                if public_result(url) and url not in results:
                     results[url] = SearchResult(url, title, ("google_web",))
             classification = "results" if results else "empty"
-            self._openserp_evidence(response, raw, classification, request_url, payload)
+            self._openserp_evidence(
+                response, raw, classification, request_url, payload,
+                wrapped_google_results=wrapped_google_results,
+                resolved_google_results=resolved_google_results,
+            )
             return list(results.values())
         except GoogleBlocked:
             if not self.last_evidence:
