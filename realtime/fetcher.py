@@ -329,10 +329,11 @@ class LiveFetcher:
                 self._last_request[host] = time.monotonic()
             if response.status_code >= 400:
                 return FetchResult("failed", url, fallback_title, response.status_code, error=f"HTTP {response.status_code}")
-            if self.lean_metadata:
-                title, content = extract_text(raw, response.url, self.use_trafilatura, lean_metadata=True)
-            else:
-                title, content = extract_text(raw, response.url, self.use_trafilatura)
+            # Full Trafilatura metadata duplicates date work already done by
+            # DatedFetcher; lean mode still preserves its title precedence.
+            title, content = extract_text(
+                raw, response.url, self.use_trafilatura, lean_metadata=self.lean_metadata
+            )
             if len(content) < 100:
                 return FetchResult("failed", url, title, response.status_code, error="可提取正文不足 100 字符")
             normalized_url = normalize_url(response.url)

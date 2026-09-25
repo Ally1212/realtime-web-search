@@ -73,39 +73,49 @@ def quality(document: dict | None) -> list[str]:
     return sorted(set(warnings))
 
 
-def publication_metadata(raw: bytes, *, parser: str = 'html.parser') -> tuple[str | None, str | None]:
+def publication_metadata(raw: bytes, *, parser: str = "html.parser") -> tuple[str | None, str | None]:
     """Only explicit publication fields with timezone; never infer from crawl time."""
-    soup = BeautifulSoup(raw, parser, parse_only=SoupStrainer(['meta', 'time', 'script']))
-    candidates = []
+    # HTML metadata is a narrow scan over the original bytes and supports the
+    # same encodings as extraction. JSON-LD can be large, so parse only script
+    # payloads and keep the recursive walk for nested @graph nodes.
+    soup = BeautifulSoup(raw, parser, parse_only=SoupStrainer(["meta", "time"]))
+    candidates: list[tuple[object, str]] = []
     for tag in soup.select('meta[property="article:published_time"],meta[itemprop="datePublished"],time[itemprop="datePublished"]'):
-        candidates.append((tag.get('content') or tag.get('datetime'), 'html:datePublished'))
-    for tag in soup.select('meta[name],meta[property],time[pubdate][datetime]'):
-        field = (tag.get('name') or tag.get('property') or '').casefold()
-        if field in {'pubdate', 'publishdate', 'publish_date', 'publication_date', 'datepublished',
-                     'dc.date.issued', 'dcterms.issued', 'parsely-pub-date', 'sailthru.date'}:
-            candidates.append((tag.get('content'), 'html:' + field))
-        elif tag.name == 'time':
-            candidates.append((tag.get('datetime'), 'html:time.pubdate'))
-    def walk(value):
+        candidates.append((tag.get("content") or tag.get("datetime"), "html:datePublished"))
+    for tag in soup.select("meta[name],meta[property],time[pubdate][datetime]"):
+        field = (tag.get("name") or tag.get("property") or "").casefold()
+        if field in {"pubdate", "publishdate", "publish_date", "publication_date", "datepublished",
+                     "dc.date.issued", "dcterms.issued", "parsely-pub-date", "sailthru.date"}:
+            candidates.append((tag.get("content"), "html:" + field))
+        elif tag.name == "time":
+            candidates.append((tag.get("datetime"), "html:time.pubdate"))
+    soup.decompose()
+
+    script_soup = BeautifulSoup(raw, parser, parse_only=SoupStrainer("script", attrs={"type": "application/ld+json"}))
+
+    def walk(value: object) -> None:
         if isinstance(value, dict):
-            kind = value.get('@type', '')
-            if any(t in str(kind) for t in ('Article','BlogPosting','NewsArticle','ScholarlyArticle')):
-                candidates.append((value.get('datePublished'), 'jsonld:datePublished'))
+            kind = value.get("@type", "")
+            if any(item in str(kind) for item in ("Article", "BlogPosting", "NewsArticle", "ScholarlyArticle")):
+                candidates.append((value.get("datePublished"), "jsonld:datePublished"))
             for child in value.values():
                 walk(child)
         elif isinstance(value, list):
             for child in value:
                 walk(child)
-    for tag in soup.select('script[type="application/ld+json"]'):
+
+    for tag in script_soup.select('script[type="application/ld+json"]'):
+        text = tag.string or tag.get_text() or ""
         try:
-            walk(json.loads(tag.string or tag.get_text() or ''))
-        except (ValueError, RecursionError):
+            walk(json.loads(text))
+        except (ValueError, TypeError, RecursionError):
             continue
-    soup.decompose()
+    script_soup.decompose()
+
     for value, source in candidates:
         try:
             try:
-                parsed = datetime.fromisoformat(str(value).replace('Z','+00:00'))
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
             except ValueError:
                 parsed = parsedate_to_datetime(str(value))
             if parsed.tzinfo is not None and parsed.timestamp() <= time.time()+86400:
