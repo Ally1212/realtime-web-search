@@ -454,7 +454,7 @@ class PipelineRunner(Runner):
         finally:
             if runner:
                 for client in runner.clients.values():
-                    client.close()
+                    client._close_browser()
                 if runner.whale:
                     runner.whale.session.close()
             if store:
