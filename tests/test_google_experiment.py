@@ -276,6 +276,13 @@ class ExperimentTests(unittest.TestCase):
         Runner(self.store,Config(),production,self.root/'export').slot('google_openserp',2)
         self.assertEqual(production.acquire_discovery_slot.call_args.args[1],.5)
 
+    def test_provider_rate_is_runtime_tunable(self):
+        self.store.set('search_rps', 4)
+        self.store.set('provider_rps', {'google_wml': .35})
+        production=Mock();production.acquire_discovery_slot.return_value={'allowed':True,'wait':0}
+        Runner(self.store,Config(),production,self.root/'export').slot('google_wml', 1.0)
+        self.assertEqual(production.acquire_discovery_slot.call_args.args[1], .35)
+
     def test_experiment_records_openserp_attempt_audit(self):
         production = Mock()
         runner = Runner(self.store, Config(), production, self.root/'export')

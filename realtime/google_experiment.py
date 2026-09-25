@@ -367,7 +367,10 @@ class Runner:
         if time.time() >= self.store.get('deadline') or self.store.get('state') != 'running':
             return {'allowed': False}
         limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
-        requested_rps = float(self.store.get('openserp_rps', .05)) if source == 'google_openserp' else initial_rps
+        if source == 'google_openserp':
+            requested_rps = float(self.store.get('openserp_rps', .05))
+        else:
+            requested_rps = float(self.store.get('provider_rps', {}).get(source, initial_rps))
         if limit == 2:
             slot = self.production.acquire_discovery_slot(source, min(requested_rps, limit))
         else:
