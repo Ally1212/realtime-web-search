@@ -434,10 +434,17 @@ class PipelineRunner(Runner):
                         runner.flush_whale()
                     self.shutdown.wait(.5)
                 else:
-                    try:
-                        ProxySynchronizer(self.config).sync(store.get('proxy_profile', 'private'))
-                    except Exception as exc:
-                        self.events.put(('proxy_error', type(exc).__name__))
+                    profiles = {store.get('proxy_profile', 'private')}
+                    # Google public endpoints are an independent overflow pool.
+                    # Refreshing both keeps failover possible without coupling
+                    # the primary profile's sync cadence to the other pool.
+                    if "private" in profiles:
+                        profiles.add("public_google")
+                    for profile in sorted(profiles):
+                        try:
+                            ProxySynchronizer(self.config).sync(profile)
+                        except Exception as exc:
+                            self.events.put((f"proxy_error_{profile}", type(exc).__name__))
                     # sync() enforces the shared cache's configured interval;
                     # poll it so a skipped startup sync does not add 30 minutes.
                     self.shutdown.wait(60)
