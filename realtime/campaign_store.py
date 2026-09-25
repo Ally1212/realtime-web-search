@@ -338,6 +338,8 @@ ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS upstream_version text;
 ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS upstream_attempts integer;
 ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS upstream_cache_status text;
 ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS network_bytes bigint;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS service_error_type text;
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS service_error text;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS timeout_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS consecutive_failures bigint NOT NULL DEFAULT 0;
 ALTER TABLE google_proxy_sessions ADD COLUMN IF NOT EXISTS limited_failure_streak bigint NOT NULL DEFAULT 0;
@@ -771,20 +773,23 @@ class CampaignStore:
         upstream_attempts: int | None = None,
         upstream_cache_status: str | None = None,
         network_bytes: int | None = None,
+        service_error_type: str | None = None,
+        service_error: str | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO google_serp_attempts(provider,query,page,proxy_key_hash,"
                 "request_url,http_status,result_count,elapsed_seconds,classification,"
                 "error_code,raw_sha256,raw_html_path,headless,upstream_request_id,"
-                "upstream_version,upstream_attempts,upstream_cache_status,network_bytes) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "upstream_version,upstream_attempts,upstream_cache_status,network_bytes,"
+                    "service_error_type,service_error) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     provider, query, page, proxy_key_hash, request_url, http_status,
                     result_count, elapsed_seconds, classification, error_code,
                     raw_sha256, raw_html_path, headless, upstream_request_id,
                     upstream_version, upstream_attempts, upstream_cache_status,
-                    network_bytes,
+                    network_bytes, service_error_type, service_error,
                 ),
             )
 

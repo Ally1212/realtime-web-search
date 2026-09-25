@@ -448,6 +448,8 @@ class SearchDiscovery:
                     "upstream_attempts": evidence.get("upstream_attempts"),
                     "upstream_cache_status": evidence.get("upstream_cache_status"),
                     "network_bytes": evidence.get("network_bytes"),
+                    "service_error_type": evidence.get("service_error_type"),
+                    "service_error": evidence.get("service_error"),
                 }
                 self.attempts.append(attempt_record)
             if self.serp_attempt_recorder:
@@ -467,6 +469,8 @@ class SearchDiscovery:
                         upstream_attempts=evidence.get("upstream_attempts"),
                         upstream_cache_status=evidence.get("upstream_cache_status"),
                         network_bytes=evidence.get("network_bytes"),
+                        service_error_type=evidence.get("service_error_type"),
+                        service_error=evidence.get("service_error"),
                     )
                 except Exception:
                     pass
