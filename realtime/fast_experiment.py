@@ -228,9 +228,11 @@ class BodyPool:
 
     def _spawn(self):
         try:
-            process = subprocess.Popen([sys.executable, '-m', 'realtime.fast_experiment', 'fetch'],
-                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                       stderr=subprocess.DEVNULL, start_new_session=True)
+            process = subprocess.Popen(
+                [sys.executable, '-m', 'realtime.fast_experiment', 'fetch'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
         except OSError:
             # Body submission is opportunistic. If the process limit is reached,
             # leave this URL pending instead of crashing a multi-hour experiment.
