@@ -224,6 +224,7 @@ class BodyPool:
         self.selector = selectors.DefaultSelector()
         self.workers = []
         self.domains = Counter()
+        self.spawn_errors = 0
 
     def _spawn(self):
         try:
@@ -525,14 +526,26 @@ class PipelineRunner(Runner):
                                   (self.store.get('deadline') + 86400,))
         # Cover the 1,500-URL discovery backlog so a busy host at its head
         # cannot hide work for other domains from otherwise idle body slots.
+        # An empty pool cannot have in-flight domain leases. Clear leaked counters
+        # so retired/killed workers cannot permanently block body dispatch.
+        if not pool.workers and pool.busy == 0:
+            pool.domains.clear()
         rows = self.store.due_urls(2048, now)
+        accepted = 0
         for row in rows:
             if pool.busy >= pool.size:
                 break
             item = dict(row)
             if pool.submit(item):
+                accepted += 1
                 with self.store.db:
                     self.store.db.execute("UPDATE urls SET state='fetching' WHERE url=?", (row['url'],))
+        if rows and accepted == 0 and pool.busy == 0:
+            self.store.set('body_dispatch_stall_' + str(time.time_ns()), {
+                'at': time.time(), 'ready_urls': len(rows), 'workers': len(pool.workers),
+                'worker_limit': pool.size, 'spawn_errors': pool.spawn_errors,
+                'domain_leases': sum(pool.domains.values()),
+            })
 
     def _submit_searches(self, family_index):
         now = time.time()

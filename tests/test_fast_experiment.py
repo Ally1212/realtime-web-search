@@ -43,6 +43,44 @@ class PipelineTests(unittest.TestCase):
             finally:
                 store.db.close()
 
+    def test_empty_body_pool_clears_leaked_domain_leases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store=ExperimentStore(Path(tmp),create=True)
+            try:
+                store.set('deadline',time.time()+3600)
+                with store.db:
+                    store.db.execute('INSERT INTO urls(url,title,first_seen,last_seen) VALUES(?,?,?,?)',
+                                     ('https://free.example/article','AI',1,1))
+                runner=PipelineRunner(store,Config(),Mock(),Path(tmp))
+                pool=Mock(size=1,busy=0,workers=[],spawn_errors=0)
+                pool.domains=Counter({'stale.example':2})
+                pool.submit.return_value=True
+                runner._submit_bodies(pool)
+                self.assertEqual(pool.domains, {})
+                self.assertTrue(pool.submit.called)
+                self.assertFalse(store.db.execute("SELECT key FROM settings WHERE key LIKE 'body_dispatch_stall_%'").fetchone())
+            finally:
+                store.db.close()
+
+    def test_body_dispatch_stall_is_audited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store=ExperimentStore(Path(tmp),create=True)
+            try:
+                store.set('deadline',time.time()+3600)
+                with store.db:
+                    store.db.execute('INSERT INTO urls(url,title,first_seen,last_seen) VALUES(?,?,?,?)',
+                                     ('https://free.example/article','AI',1,1))
+                runner=PipelineRunner(store,Config(),Mock(),Path(tmp))
+                pool=Mock(size=1,busy=0,workers=[],spawn_errors=7)
+                pool.domains=Counter()
+                pool.submit.return_value=False
+                runner._submit_bodies(pool)
+                row=store.db.execute("SELECT value FROM settings WHERE key LIKE 'body_dispatch_stall_%'").fetchone()
+                self.assertIsNotNone(row)
+                self.assertIn('"spawn_errors": 7',row[0])
+            finally:
+                store.db.close()
+
     def test_dense_supply_uses_proven_sites_and_combined_ai_query(self):
         plan = dense_supply_plan(Counter({'good.example':20,'weak.example':19}), ('zh',),
                                  datetime(2026, 1, 1, tzinfo=timezone.utc))
