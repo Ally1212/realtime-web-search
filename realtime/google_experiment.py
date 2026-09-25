@@ -401,6 +401,7 @@ class Runner:
                 serp_attempt_recorder=self.production.record_google_serp_attempt,
                 proxy_reserver=self.production.reserve_google_proxy, proxy_group_reserver=self.production.reserve_google_proxy_group, proxy_result_recorder=self.production.record_google_proxy_result,
                 google_web_initial_rps=limit if limit > 2 else 1.0, google_web_max_rps=limit,
+                proxy_min_interval_seconds=self.config.google_web_proxy_min_interval_seconds,
                 proxy_sticky_seconds=self.config.google_proxy_sticky_seconds,
                 proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
                 source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
