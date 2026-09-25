@@ -44,6 +44,20 @@ class ProxyApiTests(unittest.TestCase):
         self.assertEqual(len(set(first.values())), 3)
         self.assertTrue(all(20000 <= port < 20100 for port in first.values()))
 
+    def test_openserp_relay_url_hides_socks5_upstream_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = ProxyRecord('192.0.2.1', 1080, 'socks5')
+            cache = ProxyCache(Path(directory))
+            cache.publish('private', [record], None)
+            cfg = config(directory)
+            cfg.openserp_proxy_relay_host = 'proxy-relay'
+            cfg.proxy_username = 'secret-user'
+            cfg.proxy_password = 'secret-password'
+            url = ProxyPool(cfg).openserp_proxy_url('private', record.key)
+            self.assertRegex(url or '', r'^http://proxy-relay:\d+$')
+            self.assertNotIn('socks5', url or '')
+            self.assertNotIn('secret', url or '')
+
     def test_openserp_relay_url_hides_upstream_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
             record = ProxyRecord('192.0.2.1', 8080, 'http')

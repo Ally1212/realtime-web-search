@@ -443,7 +443,7 @@ class ProxyPool:
             self._successful.add((key, domain))
 
     def openserp_proxy_url(self, profile: str, key: str) -> str | None:
-        """Return the credential-free relay URL for one authenticated HTTP exit."""
+        """Return the credential-free relay URL for one authenticated HTTP/SOCKS exit."""
         host = str(getattr(self.config, "openserp_proxy_relay_host", "") or "").strip()
         if profile != "private" or not host:
             return None
