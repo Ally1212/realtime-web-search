@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, MagicMock, patch
 
-from realtime.discovery import GoogleBlocked
+from realtime.discovery import GoogleBlocked, SearchResult
 from realtime.free_google import GoogleTransport
 
 
@@ -188,6 +188,43 @@ class FreeGoogleTests(unittest.TestCase):
         self.assertTrue(error.exception.captcha)
         page.locator.assert_not_called()
         page.wait_for_timeout.assert_not_called()
+
+    def test_curl_session_cache_is_bounded(self):
+        transport = GoogleTransport(5, "en", "")
+        sessions = []
+
+        def make_session(**_kwargs):
+            session = Mock()
+            response = session.get.return_value
+            response.status_code = 200
+            response.content = b"<html>results</html>"
+            response.url = "https://www.google.com/search"
+            response.raise_for_status.return_value = None
+            sessions.append(session)
+            return session
+
+        result = SearchResult("https://example.com/result", "Result", ("google_web",))
+        with patch("curl_cffi.requests.Session", side_effect=make_session), patch(
+            "realtime.discovery.SearchDiscovery._parse_google_html", return_value=[result]
+        ):
+            for index in range(transport.max_curl_sessions + 1):
+                transport.curl("AI", 1, f"http://proxy-{index}:8080")
+
+        self.assertEqual(len(transport.local.sessions), transport.max_curl_sessions)
+        self.assertEqual(len(sessions), transport.max_curl_sessions + 1)
+        sessions[0].close.assert_called_once()
+        transport.close()
+        self.assertEqual(sum(session.close.call_count for session in sessions[1:]), len(sessions) - 1)
+
+    def test_curl_transport_failure_drops_broken_cached_session(self):
+        session = Mock()
+        session.get.side_effect = RuntimeError("socket closed")
+        transport = GoogleTransport(5, "en", "")
+        with patch("curl_cffi.requests.Session", return_value=session):
+            with self.assertRaisesRegex(RuntimeError, "socket closed"):
+                transport.curl("AI", 1, "http://proxy.example:8080")
+        self.assertEqual(transport.local.sessions, {})
+        session.close.assert_called_once()
 
     def test_curl_session_reuses_same_exit_and_rejects_js_shell(self):
         session = Mock()

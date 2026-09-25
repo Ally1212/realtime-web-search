@@ -48,6 +48,7 @@ class GoogleTransport:
         persistent_browser_max_requests_per_context: int = 100,
         persistent_browser_max_context_lifetime_seconds: int = 21600,
         persistent_browser_failure_threshold: int = 3,
+        max_curl_sessions: int = 64,
         google_serp_save_html: bool = False,
         google_serp_evidence_dir: str = "state/serp-evidence",
     ):
@@ -65,6 +66,7 @@ class GoogleTransport:
         self.persistent_browser_max_requests_per_context = max(1, persistent_browser_max_requests_per_context)
         self.persistent_browser_max_context_lifetime_seconds = max(1, persistent_browser_max_context_lifetime_seconds)
         self.persistent_browser_failure_threshold = max(1, persistent_browser_failure_threshold)
+        self.max_curl_sessions = max(1, max_curl_sessions)
         self.google_serp_save_html = google_serp_save_html
         self.google_serp_evidence_dir = Path(google_serp_evidence_dir)
         # Persistent contexts are shared across discovery threads so one proxy
@@ -389,6 +391,16 @@ class GoogleTransport:
         if sessions is None:
             sessions = self.local.sessions = {}
         key = (proxy_url, wml)
+        if key not in sessions and len(sessions) >= self.max_curl_sessions:
+            # Long-running workers rotate across many exits. Without this bound
+            # every proxy keeps a curl session/FD until the process hits the
+            # container file-descriptor ceiling and all new requests fail.
+            oldest_key = next(iter(sessions))
+            try:
+                sessions[oldest_key].close()
+            except Exception:
+                pass
+            sessions.pop(oldest_key, None)
         if key not in sessions:
             sessions[key] = curl_requests.Session(impersonate="chrome99_android" if wml else "chrome")
         session = sessions[key]
@@ -405,8 +417,18 @@ class GoogleTransport:
             headers["User-Agent"] = "Nokia6230/2.0 (05.50) Profile/MIDP-2.0 Configuration/CLDC-1.1"
         # The evidence URL identifies the Google request; proxy credentials never appear in it.
         request_url = "https://www.google.com/" + ("wml/search" if wml else "search") + "?" + urlencode(params)
-        response = session.get("https://www.google.com/" + ("wml/search" if wml else "search"),
-                               params=params, proxy=proxy_url, timeout=self.timeout, headers=headers)
+        try:
+            response = session.get("https://www.google.com/" + ("wml/search" if wml else "search"),
+                                   params=params, proxy=proxy_url, timeout=self.timeout, headers=headers)
+        except Exception:
+            # A transport failure may leave the cached curl session unusable.
+            # Drop this thread-local instance so the next attempt rebuilds it.
+            try:
+                session.close()
+            except Exception:
+                pass
+            sessions.pop(key, None)
+            raise
         try:
             raw = response.content
             blocked = SearchDiscovery._google_block(response)
