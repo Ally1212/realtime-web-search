@@ -143,6 +143,26 @@ class FreeGoogleTests(unittest.TestCase):
             self.assertEqual(transport.curl("AI", 1, None, wml=True), [])
         self.assertEqual(transport.last_evidence["classification"], "empty")
 
+    def test_wml_shell_without_localized_empty_phrase_is_confirmed_empty(self):
+        query = "site:www.bright.cn AI agents after:2021-01-01 before:2022-01-01"
+        html = (
+            '<html><head><title>' + query + ' - Google Search</title></head><body>'
+            '<a href="/search?q=x&amp;tbm=isch">IMAGES</a>'
+            '<a href="#">Next &gt;</a>'
+            '<a href="/url?q=https%3A%2F%2Fsupport.google.com%2Fwebsearch&amp;sa=U">Learn more</a>'
+            '<a href="/url?q=https%3A%2F%2Faccounts.google.com%2FServiceLogin&amp;sa=U">Sign in</a>'
+            '</body></html>'
+        )
+        session = Mock()
+        response = session.get.return_value
+        response.content = html.encode()
+        response.status_code = 200
+        response.url = "https://www.google.com/wml/search"
+        transport = GoogleTransport(5, "en", "")
+        with patch("curl_cffi.requests.Session", return_value=session):
+            self.assertEqual(transport.curl(query, 1, None, wml=True), [])
+        self.assertEqual(transport.last_evidence["classification"], "empty")
+
     def test_wml_parser_handles_unicode_titles_redirects_and_skips_navigation(self):
         html = '<a href="/search?q=AI"><span>下一页</span></a><a href="/url?q=https%3A%2F%2Fexample.com%2Fai&amp;sa=U"><span>人工智能研究</span><span>example.com</span></a>'
         with patch("realtime.free_google.public_result", return_value=True):

@@ -37,6 +37,27 @@ def explicit_empty(content: bytes) -> bool:
     ))
 
 
+def wml_confirmed_empty(content: bytes) -> bool:
+    """Confirm Google WML pages that omit the localized empty-result sentence.
+
+    A genuine empty WML shell still has the query title, navigation, and only
+    Google-internal /url destinations. It must not be retried as an unknown
+    layout; pages with an organic-style public destination remain non-empty.
+    """
+    soup = BeautifulSoup(content, "html.parser", from_encoding="utf-8")
+    title = soup.title.get_text(" ", strip=True).lower() if soup.title else ""
+    if not title.endswith("google search"):
+        return False
+    destinations = []
+    for anchor in soup.select("a[href]"):
+        raw = str(anchor.get("href") or "")
+        if not raw.startswith("/url?"):
+            continue
+        args = parse_qs(urlsplit(raw).query)
+        destinations.extend(args.get("q") or args.get("url") or [])
+    return bool(destinations) and not any(public_result(url) for url in destinations)
+
+
 class GoogleTransport:
     def __init__(
         self, timeout: int, language: str, searxng_url: str,
@@ -457,7 +478,7 @@ class GoogleTransport:
             # A real WML shell still carries result anchors whose public-host
             # DNS checks fail transiently. Parsing succeeded in that case; do
             # not misclassify the whole page as an unknown layout.
-            if results or explicit_empty(raw):
+            if results or explicit_empty(raw) or (wml and wml_confirmed_empty(raw)):
                 self._evidence(raw, http_status=response.status_code, classification="empty", request_url=request_url)
                 return []
             if b"enablejs" in raw or b"enable javascript" in raw.lower():
