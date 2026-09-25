@@ -320,6 +320,23 @@ class PipelineTests(unittest.TestCase):
             finally:
                 store.db.close()
 
+    def test_search_family_weights_are_runtime_configurable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(Path(tmp), create=True)
+            try:
+                store.set('deadline', time.time()+7200)
+                store.set('query_plan', 'yield')
+                store.set('search_workers', 4)
+                store.set('search_family_weights', ('recent', 'topic', 'event'))
+                for family in ('site', 'topic', 'event', 'recent'):
+                    store.add_query(family, f'{family} query', 'zh', '人工智能', pages=1)
+                runner = PipelineRunner(store, Config(), Mock(), Path(tmp))
+                index = runner._submit_searches(0)
+                self.assertEqual([runner.jobs.get_nowait()['family'] for _ in range(3)], ['recent', 'topic', 'event'])
+                self.assertEqual(index, 0)
+            finally:
+                store.db.close()
+
     def test_empty_primary_with_cooling_fallback_does_not_stop_other_queries(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ExperimentStore(Path(tmp), create=True)

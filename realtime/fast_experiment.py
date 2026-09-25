@@ -555,10 +555,13 @@ class PipelineRunner(Runner):
         pending = self.store.db.execute("SELECT count(*) FROM urls WHERE state='pending'").fetchone()[0]
         if pending >= 1500 or now < self.store.get('search_cooling_until', 0):
             return family_index
+        weights = self.store.get('search_family_weights')
+        families = tuple(weights) if weights else self.search_families
         while self.search_inflight < self.search_size and not self.jobs.full():
-            for offset in range(len(self.search_families)):
-                index = (family_index + offset) % len(self.search_families)
-                row = self.store.due_query(self.search_families[index], now)
+            for offset in range(len(families)):
+                index = (family_index + offset) % len(families)
+                family = families[index]
+                row = self.store.due_query(family, now)
                 if row:
                     with self.store.db:
                         self.store.db.execute('UPDATE schedule SET due=? WHERE query_id=? AND page=?',
@@ -566,7 +569,7 @@ class PipelineRunner(Runner):
                         self.store.db.execute('UPDATE queries SET last_served=? WHERE id=?', (now, row['id']))
                     self.jobs.put_nowait(dict(row))
                     self.search_inflight += 1
-                    family_index = (index + 1) % len(self.search_families)
+                    family_index = (index + 1) % len(families)
                     break
             else:
                 break
