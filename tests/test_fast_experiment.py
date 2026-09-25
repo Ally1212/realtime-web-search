@@ -125,6 +125,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(split_full_query(store,row,[{}]*9),[])
                 children = split_full_query(store,row,[{}]*10)
                 self.assertEqual(len(children),2)
+                self.assertEqual([store.db.execute('SELECT count(*) FROM schedule WHERE query_id=?',(child,)).fetchone()[0] for child in children], [11, 11])
                 queries=[store.db.execute('SELECT query FROM queries WHERE id=?',(child,)).fetchone()[0] for child in children]
                 self.assertIn('after:2024-02-01 before:2024-02-16',queries[0])
                 self.assertIn('after:2024-02-15 before:2024-03-01',queries[1])
@@ -289,7 +290,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(replenish_queries(store, low_water=5, batch_size=3), 0)
                 self.assertEqual(store.get('query_supply_cursor')['cursor'], 5)
                 self.assertEqual(store.db.execute('SELECT count(*) FROM queries').fetchone()[0], 5)
-                self.assertEqual(store.db.execute('SELECT count(*) FROM schedule').fetchone()[0], 13)
+                self.assertEqual(store.db.execute('SELECT count(*) FROM schedule').fetchone()[0], 55)
             finally:
                 store.db.close()
 

@@ -103,7 +103,7 @@ def split_full_query(store, row, results):
             key = digest(f"site:{row['language']}:{query}")[:24]
             store.db.execute('INSERT OR IGNORE INTO queries(id,family,query,language,topic) VALUES(?,?,?,?,?)',
                              (key, 'site', query, row['language'], row['topic']))
-            store.db.executemany('INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)', ((key, p) for p in range(1, 4)))
+            store.db.executemany('INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)', ((key, p) for p in range(1, 12)))
             children.append(key)
         store.db.execute('INSERT OR IGNORE INTO query_splits VALUES(?,?,?)', (row['id'], time.time(), json.dumps(children)))
     return children
@@ -148,8 +148,10 @@ def replenish_queries(store, *, low_water=5000, batch_size=2000):
                                       (key, 'site', query, language, topic))
             if result.rowcount:
                 added += 1
-                store.db.executemany('INSERT INTO schedule(query_id,page) VALUES(?,?)',
-                                     ((key, page) for page in range(1, 4)))
+            # Existing IDs can predate the 11-page requirement, so backfill their
+            # schedules without changing any existing page due time.
+            store.db.executemany('INSERT OR IGNORE INTO schedule(query_id,page,due) VALUES(?,?,0)',
+                                 ((key, page) for page in range(1, 12)))
             plan['cursor'] += 1
         store.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
                          ('query_supply_cursor', json.dumps(plan, ensure_ascii=False)))
@@ -509,7 +511,7 @@ class PipelineRunner(Runner):
                     self.store.db.execute('INSERT OR IGNORE INTO queries(id,family,query,language,topic) VALUES(?,?,?,?,?)',
                                           (key, 'site', query, language, topic))
                     self.store.db.executemany('INSERT OR IGNORE INTO schedule(query_id,page) VALUES(?,?)',
-                                             ((key, page) for page in range(1, 4)))
+                                             ((key, page) for page in range(1, 12)))
                 self.store.db.execute('CREATE INDEX IF NOT EXISTS pipeline_query_family ON queries(family,enabled,last_served,id)')
             self.store.set('query_supply', {'plan': 'yield', 'site_weight': .8,
                                           'queries': self.store.db.execute('SELECT count(*) FROM queries').fetchone()[0]})
