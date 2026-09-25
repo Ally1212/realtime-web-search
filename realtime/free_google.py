@@ -46,7 +46,7 @@ def wml_confirmed_empty(content: bytes) -> bool:
     """
     soup = BeautifulSoup(content, "html.parser", from_encoding="utf-8")
     title = soup.title.get_text(" ", strip=True).lower() if soup.title else ""
-    if not title.endswith("google search"):
+    if not (title.endswith("google search") or title.endswith("google 搜索")):
         return False
     destinations = []
     for anchor in soup.select("a[href]"):
