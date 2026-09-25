@@ -334,8 +334,12 @@ class GoogleTransport:
             if not self.last_evidence:
                 self._openserp_evidence(response, raw, "parse_failure", request_url, payload)
             raise
-        except requests.RequestException:
-            self._openserp_evidence(response, raw, "service_error", request_url, payload)
+        except requests.RequestException as exc:
+            self._openserp_evidence(
+                response, raw, "service_error", request_url, payload,
+                service_error_type=type(exc).__name__,
+                service_error=str(exc)[:1000],
+            )
             raise GoogleBlocked("openserp_unavailable") from None
         finally:
             if response is not None:
