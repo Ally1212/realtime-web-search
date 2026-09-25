@@ -193,5 +193,5 @@ class Config:
     outbox_max_pending: int = int(os.getenv("OUTBOX_MAX_PENDING", "5000"))
 
     def __post_init__(self) -> None:
-        if "openserp" not in self.google_free_providers:
-            raise ValueError("GOOGLE_FREE_PROVIDERS must contain openserp")
+        if not self.google_free_providers:
+            raise ValueError("GOOGLE_FREE_PROVIDERS cannot be empty")

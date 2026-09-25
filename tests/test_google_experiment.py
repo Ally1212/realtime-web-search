@@ -1,7 +1,10 @@
 import json
+import os
 import tempfile
 import time
 import unittest
+import realtime.config
+from importlib import reload
 import subprocess
 import threading
 from pathlib import Path
@@ -294,6 +297,11 @@ class ExperimentTests(unittest.TestCase):
         runner = Runner(self.store, Config(), production, self.root/'export')
         client = runner.client('zh')
         self.assertIs(client.serp_attempt_recorder, production.record_google_serp_attempt)
+
+    def test_wml_only_global_provider_configuration(self):
+        with patch.dict(os.environ, {"GOOGLE_FREE_PROVIDERS": "wml"}):
+            config = reload(realtime.config).Config()
+        self.assertEqual(config.google_free_providers, ("wml",))
 
     def test_historical_hash_copy_in_second_family_is_attributed(self):
         self.save()
