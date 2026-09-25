@@ -257,6 +257,14 @@ class ExperimentTests(unittest.TestCase):
         self.assertFalse(runner.slot('google_web',.5)['allowed'])
         self.assertGreater(self.store.get('search_cooling_until'),time.time()+1799)
 
+    def test_openserp_canary_uses_a_small_independent_rate(self):
+        production=Mock();production.acquire_discovery_slot.return_value={'allowed':True,'wait':0}
+        runner=Runner(self.store,Config(),production,self.root/'export')
+        runner.slot('google_openserp',2)
+        args=production.acquire_discovery_slot.call_args
+        self.assertLessEqual(args.args[1],.05)
+        self.assertIn(args.kwargs.get('maximum_rps'),(2,None))
+
     def test_experiment_records_openserp_attempt_audit(self):
         production = Mock()
         runner = Runner(self.store, Config(), production, self.root/'export')

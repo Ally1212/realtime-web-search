@@ -365,10 +365,11 @@ class Runner:
         if time.time() >= self.store.get('deadline') or self.store.get('state') != 'running':
             return {'allowed': False}
         limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
+        requested_rps = .05 if source == 'google_openserp' else initial_rps
         if limit == 2:
-            slot = self.production.acquire_discovery_slot(source, min(initial_rps, limit))
+            slot = self.production.acquire_discovery_slot(source, min(requested_rps, limit))
         else:
-            slot = self.production.acquire_discovery_slot(source, min(initial_rps, limit), maximum_rps=limit)
+            slot = self.production.acquire_discovery_slot(source, min(requested_rps, limit), maximum_rps=limit)
         if source == 'google_web' and not slot.get('allowed'):
             self.store.set('search_cooling_until', time.time() + max(1, float(slot.get('wait') or 60)))
         if source == 'google_web' and slot.get('allowed'):
