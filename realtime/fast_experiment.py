@@ -534,15 +534,31 @@ class PipelineRunner(Runner):
         if not pool.workers and pool.busy == 0:
             pool.domains.clear()
         rows = self.store.due_urls(2048, now)
-        accepted = 0
+        # Fair dispatch prevents a single site at the FIFO head from consuming
+        # all free workers while other discoverable domains remain idle.
+        by_host = {}
         for row in rows:
-            if pool.busy >= pool.size:
-                break
-            item = dict(row)
-            if pool.submit(item):
-                accepted += 1
-                with self.store.db:
-                    self.store.db.execute("UPDATE urls SET state='fetching' WHERE url=?", (row['url'],))
+            by_host.setdefault(urlsplit(row['url']).hostname or '', []).append(row)
+        hosts = list(by_host)
+        accepted = 0
+        while hosts and pool.busy < pool.size:
+            next_hosts = []
+            for index, host in enumerate(hosts):
+                if pool.busy >= pool.size:
+                    next_hosts.extend(hosts[index:])
+                    break
+                row = by_host[host].pop(0)
+                if not by_host[host]:
+                    del by_host[host]
+                if pool.submit(dict(row)):
+                    accepted += 1
+                    with self.store.db:
+                        self.store.db.execute("UPDATE urls SET state='fetching' WHERE url=?", (row['url'],))
+                else:
+                    continue
+                if by_host.get(host):
+                    next_hosts.append(host)
+            hosts = next_hosts
         if rows and accepted == 0 and pool.busy == 0:
             self.store.set('body_dispatch_stall_' + str(time.time_ns()), {
                 'at': time.time(), 'ready_urls': len(rows), 'workers': len(pool.workers),

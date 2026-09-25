@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from collections import Counter
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -78,6 +79,31 @@ class PipelineTests(unittest.TestCase):
                 row=store.db.execute("SELECT value FROM settings WHERE key LIKE 'body_dispatch_stall_%'").fetchone()
                 self.assertIsNotNone(row)
                 self.assertIn('"spawn_errors": 7',row[0])
+            finally:
+                store.db.close()
+
+    def test_body_dispatch_spreads_requests_across_domains(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store=ExperimentStore(Path(tmp),create=True)
+            try:
+                store.set('deadline',time.time()+3600)
+                with store.db:
+                    for rank in range(4):
+                        for index in range(3):
+                            store.db.execute('INSERT INTO urls(url,title,first_seen,last_seen) VALUES(?,?,?,?)',
+                                             (f'https://domain{rank}.example/{index}','AI',rank*3+index,rank*3+index))
+                runner=PipelineRunner(store,Config(),Mock(),Path(tmp))
+                submitted=[]
+                def submit(row):
+                    submitted.append(row['url'])
+                    pool.busy += 1
+                    return True
+                pool=Mock(size=4,busy=0,workers=[],spawn_errors=0)
+                pool.submit.side_effect=submit
+                runner._submit_bodies(pool)
+                self.assertEqual(len(submitted),4)
+                hosts={urlsplit(url).hostname for url in submitted}
+                self.assertGreaterEqual(len(hosts),3)
             finally:
                 store.db.close()
 
