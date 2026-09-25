@@ -483,7 +483,7 @@ class PipelineTests(unittest.TestCase):
             with patch('realtime.fast_experiment.subprocess.Popen', side_effect=launch):
                 self.assertTrue(pool.submit({'url': 'https://one.example/a'}))
                 self.assertTrue(pool.submit({'url': 'https://two.example/a'}))
-                pool.resize(1, 128)
+                pool.resize(1, 1, 128)
                 self.assertEqual(pool.busy, 2)
                 records = []
                 while len(records) < 2:
@@ -491,11 +491,11 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual({r['requested_url'] for r in records}, {'https://one.example/a', 'https://two.example/a'})
                 self.assertEqual(pool.busy, 0)
                 self.assertEqual(len(pool.workers), 1)
-                pool.resize(2, 192)
+                pool.resize(2, 1, 192)
                 self.assertTrue(pool.submit({'url': 'https://one.example/b'}))
                 self.assertTrue(pool.submit({'url': 'https://two.example/b'}))
                 with self.assertRaises(ValueError):
-                    pool.resize(1000, 192)
+                    pool.resize(1000, 1, 192)
         finally:
             pool.close()
 
@@ -511,12 +511,12 @@ class PipelineTests(unittest.TestCase):
                 runner = PipelineRunner(store, Config(), Mock(), Path(tmp))
                 runner._configure_pool(pool)
                 runner._configure_pool(pool)
-                self.assertEqual((pool.size, pool.max_rss_mib), (40, 128))
+                self.assertEqual((pool.size, pool.per_domain, pool.max_rss_mib), (40, 1, 128))
                 self.assertEqual(store.get('deadline'), end)
                 changes = list(store.db.execute("SELECT value FROM settings WHERE key LIKE 'body_resource_change_%'"))
                 self.assertEqual(len(changes), 1)
-                self.assertEqual(json.loads(changes[0][0])['before'], [32, 192])
-                self.assertEqual(json.loads(changes[0][0])['after'], [40, 128])
+                self.assertEqual(json.loads(changes[0][0])['before'], [32, 1, 192])
+                self.assertEqual(json.loads(changes[0][0])['after'], [40, 1, 128])
             finally:
                 pool.close()
                 store.db.close()

@@ -218,7 +218,7 @@ def serve_fetches():
 
 class BodyPool:
     """Reusable isolated workers with per-task hard kill and domain-aware dispatch."""
-    def __init__(self, size=24, per_domain=2, deadline=65, max_tasks=200, max_rss_mib=192):
+    def __init__(self, size=24, per_domain=1, deadline=65, max_tasks=200, max_rss_mib=192):
         self.size, self.per_domain, self.deadline = size, per_domain, deadline
         self.max_tasks, self.max_rss_mib = max_tasks, max_rss_mib
         self.selector = selectors.DefaultSelector()
@@ -287,10 +287,10 @@ class BodyPool:
         except (OSError, StopIteration, ValueError):
             return False  # Non-Linux systems still recycle by completed-task count.
 
-    def resize(self, size, max_rss_mib):
-        if not 1 <= size <= 64 or not 64 <= max_rss_mib <= 512:
+    def resize(self, size, per_domain, max_rss_mib):
+        if not 1 <= size <= 64 or not 1 <= per_domain <= 8 or not 64 <= max_rss_mib <= 512:
             raise ValueError('invalid body pool resource configuration')
-        self.size, self.max_rss_mib = size, max_rss_mib
+        self.size, self.per_domain, self.max_rss_mib = size, per_domain, max_rss_mib
         for worker in list(self.workers):
             if len(self.workers) <= size:
                 break
@@ -390,6 +390,7 @@ class PipelineRunner(Runner):
     def __init__(self, *args):
         super().__init__(*args)
         self.body_size = max(1, min(64, self.store.get('body_workers', 24)))
+        self.body_per_domain = max(1, min(8, self.store.get('body_per_domain', 1)))
         self.search_size = max(1, min(24, self.store.get('search_workers', 3)))
         self.jobs = queue.Queue(maxsize=self.search_size)
         self.events = queue.Queue()
@@ -548,14 +549,15 @@ class PipelineRunner(Runner):
 
     def _configure_pool(self, pool):
         requested = (int(self.store.get('body_workers', self.body_size)),
+                     max(1, min(8, int(self.store.get('body_per_domain', self.body_per_domain)))),
                      int(self.store.get('body_max_rss_mib', 192)))
-        current = (pool.size, pool.max_rss_mib)
+        current = (pool.size, pool.per_domain, pool.max_rss_mib)
         if requested != current:
             pool.resize(*requested)
-            self.body_size = pool.size
+            self.body_size, self.body_per_domain = requested[:2]
             self.store.set('body_resource_change_' + str(time.time_ns()),
                            {'at': time.time(), 'before': current, 'after': requested,
-                            'fields': ['workers', 'max_rss_mib']})
+                            'fields': ['workers', 'per_domain', 'max_rss_mib']})
 
     def _start_stage(self, kind):
         thread = threading.Thread(target=self._stage, args=(kind,), daemon=True, name='pipeline-' + kind)
@@ -593,7 +595,8 @@ class PipelineRunner(Runner):
             store.db.execute('CREATE INDEX IF NOT EXISTS pipeline_document_url ON documents(url)')
         self._seed()
         restore_page_frontier(store, time.time())
-        pool = BodyPool(self.body_size, max_rss_mib=self.store.get('body_max_rss_mib', 192))
+        pool = BodyPool(self.body_size, per_domain=self.body_per_domain,
+                        max_rss_mib=self.store.get('body_max_rss_mib', 192))
         for kind in ['search'] * self.search_size + ['upload', 'proxy']:
             self._start_stage(kind)
         for signum in (signal.SIGTERM, signal.SIGINT):

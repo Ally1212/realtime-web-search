@@ -43,6 +43,7 @@ def main() -> None:
     experiment.add_argument('--executor', choices=('legacy', 'pipeline'), default='legacy')
     experiment.add_argument('--body-workers', type=int, choices=range(1, 65), default=24)
     experiment.add_argument('--body-max-rss-mib', type=int, choices=range(64, 513), default=192)
+    experiment.add_argument('--body-per-domain', type=int, choices=range(1, 9), default=1)
     experiment.add_argument('--search-workers', type=int, choices=range(1, 25), default=3)
     experiment.add_argument('--proxy-profile', choices=['private', 'public_google'], default='private')
     experiment.add_argument('--google-providers', nargs='+', choices=('openserp', 'wml'), default=['openserp', 'wml'])

@@ -642,6 +642,7 @@ def command(args):
         store.set('executor', getattr(args, 'executor', 'legacy'))
         store.set('body_workers', getattr(args, 'body_workers', 24))
         store.set('body_max_rss_mib', getattr(args, 'body_max_rss_mib', 192))
+        store.set('body_per_domain', getattr(args, 'body_per_domain', 1))
         store.set('search_workers', getattr(args, 'search_workers', 3))
         store.set('proxy_profile', getattr(args, 'proxy_profile', 'private'))
         store.set('google_providers', getattr(args, 'google_providers', ['openserp']))
