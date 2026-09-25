@@ -265,6 +265,9 @@ class BodyPool:
         return True
 
     def _retire(self, worker):
+        if worker.get('row') is not None:
+            self.domains[worker['host']] -= 1
+            worker['row'] = None
         process = worker['process']
         self.selector.unregister(process.stdout)
         if process.poll() is None:
@@ -329,7 +332,6 @@ class BodyPool:
                 completed.append({'requested_url': w['row']['url'], 'status': 'failed',
                                   'error': 'body_hard_deadline', 'document': None,
                                   'finished': time.time(), 'seconds': self.deadline})
-                self.domains[w['host']] -= 1
                 self._retire(w)
         return completed
 
