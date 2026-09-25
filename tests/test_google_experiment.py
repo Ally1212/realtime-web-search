@@ -265,6 +265,13 @@ class ExperimentTests(unittest.TestCase):
         self.assertLessEqual(args.args[1],.05)
         self.assertIn(args.kwargs.get('maximum_rps'),(2,None))
 
+    def test_openserp_rate_is_tunable_for_isolated_experiments(self):
+        self.store.set('openserp_rps',.5)
+        production=Mock();production.acquire_discovery_slot.return_value={'allowed':True,'wait':0}
+        self.store.set('search_rps',4)
+        Runner(self.store,Config(),production,self.root/'export').slot('google_openserp',2)
+        self.assertEqual(production.acquire_discovery_slot.call_args.args[1],.5)
+
     def test_experiment_records_openserp_attempt_audit(self):
         production = Mock()
         runner = Runner(self.store, Config(), production, self.root/'export')

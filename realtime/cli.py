@@ -48,6 +48,7 @@ def main() -> None:
     experiment.add_argument('--proxy-profile', choices=['private', 'public_google'], default='private')
     experiment.add_argument('--google-providers', nargs='+', choices=('openserp', 'wml'), default=['openserp', 'wml'])
     experiment.add_argument('--search-rps', type=float, default=2.0)
+    experiment.add_argument('--openserp-rps', type=float, default=.05)
     experiment.add_argument('--storage-budget-gib', type=float, default=10)
     experiment.add_argument('--query-plan', choices=('balanced', 'yield', 'dense'), default='balanced')
     experiment.add_argument(

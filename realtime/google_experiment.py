@@ -365,7 +365,7 @@ class Runner:
         if time.time() >= self.store.get('deadline') or self.store.get('state') != 'running':
             return {'allowed': False}
         limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
-        requested_rps = .05 if source == 'google_openserp' else initial_rps
+        requested_rps = float(self.store.get('openserp_rps', .05)) if source == 'google_openserp' else initial_rps
         if limit == 2:
             slot = self.production.acquire_discovery_slot(source, min(requested_rps, limit))
         else:
@@ -648,6 +648,7 @@ def command(args):
         store.set('proxy_profile', getattr(args, 'proxy_profile', 'private'))
         store.set('google_providers', getattr(args, 'google_providers', ['openserp']))
         store.set('search_rps', getattr(args, 'search_rps', 2.0))
+        store.set('openserp_rps', max(.01, min(8.0, getattr(args, 'openserp_rps', .05))))
         store.set('storage_budget_gib', getattr(args, 'storage_budget_gib', 10))
         store.set('query_plan', getattr(args, 'query_plan', 'balanced'))
         store.set('baseline_run_paths', list(args.baseline_run))
