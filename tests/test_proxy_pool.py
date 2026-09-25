@@ -174,6 +174,19 @@ class ProxyApiTests(unittest.TestCase):
         self.assertEqual(synced_at.isoformat(), "2026-01-01T00:00:00+00:00")
         self.assertEqual([row.key for row in records], ["proxy.example:8080/http"])
 
+    def test_private_sync_deduplicates_repeated_http_socks_egress(self):
+        first = Mock(status_code=200, headers={"X-Request-ID": "r1"})
+        first.json.return_value = {"data": [
+            {"host": "192.0.2.1", "port": 8080, "protocol": "http", "quality": 80, "latency_ms": 100},
+            {"host": "192.0.2.1", "port": 8080, "protocol": "socks5", "quality": 90, "latency_ms": 120},
+            {"host": "192.0.2.2", "port": 8080, "protocol": "http", "quality": 70, "latency_ms": 100},
+        ], "meta": {"nextCursor": None}}
+        session = Mock(); session.get.return_value = first
+        records, _ = ProxyApiClient(config(), session).fetch_all("private")
+        self.assertEqual([record.key for record in records], [
+            "192.0.2.1:8080/socks5", "192.0.2.2:8080/http",
+        ])
+
     def test_reads_complete_cursor_chain_without_changing_filters(self):
         first = Mock(status_code=200, headers={"X-Request-ID": "r1"})
         first.json.return_value = {

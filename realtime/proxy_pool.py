@@ -163,7 +163,16 @@ class ProxyApiClient:
             if not next_cursor:
                 break
             cursor = str(next_cursor)
-        return list(records.values()), request_id
+        # HTTP and SOCKS on the same host:port usually share an egress
+        # identity. Keep the better measured protocol once so scheduling does
+        # not double-book the same exit under two identities.
+        by_endpoint: dict[tuple[str, int], ProxyRecord] = {}
+        for record in records.values():
+            endpoint = (record.host, record.port)
+            previous = by_endpoint.get(endpoint)
+            if previous is None or (record.quality, -record.latency_ms) > (previous.quality, -previous.latency_ms):
+                by_endpoint[endpoint] = record
+        return sorted(by_endpoint.values(), key=lambda record: record.key), request_id
 
 
 class ProxyCache:
