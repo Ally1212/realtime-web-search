@@ -184,6 +184,7 @@ class SearchDiscovery:
         self._local_failures: dict[str, int] = {}
         self._provider_cooldowns = provider_cooldowns or ProviderCooldownRegistry()
         self._thread_state = threading.local()
+        self._openserp_google_block_seen = False
 
     @property
     def proxy_wait_seconds(self) -> float:
@@ -404,6 +405,15 @@ class SearchDiscovery:
             openserp_google_block = provider == "openserp" and (
                 captcha or code in {"google_http_403", "google_http_429", "google_consent"}
             )
+            # A canary is only useful once per provider page search. Threads
+            # have separate SearchDiscovery transport state, so without this
+            # guard four workers can each burn three OpenSERP exits before the
+            # shared registry cooldown becomes visible.
+            if openserp_google_block:
+                if self._openserp_google_block_seen:
+                    openserp_google_block = False
+                else:
+                    self._openserp_google_block_seen = True
             classification = evidence.get("classification") or (
                 ("results" if results else "empty") if failure is None
                 else "timeout" if code == "google_timeout"

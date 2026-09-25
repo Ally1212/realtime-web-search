@@ -13,6 +13,35 @@ class DiscoveryTests(unittest.TestCase):
             SearchDiscovery._proxy_hash('wml', key),
         )
 
+    def test_openserp_captcha_cools_shared_provider_before_wml(self):
+        pool = Mock()
+        pool.available_count.return_value = 2
+        pool.choose.side_effect = [
+            ("http://proxy-1.example:80", "proxy-1"),
+            ("http://proxy-2.example:80", "proxy-2"),
+        ]
+        pool.google_identity_for_scope.return_value = ("group", ["alias"])
+        pool.google_identity.return_value = ("group", ["alias"])
+        expected = [SearchResult("https://example.com/ai", "AI", ("google_web",))]
+        registry = ProviderCooldownRegistry()
+        d = SearchDiscovery(
+            providers=("openserp", "wml"), proxy_pool=pool,
+            proxy_profile="private", proxy_provider_attempts=3,
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+            provider_cooldowns=registry,
+        )
+        d.transport.fetch = Mock(side_effect=[
+            GoogleBlocked("google_captcha", captcha=True),
+            expected,
+        ])
+        self.assertEqual(d._discover_google_page("AI", 1), expected)
+        self.assertEqual(
+            [call.args[0] for call in d.transport.fetch.call_args_list],
+            ["openserp", "wml"],
+        )
+        self.assertTrue(registry.cooling("openserp"))
+
     def test_openserp_service_failure_cools_provider_without_penalizing_proxy(self):
         pool, recorder = Mock(), Mock()
         pool.available_count.return_value = 1
