@@ -32,6 +32,7 @@ def explicit_empty(content: bytes) -> bool:
     text = BeautifulSoup(content, "html.parser").get_text(" ", strip=True).lower()
     return any(value in text for value in (
         "did not match any documents", "no results found for", "没有找到与", "找不到和您查询",
+        "did not find any results", "no results found", "没有找到结果", "没有找到相关结果",
     ))
 
 
