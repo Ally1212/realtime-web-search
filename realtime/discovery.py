@@ -414,8 +414,10 @@ class SearchDiscovery:
                 self._local_failures[provider] = streak
                 # A failed rotating proxy is quarantined below; it must not
                 # cool the whole provider and prevent trying another exit.
+                canary = provider == 'openserp' and self.proxy_provider_attempts > 1
+                cooldown = min(self.source_cooldown_seconds, 300) if canary else self.source_cooldown_seconds
                 if service_failure or openserp_google_block or (not proxy_hash and (streak >= 3 or captcha)):
-                    self._provider_cooldowns.cool(provider, self.source_cooldown_seconds)
+                    self._provider_cooldowns.cool(provider, cooldown)
                 # Google blocks are exit-specific, but repeatedly burning slots
                 # on a provider whose every exit is blocked is worse than a
                 # short provider canary cooldown. WML remains the fallback.

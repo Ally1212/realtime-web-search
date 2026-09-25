@@ -1,3 +1,4 @@
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -29,6 +30,25 @@ class DiscoveryTests(unittest.TestCase):
         pool.defer.assert_not_called()
         recorder.assert_not_called()
         self.assertTrue(d._provider_cooldowns.cooling("openserp"))
+
+    def test_multi_provider_openserp_canary_uses_short_cooldown(self):
+        pool = Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
+        pool.google_identity_for_scope.return_value = ('group', ['alias'])
+        d = SearchDiscovery(
+            providers=('openserp', 'wml'), proxy_pool=pool, proxy_profile='private',
+            proxy_provider_attempts=2, source_cooldown_seconds=1800,
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+        )
+        d.transport.fetch = Mock(side_effect=GoogleBlocked('google_captcha', captcha=True))
+        try:
+            d._attempt('openserp', 'AI', 1)
+        except GoogleBlocked:
+            pass
+        self.assertTrue(d._provider_cooldowns.cooling('openserp'))
+        self.assertLessEqual(d._provider_cooldowns._deadlines['openserp'] - time.monotonic(), 301)
 
     def test_shared_openserp_cooldown_blocks_other_thread_local_clients(self):
         pool = Mock()
