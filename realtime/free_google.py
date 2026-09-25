@@ -371,10 +371,14 @@ class GoogleTransport:
                 raise blocked
             response.raise_for_status()
             results = self.parse_wml(raw) if wml else SearchDiscovery._parse_google_html(raw)
-            if results:
+            parsed = [row for row in results if public_result(row.url)]
+            if parsed:
                 self._evidence(raw, http_status=response.status_code, classification="results", request_url=request_url)
-                return [row for row in results if public_result(row.url)]
-            if explicit_empty(raw):
+                return parsed
+            # A real WML shell still carries result anchors whose public-host
+            # DNS checks fail transiently. Parsing succeeded in that case; do
+            # not misclassify the whole page as an unknown layout.
+            if results or explicit_empty(raw):
                 self._evidence(raw, http_status=response.status_code, classification="empty", request_url=request_url)
                 return []
             if b"enablejs" in raw or b"enable javascript" in raw.lower():

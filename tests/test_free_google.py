@@ -103,6 +103,17 @@ class FreeGoogleTests(unittest.TestCase):
         self.assertEqual(process.communicate.call_args.kwargs["timeout"], 8)
         kill.assert_called_once_with(process)
 
+    def test_wml_page_with_unusable_result_anchors_is_confirmed_empty(self):
+        session = Mock()
+        response = session.get.return_value
+        response.content = b'<a href="/url?q=https%3A%2F%2Fwww.google.com%2Fsearch&sa=U"><span>Google</span></a><p>did not match any documents</p>'
+        response.status_code = 200
+        response.url = "https://www.google.com/wml/search"
+        transport = GoogleTransport(5, "zh", "")
+        with patch("curl_cffi.requests.Session", return_value=session):
+            self.assertEqual(transport.curl("AI", 1, None, wml=True), [])
+        self.assertEqual(transport.last_evidence["classification"], "empty")
+
     def test_wml_parser_handles_unicode_titles_redirects_and_skips_navigation(self):
         html = '<a href="/search?q=AI"><span>下一页</span></a><a href="/url?q=https%3A%2F%2Fexample.com%2Fai&amp;sa=U"><span>人工智能研究</span><span>example.com</span></a>'
         with patch("realtime.free_google.public_result", return_value=True):
