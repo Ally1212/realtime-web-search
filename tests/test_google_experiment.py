@@ -283,6 +283,12 @@ class ExperimentTests(unittest.TestCase):
         Runner(self.store,Config(),production,self.root/'export').slot('google_wml', 1.0)
         self.assertEqual(production.acquire_discovery_slot.call_args.args[1], .35)
 
+    def test_experiment_connects_serp_evidence_settings(self):
+        self.store.set('output', str(self.root/'export'))
+        production = Mock()
+        client = Runner(self.store, Config(), production, self.root/'export').client('zh')
+        self.assertFalse(client.transport.google_serp_save_html)
+
     def test_experiment_records_openserp_attempt_audit(self):
         production = Mock()
         runner = Runner(self.store, Config(), production, self.root/'export')

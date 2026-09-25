@@ -405,7 +405,9 @@ class Runner:
                 proxy_cooldown_seconds=self.config.google_web_proxy_cooldown_seconds,
                 source_cooldown_seconds=self.config.google_web_source_cooldown_seconds,
                 proxy_provider_attempts=3,
-                provider_cooldowns=self.provider_cooldowns)
+                provider_cooldowns=self.provider_cooldowns,
+                google_serp_save_html=self.config.google_serp_save_html,
+                google_serp_evidence_dir=str(Path(self.output) / 'serp-evidence'))
         return self.clients[language]
 
     def search(self, row):
