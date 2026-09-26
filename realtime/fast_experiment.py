@@ -309,7 +309,10 @@ class BodyPool:
         completed = []
         for key, _ in self.selector.select(wait):
             w = key.data
-            chunk = os.read(key.fileobj.fileno(), 262144)
+            try:
+                chunk = os.read(key.fileobj.fileno(), 262144)
+            except BlockingIOError:
+                continue
             if chunk:
                 w['buffer'] += chunk
             elif w['row'] is not None:
