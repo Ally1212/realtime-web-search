@@ -296,7 +296,10 @@ class BodyPool:
             return False  # Non-Linux systems still recycle by completed-task count.
 
     def resize(self, size, per_domain, max_rss_mib):
-        if not 1 <= size <= 64 or not 1 <= per_domain <= 8 or not 64 <= max_rss_mib <= 512:
+        # Fetcher workers already serialize requests per host. Allowing more
+        # pool slots than one makes the extra worker wait for that lock until
+        # the hard deadline instead of fetching another useful page.
+        if not 1 <= size <= 64 or per_domain != 1 or not 64 <= max_rss_mib <= 512:
             raise ValueError('invalid body pool resource configuration')
         self.size, self.per_domain, self.max_rss_mib = size, per_domain, max_rss_mib
         for worker in list(self.workers):
@@ -401,7 +404,9 @@ class PipelineRunner(Runner):
     def __init__(self, *args):
         super().__init__(*args)
         self.body_size = max(1, min(64, self.store.get('body_workers', 24)))
-        self.body_per_domain = max(1, min(8, self.store.get('body_per_domain', 1)))
+        # Per-host fetching is serialized in DatedFetcher; preserve the safe
+        # production value even when an old experiment ledger says otherwise.
+        self.body_per_domain = 1
         self.search_size = max(1, min(24, self.store.get('search_workers', 3)))
         self.jobs = queue.Queue(maxsize=self.search_size)
         self.events = queue.Queue()
@@ -598,7 +603,7 @@ class PipelineRunner(Runner):
 
     def _configure_pool(self, pool):
         requested = (int(self.store.get('body_workers', self.body_size)),
-                     max(1, min(8, int(self.store.get('body_per_domain', self.body_per_domain)))),
+                     1,
                      int(self.store.get('body_max_rss_mib', 192)))
         current = (pool.size, pool.per_domain, pool.max_rss_mib)
         if requested != current:

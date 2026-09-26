@@ -581,6 +581,25 @@ class PipelineTests(unittest.TestCase):
         finally:
             pool.close()
 
+    def test_live_body_tuning_keeps_per_domain_serialized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(Path(tmp), create=True)
+            pool = BodyPool(size=2, per_domain=1)
+            try:
+                store.set('body_workers', 8)
+                # A value from an old ledger must not create workers that only
+                # wait behind the fetcher's per-host lock.
+                store.set('body_per_domain', 2)
+                store.set('body_max_rss_mib', 192)
+                runner = PipelineRunner(store, Config(), Mock(), Path(tmp))
+                runner._configure_pool(pool)
+                self.assertEqual((pool.size, pool.per_domain, pool.max_rss_mib), (8, 1, 192))
+                with self.assertRaises(ValueError):
+                    pool.resize(8, 2, 192)
+            finally:
+                pool.close()
+                store.db.close()
+
     def test_live_body_tuning_is_recorded_without_changing_fixed_deadline(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ExperimentStore(Path(tmp), create=True)
