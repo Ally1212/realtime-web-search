@@ -391,6 +391,7 @@ class DiscoveryTests(unittest.TestCase):
             ("http://proxy-2.example:80", "proxy-2"),
             ("http://proxy-3.example:80", "proxy-3"),
             None,
+            None,
         ]
         expected = [SearchResult("https://example.com/ai", "AI", ("google_web",))]
         d = SearchDiscovery(
@@ -473,6 +474,20 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(GoogleBlocked, 'google_http_429'):
             d._attempt('openserp', 'AI', 1)
         self.assertTrue(d._provider_cooldowns.cooling('openserp'))
+
+    def test_wml_falls_back_to_public_google_when_private_is_unavailable(self):
+        pool = Mock()
+        pool.available_count.side_effect = [0, 1]
+        pool.choose.side_effect = [None, ("http://public.example:80", "public-key")]
+        pool.google_identity.return_value = ("group", ["alias"])
+        discovery = SearchDiscovery(
+            providers=("wml",), proxy_profile="private", proxy_pool=pool,
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+        )
+        self.assertEqual(discovery._select_proxy("wml"), ("http://public.example:80", "public-key"))
+        self.assertEqual(pool.choose.call_args_list[0].args[0], "private")
+        self.assertEqual(pool.choose.call_args_list[1].args[0], "public_google")
 
     def test_google_sticky_interval_comes_from_configuration(self):
         pool = Mock()

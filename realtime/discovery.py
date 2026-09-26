@@ -314,37 +314,46 @@ class SearchDiscovery:
         # HTTP CONNECT is less reliable there; authenticated SOCKS5 preserves
         # per-exit lanes and measured substantially better in isolation.
         protocols = frozenset({"socks5"}) if provider == "openserp" else None
-        available = self.proxy_pool.available_count(
-            self.proxy_profile, "www.google.com", protocols=protocols,
+        # Private exits are higher quality, but Google traffic can temporarily
+        # exhaust their host-level reservations. WML is a lightweight fallback
+        # and can safely use the independently measured public Google pool.
+        profiles = (self.proxy_profile,) if provider == "openserp" else (
+            self.proxy_profile, "public_google" if self.proxy_profile == "private" else None
         )
         minimum_wait: float | None = None
-        for _ in range(max(1, available)):
-            selected = self.proxy_pool.choose(
-                self.proxy_profile, "www.google.com", sticky_seconds=self.proxy_sticky_seconds,
-                sticky_key=f"google:{threading.get_ident()}", full_pool=True,
-                protocols=protocols,
-            )
-            if not selected:
-                break
-            url, key = selected
-            if provider.startswith("browser") and not url.startswith(("http://", "https://")):
-                self.proxy_pool.defer(key, "www.google.com", 60)
+        for profile in profiles:
+            if not profile:
                 continue
-            proxy_hash = self._proxy_hash(provider, key)
-            if self.proxy_group_reserver:
-                if provider == "openserp":
-                    group, aliases = self.proxy_pool.google_identity_for_scope(key, "openserp")
+            available = self.proxy_pool.available_count(
+                profile, "www.google.com", protocols=protocols,
+            )
+            for _ in range(max(1, available)):
+                selected = self.proxy_pool.choose(
+                    profile, "www.google.com", sticky_seconds=self.proxy_sticky_seconds,
+                    sticky_key=f"google:{threading.get_ident()}", full_pool=True,
+                    protocols=protocols,
+                )
+                if not selected:
+                    break
+                url, key = selected
+                if provider.startswith("browser") and not url.startswith(("http://", "https://")):
+                    self.proxy_pool.defer(key, "www.google.com", 60)
+                    continue
+                proxy_hash = self._proxy_hash(provider, key)
+                if self.proxy_group_reserver:
+                    if provider == "openserp":
+                        group, aliases = self.proxy_pool.google_identity_for_scope(key, "openserp")
+                    else:
+                        group, aliases = self.proxy_pool.google_identity(key)
+                    allowed, wait = self.proxy_group_reserver(group, aliases, self.locale, self.proxy_min_interval_seconds)
                 else:
-                    group, aliases = self.proxy_pool.google_identity(key)
-                allowed, wait = self.proxy_group_reserver(group, aliases, self.locale, self.proxy_min_interval_seconds)
-            else:
-                allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
-            if allowed:
-                if provider == "openserp":
-                    url = self.proxy_pool.openserp_proxy_url(self.proxy_profile, key) or url
-                return url, key
-            minimum_wait = wait if minimum_wait is None else min(minimum_wait, wait)
-            self.proxy_pool.defer(key, "www.google.com", min(max(wait, 0.1), self.proxy_cooldown_seconds))
+                    allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
+                if allowed:
+                    if provider == "openserp":
+                        url = self.proxy_pool.openserp_proxy_url(self.proxy_profile, key) or url
+                    return url, key
+                minimum_wait = wait if minimum_wait is None else min(minimum_wait, wait)
+                self.proxy_pool.defer(key, "www.google.com", min(max(wait, 0.1), self.proxy_cooldown_seconds))
         local_wait = self.proxy_pool.next_available_seconds(
             self.proxy_profile, "www.google.com", protocols=protocols,
         )
