@@ -489,6 +489,29 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(pool.choose.call_args_list[0].args[0], "private")
         self.assertEqual(pool.choose.call_args_list[1].args[0], "public_google")
 
+    def test_transport_error_moves_to_next_wml_exit(self):
+        pool = Mock()
+        pool.available_count.return_value = 2
+        pool.choose.side_effect = [
+            ("http://private-1.example:80", "private-1"),
+            None,
+            ("http://public.example:80", "public-key"),
+        ]
+        pool.google_identity.return_value = ("group", ["alias"])
+        discovery = SearchDiscovery(
+            providers=("wml",), proxy_profile="private", proxy_pool=pool,
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+            proxy_provider_attempts=2,
+        )
+        expected = [SearchResult("https://example.com/ai", "AI", ("google_web",))]
+        discovery.transport.fetch = Mock(side_effect=[GoogleBlocked("google_transport_error"), expected])
+        self.assertEqual(discovery._discover_google_page("AI", 1), expected)
+        self.assertEqual(
+            [call.args[0] for call in pool.choose.call_args_list],
+            ["private", "private", "public_google"],
+        )
+
     def test_google_sticky_interval_comes_from_configuration(self):
         pool = Mock()
         pool.available_count.return_value = 2

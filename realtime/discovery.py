@@ -564,9 +564,9 @@ class SearchDiscovery:
                             break
                         if exc.reason not in {
                             "google_captcha", "google_http_403", "google_http_429",
-                            "google_consent", "google_timeout", "openserp_proxy_connect",
-                            "openserp_proxy_auth", "openserp_proxy_timeout",
-                            "openserp_proxy_unavailable",
+                            "google_consent", "google_timeout", "google_transport_error",
+                            "openserp_proxy_connect", "openserp_proxy_auth",
+                            "openserp_proxy_timeout", "openserp_proxy_unavailable",
                         }:
                             break
                 if results is None:
