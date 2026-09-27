@@ -379,7 +379,14 @@ class Runner:
     def slot(self, source, initial_rps):
         if time.time() >= self.store.get('deadline') or self.store.get('state') != 'running':
             return {'allowed': False}
+        namespace = str(self.store.get('search_slot_namespace') or '')
+        if namespace:
+            source = source + ':' + ''.join(char if char.isalnum() or char in '-_' else '_' for char in namespace)
         limit = float(self.store.get('search_rps', 2)) if self.store.get('executor') == 'pipeline' else 2.0
+        if source.startswith('google_openserp:'):
+            source, suffix = source.split(':', 1)
+            initial_rps = float(self.store.get('openserp_rps', .05))
+            source = source + ':' + suffix
         if source == 'google_openserp':
             requested_rps = float(self.store.get('openserp_rps', .05))
         else:
@@ -641,6 +648,10 @@ def command(args):
         raise ValueError('search_rps must be >0 and <=8')
     if not 0 < getattr(args, 'storage_budget_gib', 10) <= 128:
         raise ValueError('storage_budget_gib must be >0 and <=128')
+    shard_count = int(getattr(args, 'shard_count', 1) or 1)
+    shard_index = int(getattr(args, 'shard_index', 0) or 0)
+    if not 0 <= shard_index < shard_count:
+        raise ValueError('shard_index must be smaller than shard_count')
     requested_languages = normalize_languages(getattr(args, 'languages', None))
     remote_only = bool(getattr(args, 'remote_only', False))
     if remote_only and not args.whale:
@@ -666,9 +677,13 @@ def command(args):
         store.set('body_max_rss_mib', getattr(args, 'body_max_rss_mib', 192))
         store.set('body_per_domain', getattr(args, 'body_per_domain', 1))
         store.set('search_workers', getattr(args, 'search_workers', 3))
+        store.set('shard_count', shard_count)
+        store.set('shard_index', shard_index)
         store.set('proxy_profile', getattr(args, 'proxy_profile', 'private'))
         store.set('google_providers', getattr(args, 'google_providers', ['openserp']))
         store.set('search_rps', getattr(args, 'search_rps', 2.0))
+        namespace = f'shard-{shard_index}-of-{shard_count}' if shard_count > 1 else ''
+        store.set('search_slot_namespace', namespace)
         store.set('openserp_rps', max(.01, min(8.0, getattr(args, 'openserp_rps', .05))))
         store.set('storage_budget_gib', getattr(args, 'storage_budget_gib', 10))
         store.set('query_plan', getattr(args, 'query_plan', 'balanced'))

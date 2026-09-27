@@ -8,6 +8,16 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+
+def query_shard(query_id: str, shard_count: int) -> int:
+    """Stable, replayable partition; query IDs are the leading hex digits of a SHA-256 digest."""
+    if shard_count <= 1:
+        return 0
+    try:
+        return int(str(query_id)[:8], 16) % shard_count
+    except (TypeError, ValueError):
+        return sum(ord(char) for char in str(query_id)) % shard_count
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS baseline_urls(url TEXT PRIMARY KEY);
@@ -51,6 +61,7 @@ class ExperimentStore:
             raise ValueError("experiment does not exist")
         self.db = sqlite3.connect(self.path, timeout=30)
         self.db.row_factory = sqlite3.Row
+        self.db.create_function("query_shard", 2, query_shard, deterministic=True)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript(SCHEMA)
@@ -94,14 +105,23 @@ class ExperimentStore:
         # query with the deepest completed frontier the next unvisited page so
         # one keyword reaches all eleven pages before thousands of shallow
         # page-1/page-2 frontiers round-robin away from deep-page coverage.
+        shard_count = max(1, int(self.get("shard_count", 1) or 1))
+        shard_index = max(0, int(self.get("shard_index", 0) or 0))
+        shard_clause, parameters = "", [family, now]
+        if shard_count > 1:
+            if not 0 <= shard_index < shard_count:
+                raise ValueError("shard_index must be smaller than shard_count")
+            shard_clause = "AND query_shard(q.id,?)=? "
+            parameters = [family, now, shard_count, shard_index]
         return self.db.execute("SELECT q.*,s.page FROM queries q JOIN schedule s ON q.id=s.query_id "
                                "WHERE q.enabled=1 AND q.family=? AND s.due<=? "
+                               + shard_clause +
                                "ORDER BY CASE WHEN EXISTS(SELECT 1 FROM searches x WHERE x.query_id=q.id "
                                "AND x.page=s.page AND x.status='success') THEN 1 ELSE 0 END, "
                                "(SELECT count(*) FROM (SELECT DISTINCT page FROM searches y "
                                "WHERE y.query_id=q.id AND y.status='success')) DESC, "
                                "q.last_served ASC, q.id, s.page LIMIT 1",
-                               (family, now)).fetchone()
+                               parameters).fetchone()
 
     def cached(self, query_id: str, page: int, now: float):
         return self.db.execute("SELECT * FROM searches WHERE query_id=? AND page=? AND status='success' "

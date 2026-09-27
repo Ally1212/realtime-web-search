@@ -46,6 +46,8 @@ def main() -> None:
     experiment.add_argument('--body-per-domain', type=int, choices=(1,), default=1,
                             help='Keep at 1: fetch workers serialize by host')
     experiment.add_argument('--search-workers', type=int, choices=range(1, 25), default=3)
+    experiment.add_argument('--shard-count', type=int, choices=range(1, 65), default=1)
+    experiment.add_argument('--shard-index', type=int, choices=range(0, 64), default=0)
     experiment.add_argument('--proxy-profile', choices=['private', 'public_google'], default='private')
     experiment.add_argument('--google-providers', nargs='+', choices=('openserp', 'wml'), default=['openserp', 'wml'])
     experiment.add_argument('--search-rps', type=float, default=2.0)

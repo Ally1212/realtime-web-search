@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from realtime.config import Config
-from realtime.experiment_store import ExperimentStore, digest
+from realtime.experiment_store import ExperimentStore, digest, query_shard
 from realtime.google_experiment import Runner, command, experiment_message, export_report, fetch_one, normalize_languages, publication_metadata, quality, seed_queries, site_queries
 
 
@@ -387,3 +387,112 @@ class ExperimentTests(unittest.TestCase):
 
 if __name__=='__main__':
     unittest.main()
+
+class ShardedGoogleExperimentTests(unittest.TestCase):
+    def test_query_shards_are_stable_disjoint_and_legacy_compatible(self):
+        ids = [digest(f'site:zh:query {index}')[:24] for index in range(100)]
+        self.assertEqual({query_shard(q, 1) for q in ids}, {0})
+        for count in (2, 3, 5):
+            buckets = {index: set() for index in range(count)}
+            for query_id in ids:
+                buckets[query_shard(query_id, count)].add(query_id)
+            self.assertEqual(set().union(*buckets.values()), set(ids))
+            self.assertFalse(any(a & b for a in buckets.values() for b in buckets.values() if a is not b))
+
+    def test_due_query_only_returns_its_own_shard_and_keeps_frontier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(Path(tmp), create=True)
+            try:
+                store.set('shard_count', 2)
+                keys = []
+                for index in range(40):
+                    key = store.add_query('site', f'query {index}', 'zh', 'AI')
+                    keys.append((key, query_shard(key, 2)))
+                for shard in (0, 1):
+                    store.set('shard_index', shard)
+                    selected = {row['id'] for _ in range(20)
+                                if (row := store.due_query('site', time.time())) is not None
+                                for _ in [store.db.execute('UPDATE schedule SET due=? WHERE query_id=? AND page=?', (time.time()+300, row['id'], row['page'])), None]}
+                    self.assertTrue(selected)
+                    self.assertEqual({query_shard(key, 2) for key in selected}, {shard})
+                self.assertFalse(any(query_shard(key, 2) == 2 for key, _ in keys))
+            finally:
+                store.db.close()
+
+    def test_invalid_shard_index_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(Path(tmp), create=True)
+            try:
+                store.set('shard_count', 2)
+                store.set('shard_index', 2)
+                store.add_query('site', 'AI', 'zh', 'AI')
+                with self.assertRaises(ValueError):
+                    store.due_query('site', time.time())
+            finally:
+                store.db.close()
+
+class ExperimentSummaryTests(unittest.TestCase):
+    def test_summary_reports_local_and_global_deduped_production_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shared_hash = digest('shared body AI research and model evaluation. ' * 20)
+            for shard in range(2):
+                store = ExperimentStore(root/f'shard-{shard}', create=True)
+                started = time.time()-60
+                try:
+                    for key, value in {
+                        'started_at': started, 'deadline': started+600, 'finished_at': started+300,
+                        'state': 'complete', 'shard_count': 2, 'shard_index': shard,
+                        'search_rps': .25, 'search_workers': 2, 'body_workers': 12,
+                        'google_providers': ['wml'], 'proxy_profile': 'private', 'query_plan': 'yield',
+                    }.items():
+                        store.set(key, value)
+                    key = store.add_query('site', f'AI {shard}', 'zh', 'AI')
+                    row = store.db.execute('SELECT * FROM queries WHERE id=?', (key,)).fetchone()
+                    url = f'https://{shard}.example/article'
+                    store.search(row, 1, started+1, [{'url': url, 'title': 'a'}],
+                                 [{'provider':'wml','success':True,'error':''}])
+                    doc = document(url=url)
+                    doc['content_hash'] = shared_hash
+                    doc_id, _ = store.save_document(
+                        {'requested_url': url, 'document': doc, 'status': 'success', 'seconds': .1,
+                         'finished': started+10}, quality(doc), store.get('deadline'))
+                    with store.db:
+                        store.db.execute(
+                            "INSERT INTO outbox(document_id,payload,status,finished) VALUES(?,NULL,'accepted',?)",
+                            (doc_id, started+20))
+                finally:
+                    store.db.close()
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                'summary', Path(__file__).resolve().parents[1]/'scripts/summarize_google_experiments.py')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            report = module.global_dedup([root/'shard-0/experiment.sqlite3', root/'shard-1/experiment.sqlite3'])
+            self.assertEqual(report['global_unique_urls'], 2)
+            self.assertEqual(report['global_deduped_strict_new'], 1)
+            self.assertEqual(report['global_deduped_accepted'], 1)
+            self.assertEqual(report['global_searches'], 2)
+
+class SearchSlotNamespaceTests(unittest.TestCase):
+    def test_sharded_runners_receive_isolated_durable_rate_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(Path(tmp), create=True)
+            store.set('state', 'running')
+            store.set('deadline', time.time()+600)
+            store.set('executor', 'pipeline')
+            store.set('search_rps', .5)
+            calls = []
+            class Production:
+                def acquire_discovery_slot(self, source, rps, maximum_rps=2):
+                    calls.append((source, rps, maximum_rps))
+                    return {'allowed': True, 'wait': 0}
+            try:
+                runner = Runner(store, Config(), Production(), Path(tmp))
+                runner.slot('google_wml', .5)
+                store.set('search_slot_namespace', 'shard-1-of-3')
+                runner.slot('google_wml', .5)
+                self.assertEqual([call[0] for call in calls], ['google_wml', 'google_wml:shard-1-of-3'])
+                self.assertEqual(calls[1][1], .5)
+            finally:
+                store.db.close()

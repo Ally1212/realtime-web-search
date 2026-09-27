@@ -17,6 +17,8 @@ def main():
     parser.add_argument('--body-workers', type=int, default=24)
     parser.add_argument('--body-max-rss-mib', type=int, default=192)
     parser.add_argument('--search-workers', type=int, default=4)
+    parser.add_argument('--shard-count', type=int, default=1)
+    parser.add_argument('--shard-index', type=int, default=0)
     parser.add_argument('--search-rps', type=float, default=2.0)
     parser.add_argument('--proxy-profile', choices=['private', 'public_google'], default='private')
     parser.add_argument('--google-providers', nargs='+', choices=['openserp'], default=['openserp'])
@@ -26,6 +28,8 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', args.key) or not 0 < args.hours <= 24:
         raise SystemExit('Invalid experiment key or duration')
+    if not 1 <= args.shard_count <= 64 or not 0 <= args.shard_index < args.shard_count:
+        raise SystemExit('Invalid shard configuration')
     root = Path(__file__).resolve().parents[1]
     container_name = 'realtime-google-' + args.key
     old = json.loads(subprocess.check_output(['docker', 'inspect', args.environment_container]))[0]
@@ -55,7 +59,8 @@ def main():
                 '--hours', str(args.hours), '--languages', 'zh', '--executor', 'pipeline',
                 '--query-plan', args.query_plan, '--body-workers', str(args.body_workers),
                 '--body-max-rss-mib', str(args.body_max_rss_mib),
-                '--search-workers', str(args.search_workers), '--search-rps', str(args.search_rps),
+                '--search-workers', str(args.search_workers), '--shard-count', str(args.shard_count),
+                '--shard-index', str(args.shard_index), '--search-rps', str(args.search_rps),
                 '--proxy-profile', args.proxy_profile, '--storage-budget-gib', str(args.storage_budget_gib), '--google-providers', *args.google_providers, '--whale', '--remote-only']
         for baseline in args.baseline:
             if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', baseline):
