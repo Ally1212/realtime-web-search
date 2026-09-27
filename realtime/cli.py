@@ -54,6 +54,7 @@ def main() -> None:
     experiment.add_argument('--openserp-rps', type=float, default=.05)
     experiment.add_argument('--storage-budget-gib', type=float, default=10)
     experiment.add_argument('--query-plan', choices=('balanced', 'yield', 'dense'), default='balanced')
+    experiment.add_argument('--search-family-weights', nargs='+', choices=('site', 'topic', 'event', 'recent'))
     experiment.add_argument(
         "--languages", default="zh,en",
         help="Comma-separated experiment languages: zh,en (default: zh,en)",

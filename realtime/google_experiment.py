@@ -687,6 +687,9 @@ def command(args):
         store.set('openserp_rps', max(.01, min(8.0, getattr(args, 'openserp_rps', .05))))
         store.set('storage_budget_gib', getattr(args, 'storage_budget_gib', 10))
         store.set('query_plan', getattr(args, 'query_plan', 'balanced'))
+        family_weights = getattr(args, 'search_family_weights', None)
+        if family_weights:
+            store.set('search_family_weights', list(family_weights))
         store.set('baseline_run_paths', list(args.baseline_run))
         store.set('state', 'initializing')
     if not store.get('baseline_ready'):
