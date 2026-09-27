@@ -97,7 +97,8 @@ def main() -> None:
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(text+'\n', encoding='utf-8')
+        with args.output.open('w', encoding='utf-8') as handle:
+            handle.write(text+'\n')
         print(f'wrote report to {args.output}', file=sys.stderr)
     print(text)
 
