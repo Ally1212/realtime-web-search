@@ -45,6 +45,7 @@ def metrics(path: Path) -> dict:
             'google_successes': sum(bool(a.get('success')) for a in attempts),
             'google_captchas': sum(a.get('error') == 'google_captcha' for a in attempts),
             'transport_errors': sum(str(a.get('error', '')).startswith(('google_timeout', 'google_transport')) for a in attempts),
+            'attempt_errors': {code: sum(a.get('error') == code for a in attempts) for code in sorted({a.get('error') for a in attempts if a.get('error')})},
             'unique_urls': db.execute('SELECT count(*) FROM urls WHERE first_seen>=? AND first_seen<=?', (start, end)).fetchone()[0],
             'strict_new_local': len(strict), 'accepted_local': len(accepted),
             'settings': {
