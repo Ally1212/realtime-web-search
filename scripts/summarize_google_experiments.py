@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 
@@ -97,6 +98,7 @@ def main() -> None:
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text+'\n', encoding='utf-8')
+        print(f'wrote report to {args.output}', file=sys.stderr)
     print(text)
 
 
