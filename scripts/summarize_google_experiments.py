@@ -85,7 +85,7 @@ def global_dedup(paths: list[Path]) -> dict:
             'global_deduped_accepted': len(accepted), 'global_searches': len(query_pages)}
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('experiment_sqlite', nargs='+', type=Path)
     parser.add_argument('--output', type=Path)
@@ -95,13 +95,14 @@ def main() -> None:
     report['totals_local'] = {key: sum(int(run.get(key) or 0) for run in report['runs'])
                               for key in ('strict_new_local', 'accepted_local', 'search_pages', 'successful_searches')}
     text = json.dumps(report, ensure_ascii=False, indent=2)
-    if args.output:
+    if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open('w', encoding='utf-8') as handle:
             handle.write(text+'\n')
         print(f'wrote report to {args.output}', file=sys.stderr)
     print(text)
+    return 0
 
 
-if __name__ == '__main':
-    main()
+if __name__ == '__main__':
+    raise SystemExit(main())
