@@ -88,6 +88,9 @@ class ExperimentTests(unittest.TestCase):
         self.assertTrue(any('news research' in r['query'] for r in rows if r['family']=='event'))
         self.assertTrue(all('after:' in r['query'] for r in rows if r['family']=='recent'))
         self.assertTrue(all('-site:youtube.com' in r['query'] for r in rows))
+        recency_dates = {r['query'].split(' after:', 1)[1].split(' ', 1)[0]
+                         for r in rows if r['family'] == 'recent'}
+        self.assertEqual(len(recency_dates), 6)
         before = self.store.db.execute('SELECT count(*) FROM schedule').fetchone()[0]
         seed_queries(self.store,Config(),time.time())
         self.assertEqual(before,self.store.db.execute('SELECT count(*) FROM schedule').fetchone()[0])
@@ -165,6 +168,23 @@ class ExperimentTests(unittest.TestCase):
         due=self.store.due_query('topic',time.time())
         self.assertEqual(due['page'],2)
         self.assertEqual(self.store.counts()['search_failures'],1)
+
+    def test_site_expansion_prefers_whale_accepted_hosts(self):
+        for n in range(2):
+            self.save(document(url=f'https://low.example/{n}', text=f'low delivery AI research {n} '*40))
+            doc_id=self.store.db.execute('SELECT id FROM documents ORDER BY id DESC LIMIT 1').fetchone()[0]
+            high_doc=self.save(document(url=f'https://high.example/{n}', text=f'high delivery AI research {n} '*40))
+            high_id=self.store.db.execute('SELECT id FROM documents ORDER BY id DESC LIMIT 1').fetchone()[0]
+            with self.store.db:
+                self.store.db.execute("INSERT INTO outbox(document_id,payload,status) VALUES(?,NULL,'accepted')",(high_id,))
+        self.assertEqual(site_queries(self.store),2)
+        queries=[r[0] for r in self.store.db.execute("SELECT query FROM queries WHERE family='site'")]
+        self.assertTrue(any('site:high.example' in q for q in queries))
+        self.assertTrue(any('site:low.example' in q for q in queries))
+        # Selection is capped at 20 hosts globally; this small fixture still
+        # asserts accepted-first ordering through the generated order.
+        self.assertLess(next(i for i,q in enumerate(queries) if 'site:high.example' in q),
+                        next(i for i,q in enumerate(queries) if 'site:low.example' in q))
 
     def test_site_expansion_requires_two_qualified_documents(self):
         self.save()

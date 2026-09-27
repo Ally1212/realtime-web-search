@@ -168,7 +168,9 @@ def seed_queries(
     if store.get('recent_date') != str(today):
         store.db.execute("UPDATE queries SET enabled=0 WHERE family='recent'")
         for spec in topics:
-            for days in (1, 7):
+            # Several explicit recency windows keep high-yield keyword supply
+            # available for an overnight run without widening each result page.
+            for days in (1, 2, 3, 7, 14, 30):
                 text = f'{spec.query} after:{today - timedelta(days=days)}{EXCLUDE}'
                 store.add_query('recent', text, spec.language, spec.query)
         store.set('recent_date', str(today))
@@ -176,19 +178,30 @@ def seed_queries(
 
 def site_queries(store: ExperimentStore):
     candidates = {}
-    for row in store.db.execute("SELECT d.canonical,d.hash,q.topic,q.language FROM documents d JOIN discoveries x ON d.url=x.url "
-                                "JOIN queries q ON q.id=x.query_id WHERE d.quality='[]'"):
+    uploads = {}
+    for row in store.db.execute(
+            "SELECT d.canonical,d.hash,q.topic,q.language,o.status FROM documents d "
+            "JOIN discoveries x ON d.url=x.url JOIN queries q ON q.id=x.query_id "
+            "LEFT JOIN outbox o ON o.document_id=d.id WHERE d.quality='[]'"):
         host = (urlsplit(row['canonical']).hostname or '').lower()
         if not host or any(host == d or host.endswith('.' + d) for d in ('youtube.com', 'youtu.be', 'facebook.com', 'instagram.com', 'tiktok.com')):
             continue
         item = candidates.setdefault(host, {'hashes': set(), 'topics': set()})
         item['hashes'].add(row['hash'])
         item['topics'].add((row['topic'], row['language']))
-    store.db.execute("UPDATE queries SET enabled=0 WHERE family='site'")
-    selected = sorted((h for h, v in candidates.items() if len(v['hashes']) >= 2), key=lambda h: (-len(candidates[h]['hashes']), h))[:20]
+        if row['status'] == 'accepted':
+            uploads.setdefault(host, set()).add(row['hash'])
+    # Existing queries continue their page frontier; only newly added site
+    # supply follows delivery efficiency, the production metric that matters.
+    selected = sorted((h for h, v in candidates.items() if len(v['hashes']) >= 2),
+                      key=lambda h: (-len(uploads.get(h, ())), -len(candidates[h]['hashes']), h))[:20]
+    selected_ids = set()
     for host in selected:
         for topic, language in sorted(candidates[host]['topics'])[:5]:
-            store.add_query('site', f'site:{host} {topic}{EXCLUDE}', language, topic)
+            selected_ids.add(store.add_query('site', f'site:{host} {topic}{EXCLUDE}', language, topic))
+    with store.db:
+        store.db.execute("UPDATE queries SET enabled=0 WHERE family='site' AND id NOT IN (%s)"
+                         % ','.join('?' * len(selected_ids)), tuple(selected_ids))
     store.db.commit()
     return len(selected)
 
@@ -513,7 +526,7 @@ class Runner:
                 now = time.time()
                 state = self.store.get('state')
                 interval = max(0, now-last_tick)
-                kind = 'offline' if interval > 120 else 'paused' if state == 'paused' else 'google_cooling' if self.store.get('search_cooling_until',0)>now else 'active'
+                kind = 'offline' if interval > 120 else 'paused' if state == 'paused' else 'google_cooling' if self.store.get_float('search_cooling_until', 0)>now else 'active'
                 with self.store.db:
                     self.store.db.execute('INSERT INTO runtime VALUES(?,?) ON CONFLICT(kind) DO UPDATE SET seconds=seconds+excluded.seconds', (kind, interval))
                 self.store.set('heartbeat', now)
@@ -559,7 +572,7 @@ class Runner:
                         self.store.db.commit()
                         futures[executor.submit(fetch_one, dict(row), lock)] = row['url']
                     backlog = self.store.db.execute("SELECT count(*) FROM urls WHERE state='pending'").fetchone()[0]
-                    if backlog < SEARCH_BACKLOG_LIMIT and not preflight_done and now >= self.store.get('search_cooling_until',0):
+                    if backlog < SEARCH_BACKLOG_LIMIT and not preflight_done and now >= self.store.get_float('search_cooling_until', 0):
                         for offset in range(4):
                             index = (family_index+offset) % 4
                             row = self.store.due_query(FAMILIES[index], now)

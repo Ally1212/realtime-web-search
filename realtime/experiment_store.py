@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -58,6 +59,12 @@ class ExperimentStore:
         row = self.db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return json.loads(row[0]) if row else default
 
+    def get_float(self, key: str, default: float = 0.0) -> float:
+        try:
+            return float(self.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
     def set(self, key: str, value):
         self.db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (key, json.dumps(value, ensure_ascii=False)))
         self.db.commit()
@@ -80,8 +87,20 @@ class ExperimentStore:
         return key
 
     def due_query(self, family: str, now: float):
+        # Advance an untouched query through its complete 1-11 page frontier
+        # before opening another query. This preserves the required page
+        # coverage while preventing a shallow page-1 frontier from starving.
+        # A due row for an already successful page is only a refresh. Give the
+        # query with the deepest completed frontier the next unvisited page so
+        # one keyword reaches all eleven pages before thousands of shallow
+        # page-1/page-2 frontiers round-robin away from deep-page coverage.
         return self.db.execute("SELECT q.*,s.page FROM queries q JOIN schedule s ON q.id=s.query_id "
-                               "WHERE q.enabled=1 AND q.family=? AND s.due<=? ORDER BY q.last_served,q.id,s.page LIMIT 1",
+                               "WHERE q.enabled=1 AND q.family=? AND s.due<=? "
+                               "ORDER BY CASE WHEN EXISTS(SELECT 1 FROM searches x WHERE x.query_id=q.id "
+                               "AND x.page=s.page AND x.status='success') THEN 1 ELSE 0 END, "
+                               "(SELECT count(*) FROM (SELECT DISTINCT page FROM searches y "
+                               "WHERE y.query_id=q.id AND y.status='success')) DESC, "
+                               "q.last_served ASC, q.id, s.page LIMIT 1",
                                (family, now)).fetchone()
 
     def cached(self, query_id: str, page: int, now: float):
@@ -100,6 +119,26 @@ class ExperimentStore:
             self.db.execute("UPDATE queries SET last_served=? WHERE id=?", (now, query['id']))
             for position, item in enumerate(results, 1):
                 url = item['url']
+                # These finance.yahoo.com destinations are quote widgets or SEC
+                # filing listings, not articles; observed strict-new yield was
+                # 0/42 in this experiment.
+                parsed = urlsplit(url)
+                host = (parsed.hostname or "").lower()
+                path = parsed.path.lower()
+                # Social profile/search destinations are not articles and have
+                # produced zero strict-new documents across this ledger.
+                if host in {"www.facebook.com", "www.instagram.com", "www.linkedin.com",
+                            "x.com", "www.reddit.com"}:
+                    continue
+                if host.endswith("finance.yahoo.com") and path.startswith(("/sec-filing/", "/chart/")):
+                    continue
+                # Generic non-article destination shapes remain useful to skip
+                # without blacklisting an entire news or reference domain.
+                if any(segment in path for segment in ("/learn/", "/course/", "/courses/",
+                                                       "/training/", "/professional-certificates/",
+                                                       "/academy/", "/job/", "/jobs/",
+                                                       "/careers/", "/job-detail/", "/vacancy/")):
+                    continue
                 self.db.execute("INSERT INTO urls(url,title,first_seen,last_seen) VALUES(?,?,?,?) "
                                 "ON CONFLICT(url) DO UPDATE SET last_seen=excluded.last_seen", (url, item['title'], now, now))
                 self.db.execute("INSERT INTO discoveries VALUES(?,?,?,?,?,?) ON CONFLICT(url,query_id,page,position) "

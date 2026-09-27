@@ -579,7 +579,7 @@ class PipelineRunner(Runner):
     def _submit_searches(self, family_index):
         now = time.time()
         pending = self.store.db.execute("SELECT count(*) FROM urls WHERE state='pending'").fetchone()[0]
-        if pending >= 1500 or now < self.store.get('search_cooling_until', 0):
+        if pending >= 1500 or now < self.store.get_float('search_cooling_until', 0):
             return family_index
         weights = self.store.get('search_family_weights')
         families = tuple(weights) if weights else self.search_families
@@ -675,7 +675,7 @@ class PipelineRunner(Runner):
                     else:
                         store.set(event, value)
                 if now - last_tick >= 1:
-                    kind = 'paused' if state == 'paused' else 'google_cooling' if store.get('search_cooling_until', 0) > now else 'active'
+                    kind = 'paused' if state == 'paused' else 'google_cooling' if store.get_float('search_cooling_until', 0) > now else 'active'
                     with store.db:
                         store.db.execute('INSERT INTO runtime VALUES(?,?) ON CONFLICT(kind) DO UPDATE SET seconds=seconds+excluded.seconds',
                                          (kind, now-last_tick))

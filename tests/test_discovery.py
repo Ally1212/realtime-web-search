@@ -522,3 +522,11 @@ class DiscoveryTests(unittest.TestCase):
         )
         d._select_proxy('wml')
         self.assertEqual(pool.choose.call_args.kwargs['sticky_seconds'], 0)
+
+    def test_search_discovery_bounds_curl_sessions(self):
+        transport = SearchDiscovery(
+            providers=("wml",), max_curl_sessions=8
+        ).transport
+
+        self.assertEqual(transport.max_curl_sessions, 8)
+        transport.close()

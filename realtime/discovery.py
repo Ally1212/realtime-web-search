@@ -111,6 +111,7 @@ class SearchDiscovery:
         google_serp_evidence_dir: str = "state/serp-evidence",
         serp_attempt_recorder: Callable[..., None] | None = None,
         proxy_provider_attempts: int = 1,
+        max_curl_sessions: int = 24,
         provider_cooldowns: ProviderCooldownRegistry | None = None,
     ):
         self.timeout = timeout
@@ -173,6 +174,7 @@ class SearchDiscovery:
             persistent_browser_failure_threshold=persistent_browser_failure_threshold,
             google_serp_save_html=google_serp_save_html,
             google_serp_evidence_dir=google_serp_evidence_dir,
+            max_curl_sessions=max_curl_sessions,
         )
         self.serp_attempt_recorder = serp_attempt_recorder
         # Zero means exhaust every currently available rotating proxy before

@@ -347,6 +347,22 @@ class PipelineTests(unittest.TestCase):
             finally:
                 store.db.close()
 
+    def test_pipeline_accepts_legacy_numeric_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(Path(tmp), create=True)
+            try:
+                store.set('deadline', time.time()+7200)
+                store.set('query_plan', 'yield')
+                store.set('search_workers', 4)
+                store.set('search_cooling_until', str(time.time()+300))
+                for family in ('site', 'recent', 'topic', 'event'):
+                    store.add_query(family, f'{family} query', family, '人工智能', pages=1)
+                runner = PipelineRunner(store, Config(), Mock(), Path(tmp))
+                self.assertEqual(runner._submit_searches(0), 0)
+                self.assertTrue(runner.jobs.empty())
+            finally:
+                store.db.close()
+
     def test_search_family_weights_are_runtime_configurable(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ExperimentStore(Path(tmp), create=True)
@@ -399,6 +415,41 @@ class PipelineTests(unittest.TestCase):
                 with patch.object(runner, 'client', return_value=client):
                     runner.search(row)
                 self.assertGreater(store.get('search_cooling_until'), time.time()+55)
+            finally:
+                store.db.close()
+
+    def test_pipeline_advances_one_query_through_full_page_frontier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(Path(tmp), create=True)
+            try:
+                first = store.add_query('site', 'site:example.com 人工智能', 'zh', '人工智能')
+                second = store.add_query('site', 'site:example.net 人工智能', 'zh', '人工智能')
+                older = store.add_query('site', 'site:example.org 人工智能', 'zh', '人工智能')
+                store.db.execute("UPDATE queries SET last_served=? WHERE id=?", (1, older))
+                store.db.execute("UPDATE schedule SET due=? WHERE query_id=? AND page=1", (2, older))
+                store.db.execute("UPDATE schedule SET due=? WHERE query_id=? AND page=1", (2, first))
+                self.assertEqual(store.due_query('site', 3)['id'], first)
+
+                # A successful page 1 can become due again after its refresh TTL;
+                # the still-unvisited page 2 must win over both that refresh and
+                # opening another untouched query.
+                query = dict(store.db.execute("SELECT * FROM queries WHERE id=?", (first,)).fetchone())
+                store.search(query, 1, 1, [], [], "")
+                store.db.execute("UPDATE queries SET last_served=1 WHERE id=?", (first,))
+                store.db.execute("UPDATE schedule SET due=? WHERE query_id=? AND page=1", (2, first))
+                store.db.execute("UPDATE schedule SET due=? WHERE query_id=? AND page=2", (2, first))
+                store.db.execute("UPDATE schedule SET due=? WHERE query_id=? AND page=1", (2, second))
+                row = store.due_query('site', 3)
+                self.assertEqual((row['id'], row['page']), (first, 2))
+
+                # Deep-page continuation must not lose to opening a newer query:
+                # complete this query's frontier before starting another one.
+                query = dict(store.db.execute("SELECT * FROM queries WHERE id=?", (first,)).fetchone(), page=2)
+                store.search(query, 2, 2, [], [], "")
+                store.db.execute("UPDATE schedule SET due=? WHERE query_id=? AND page=3", (3, first))
+                store.db.execute("UPDATE schedule SET due=? WHERE query_id=? AND page=1", (3, second))
+                row = store.due_query('site', 3)
+                self.assertEqual((row['id'], row['page']), (first, 3))
             finally:
                 store.db.close()
 
@@ -664,6 +715,48 @@ class PipelineTests(unittest.TestCase):
                     jobs.append(runner.jobs.get_nowait())
                 self.assertEqual(len(jobs), 3)
                 self.assertEqual(len({(j['id'], j['page']) for j in jobs}), 3)
+            finally:
+                store.db.close()
+
+    def test_low_yield_finance_destinations_are_not_queued(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ExperimentStore(Path(tmp), create=True)
+            try:
+                key = store.add_query('site', 'AI news', 'en', 'AI')
+                row = store.db.execute('SELECT * FROM queries WHERE id=?', (key,)).fetchone()
+                store.search(row, 1, time.time(), [
+                    {'url': 'https://www.facebook.com/a', 'title': 'facebook'},
+                    {'url': 'https://www.instagram.com/a', 'title': 'instagram'},
+                    {'url': 'https://finance.yahoo.com/quote/AAPL', 'title': 'AAPL'},
+                    {'url': 'https://finance.yahoo.com/chart/AAPL', 'title': 'AAPL chart'},
+                    {'url': 'https://finance.yahoo.com/sec-filing/AAPL', 'title': 'AAPL filing'},
+                    {'url': 'https://finance.yahoo.com/news/ai-article.html', 'title': 'AI article'},
+                    {'url': 'https://www.coursera.org/learn/ai-course', 'title': 'AI course'},
+                    {'url': 'https://learn.microsoft.com/azure/ai', 'title': 'AI docs'},
+                    {'url': 'https://github.com/org/ai-project', 'title': 'AI repository'},
+                    {'url': 'https://arxiv.org/abs/2609.1', 'title': 'AI paper'},
+                    {'url': 'https://m.21jingji.com/article/a.html', 'title': 'AI article'},
+                    {'url': 'https://tianqi.csdn.net/a.html', 'title': 'AI article'},
+                    {'url': 'https://www.energy.gov/article', 'title': 'AI article'},
+                    {'url': 'https://careers.example.com/jobs/123', 'title': 'AI job'},
+                    {'url': 'https://www.coursera.org/articles/ai-article', 'title': 'AI article'},
+                ], [])
+                queued = {row[0] for row in store.db.execute('SELECT url FROM urls')}
+                self.assertNotIn('https://www.facebook.com/a', queued)
+                self.assertNotIn('https://www.instagram.com/a', queued)
+                self.assertNotIn('https://finance.yahoo.com/chart/AAPL', queued)
+                self.assertNotIn('https://finance.yahoo.com/sec-filing/AAPL', queued)
+                self.assertIn('https://finance.yahoo.com/quote/AAPL', queued)
+                self.assertIn('https://finance.yahoo.com/news/ai-article.html', queued)
+                self.assertNotIn('https://www.coursera.org/learn/ai-course', queued)
+                self.assertNotIn('https://careers.example.com/jobs/123', queued)
+                self.assertIn('https://learn.microsoft.com/azure/ai', queued)
+                self.assertIn('https://github.com/org/ai-project', queued)
+                self.assertIn('https://arxiv.org/abs/2609.1', queued)
+                self.assertIn('https://m.21jingji.com/article/a.html', queued)
+                self.assertIn('https://tianqi.csdn.net/a.html', queued)
+                self.assertIn('https://www.energy.gov/article', queued)
+                self.assertIn('https://www.coursera.org/articles/ai-article', queued)
             finally:
                 store.db.close()
 
