@@ -452,6 +452,10 @@ class ExperimentSummaryTests(unittest.TestCase):
                     url = f'https://{shard}.example/article'
                     store.search(row, 1, started+1, [{'url': url, 'title': 'a'}],
                                  [{'provider':'wml','success':True,'error':''}])
+                    if shard == 0:
+                        store.search(row, 2, started+2, [],
+                                     [{'provider':'openserp','success':False,'error':'openserp_proxy_connect'}],
+                                     error='openserp_proxy_connect')
                     doc = document(url=url)
                     doc['content_hash'] = shared_hash
                     doc_id, _ = store.save_document(
@@ -461,6 +465,18 @@ class ExperimentSummaryTests(unittest.TestCase):
                         store.db.execute(
                             "INSERT INTO outbox(document_id,payload,status,finished) VALUES(?,NULL,'accepted',?)",
                             (doc_id, started+20))
+                    if shard == 0:
+                        duplicate_url = 'https://duplicate.example/article'
+                        duplicate_doc = document(url=duplicate_url)
+                        duplicate_doc['content_hash'] = digest('a distinct body already held by Whale')
+                        duplicate_id, _ = store.save_document(
+                            {'requested_url': duplicate_url, 'document': duplicate_doc,
+                             'status': 'success', 'seconds': .1, 'finished': started+11},
+                            quality(duplicate_doc), store.get('deadline'))
+                        with store.db:
+                            store.db.execute(
+                                "INSERT INTO outbox(document_id,payload,status,finished) VALUES(?,NULL,'duplicate',?)",
+                                (duplicate_id, started+21))
                 finally:
                     store.db.close()
             import importlib.util
@@ -470,9 +486,12 @@ class ExperimentSummaryTests(unittest.TestCase):
             spec.loader.exec_module(module)
             report = module.global_dedup([root/'shard-0/experiment.sqlite3', root/'shard-1/experiment.sqlite3'])
             self.assertEqual(report['global_unique_urls'], 2)
-            self.assertEqual(report['global_deduped_strict_new'], 1)
+            self.assertEqual(report['global_deduped_strict_new'], 2)
             self.assertEqual(report['global_deduped_accepted'], 1)
-            self.assertEqual(report['global_searches'], 2)
+            self.assertEqual(report['global_searches'], 3)
+            local = module.metrics(root/'shard-0/experiment.sqlite3')
+            self.assertEqual(local['accepted_local'], 1)
+            self.assertEqual(local['transport_errors'], 1)
 
 class SearchSlotNamespaceTests(unittest.TestCase):
     def test_sharded_runners_receive_isolated_durable_rate_slots(self):

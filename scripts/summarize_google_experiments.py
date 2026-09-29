@@ -8,6 +8,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
+TRANSPORT_ERRORS = {
+    'google_timeout', 'openserp_proxy_connect', 'openserp_proxy_timeout',
+    'openserp_proxy_unavailable', 'openserp_unavailable',
+}
+
 
 def metrics(path: Path) -> dict:
     db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
@@ -35,8 +40,9 @@ def metrics(path: Path) -> dict:
         for row in documents:
             if row['classification'] == 'new' and row['hash']:
                 strict[row['hash']] = row
-        accepted = {row['canonical'] for row in documents
-                    if row['receipt'] in {'accepted', 'duplicate'} and row['receipt_finished'] and start <= row['receipt_finished'] <= end}
+        accepted = {row['hash'] for row in documents
+                    if row['classification'] == 'new' and row['hash'] and row['receipt'] == 'accepted'
+                    and row['receipt_finished'] is not None and start <= row['receipt_finished'] <= end}
         return {
             'path': str(path), 'id': settings.get('id'), 'state': settings.get('state'),
             'shard_count': settings.get('shard_count', 1), 'shard_index': settings.get('shard_index', 0),
@@ -45,7 +51,8 @@ def metrics(path: Path) -> dict:
             'cache_hits': search['cached'], 'google_requests': len(attempts),
             'google_successes': sum(bool(a.get('success')) for a in attempts),
             'google_captchas': sum(a.get('error') == 'google_captcha' for a in attempts),
-            'transport_errors': sum(str(a.get('error', '')).startswith(('google_timeout', 'google_transport')) for a in attempts),
+            'transport_errors': sum(a.get('error') in TRANSPORT_ERRORS or
+                                    str(a.get('error', '')).startswith('google_transport') for a in attempts),
             'attempt_errors': {code: sum(a.get('error') == code for a in attempts) for code in sorted({a.get('error') for a in attempts if a.get('error')})},
             'unique_urls': db.execute('SELECT count(*) FROM urls WHERE first_seen>=? AND first_seen<=?', (start, end)).fetchone()[0],
             'strict_new_local': len(strict), 'accepted_local': len(accepted),
@@ -75,8 +82,9 @@ def global_dedup(paths: list[Path]) -> dict:
                 'AND finished>=? AND finished<=? AND hash<>\'\'', (start, end)))
             accepted.update(row[0] for row in db.execute(
                 "SELECT d.hash FROM documents d JOIN outbox o ON o.document_id=d.id "
-                "WHERE o.status IN ('accepted','duplicate') AND d.quality='[]' "
-                'AND o.finished>=? AND o.finished<=? AND d.canonical<>\'\'', (start, end)))
+                "WHERE o.status='accepted' AND d.classification='new' AND d.quality='[]' "
+                "AND d.hash<>'' AND d.finished>=? AND d.finished<=? "
+                'AND o.finished>=? AND o.finished<=?', (start, end, start, end)))
             query_pages.update((row[0], row[1]) for row in db.execute(
                 'SELECT query_id,page FROM searches WHERE finished>=? AND finished<=?', (start, end)))
         finally:
