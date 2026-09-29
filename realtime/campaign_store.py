@@ -14,6 +14,8 @@ from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
 
 
+CAMPAIGN_SOURCES = ("google_web", "google_news", "google_trends", "rss")
+
 _POOLS: dict[tuple[str, int, int], ConnectionPool[Any]] = {}
 _POOLS_LOCK = threading.Lock()
 _INITIALIZED_DSNS: set[str] = set()
@@ -75,6 +77,7 @@ CREATE TABLE IF NOT EXISTS pages (
 );
 ALTER TABLE pages ADD COLUMN IF NOT EXISTS indexed_at timestamptz;
 ALTER TABLE pages ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '';
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sources jsonb NOT NULL DEFAULT '["google_web"]'::jsonb;
 CREATE TABLE IF NOT EXISTS campaign_pages (
   campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   page_id bigint NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
@@ -1025,14 +1028,19 @@ class CampaignStore:
             )
 
     def create_campaign(
-        self, query: str, aliases: list[str], daily_target: int, proxy_profile: str
+        self, query: str, aliases: list[str], daily_target: int, proxy_profile: str,
+        sources: list[str] | None = None,
     ) -> str:
         campaign_id = str(uuid4())
+        selected = [value for value in (sources or ["google_web"]) if value in CAMPAIGN_SOURCES]
+        if not selected:
+            selected = ["google_web"]
         with self.connect() as connection:
             connection.execute(
-                "INSERT INTO campaigns(id,query,aliases,daily_target,proxy_profile,status) "
-                "VALUES(%s,%s,%s::jsonb,%s,%s,'active')",
-                (campaign_id, query, json.dumps(aliases, ensure_ascii=False), daily_target, proxy_profile),
+                "INSERT INTO campaigns(id,query,aliases,daily_target,proxy_profile,sources,status) "
+                "VALUES(%s,%s,%s::jsonb,%s,%s,%s::jsonb,'active')",
+                (campaign_id, query, json.dumps(aliases, ensure_ascii=False), daily_target,
+                 proxy_profile, json.dumps(selected)),
             )
         return campaign_id
 

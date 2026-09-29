@@ -530,3 +530,120 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(transport.max_curl_sessions, 8)
         transport.close()
+
+RSS_SAMPLE = '''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Sample</title>
+<item><title>\u7b2c\u4e00\u6761\u65b0\u95fb</title><link>https://example.com/a1</link></item>
+<item><title>Second story</title><link>https://example.com/a2</link></item>
+</channel></rss>'''.encode()
+
+TRENDS_SAMPLE = '''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:ht="https://trends.google.com/trending/rss"><channel>
+<item><title>热点话题</title><link>https://trends.google.com/trending?x=1</link>
+<ht:news_item_url>https://news-site.example/story-1</ht:news_item_url></item>
+</channel></rss>'''.encode()
+
+
+class FeedDiscoveryTests(unittest.TestCase):
+    def _discovery(self, **kwargs):
+        kwargs.setdefault('providers', ('wml',))
+        return SearchDiscovery(timeout=5, proxy_profile='direct', **kwargs)
+
+    def test_parse_feed_items(self):
+        results = SearchDiscovery._parse_feed(RSS_SAMPLE, 'rss-test')
+        self.assertEqual([r.url for r in results],
+                         ['https://example.com/a1', 'https://example.com/a2'])
+        self.assertEqual(results[0].title, '第一条新闻')
+        self.assertEqual(results[0].engines, ('rss-test',))
+
+    def test_parse_feed_trends_prefers_news_item_url(self):
+        results = SearchDiscovery._parse_feed(TRENDS_SAMPLE, 'google_trends')
+        self.assertEqual([r.url for r in results], ['https://news-site.example/story-1'])
+        self.assertEqual(results[0].title, '热点话题')
+
+    def test_offline_google_news_url_decodes_publisher(self):
+        import base64
+        token = base64.urlsafe_b64encode(b'\x00prefix-byteshttps://publisher.example/path?q=1').decode().rstrip('=')
+        url = f'https://news.google.com/rss/articles/{token}'
+        self.assertEqual(
+            SearchDiscovery._offline_google_news_url(url),
+            'https://publisher.example/path?q=1',
+        )
+
+    def test_offline_google_news_url_passthrough_non_google(self):
+        url = 'https://example.com/plain'
+        self.assertEqual(SearchDiscovery._offline_google_news_url(url), url)
+
+    def test_feed_targets_split_news_and_generic(self):
+        discovery = self._discovery(
+            news_locales=('US:en', 'SG:zh-Hans'),
+            feeds=(('my-rss', 'https://feed.example/rss?q={query}'),),
+        )
+        news = discovery._feed_targets(('AI',), ('news',))
+        generic = discovery._feed_targets(('AI',), ('generic',))
+        self.assertEqual(len(news), 2)
+        self.assertTrue(all('news.google.com/rss/search' in url for url in news))
+        self.assertEqual({row[0] for row in news.values()}, {'google_news'})
+        self.assertEqual(list(generic), ['https://feed.example/rss?q=AI'])
+        self.assertEqual(list(generic.values())[0][0], 'my-rss')
+
+    def test_discover_feeds_merges_and_dedupes(self):
+        discovery = self._discovery(
+            news_locales=('US:en',),
+            feeds=(('my-rss', 'https://feed.example/rss?q={query}'),),
+        )
+        responses = {
+            'https://feed.example/rss?q=AI': RSS_SAMPLE,
+        }
+        news_url = discovery._news_url('AI', 'US:en')
+        responses[news_url] = RSS_SAMPLE
+
+        class FakeResponse:
+            def __init__(self, content):
+                self.content = content
+                self.headers = {}
+                self.status_code = 200
+            def raise_for_status(self):
+                return None
+            def iter_content(self, size):
+                yield self.content
+            def close(self):
+                return None
+
+        def fake_get(url, **kwargs):
+            return FakeResponse(responses[url])
+
+        with patch.object(SearchDiscovery, '_external_get', side_effect=fake_get):
+            results, errors = discovery.discover_feeds(('AI',))
+        self.assertEqual(errors, [])
+        self.assertEqual([r.url for r in results],
+                         ['https://example.com/a1', 'https://example.com/a2'])
+        self.assertEqual(
+            sorted(results[0].engines), ['google_news', 'my-rss'],
+        )
+
+    def test_discover_trends_uses_geo_list_and_cache(self):
+        discovery = self._discovery(news_locales=('US:en', 'SG:en', 'US:en'))
+        calls = []
+
+        class FakeResponse:
+            headers = {}
+            status_code = 200
+            content = TRENDS_SAMPLE
+            def raise_for_status(self):
+                return None
+            def iter_content(self, size):
+                yield self.content
+            def close(self):
+                return None
+
+        def fake_get(self, url, **kwargs):
+            calls.append(url)
+            return FakeResponse()
+
+        with patch.object(SearchDiscovery, '_external_get', fake_get):
+            results, errors = discovery.discover_trends()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(calls), 2)  # US and SG, deduped
+        self.assertEqual([r.url for r in results], ['https://news-site.example/story-1'])
+        self.assertEqual(results[0].engines, ('google_trends',))

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import base64
 import concurrent.futures
 import hashlib
+import re
 import json
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
+from xml.etree import ElementTree
 
 import requests
 from bs4 import BeautifulSoup
@@ -55,6 +58,14 @@ class ProviderCooldownRegistry:
         deadline = time.monotonic() + max(1.0, float(seconds))
         with self._lock:
             self._deadlines[provider] = max(deadline, self._deadlines.get(provider, 0.0))
+
+
+MAX_FEED_BYTES = 5_000_000
+
+_NEWS_RESOLUTION_PENDING: set[str] = set()
+_NEWS_RESOLUTION_LOCK = threading.Lock()
+_NEWS_RESOLUTION_LIMIT = 32
+_NEWS_RESOLUTION_WORKERS = threading.BoundedSemaphore(2)
 
 
 class SearchDiscovery:
@@ -113,6 +124,10 @@ class SearchDiscovery:
         proxy_provider_attempts: int = 1,
         max_curl_sessions: int = 24,
         provider_cooldowns: ProviderCooldownRegistry | None = None,
+        feeds: tuple[tuple[str, str], ...] = (),
+        news_locales: tuple[str, ...] = (),
+        news_base_interval_seconds: int = 3600,
+        trends_interval_seconds: int = 900,
     ):
         self.timeout = timeout
         self.proxy_pool = proxy_pool
@@ -185,6 +200,13 @@ class SearchDiscovery:
         self._local_next_request = 0.0
         self._local_failures: dict[str, int] = {}
         self._provider_cooldowns = provider_cooldowns or ProviderCooldownRegistry()
+        self.feeds = tuple(feeds)
+        self.news_locales = tuple(dict.fromkeys(news_locales))
+        self.news_base_interval_seconds = max(60, news_base_interval_seconds)
+        self.trends_interval_seconds = max(60, trends_interval_seconds)
+        self._provided_session = session is not None
+        self.session = session
+        self._thread_sessions = threading.local()
         self._thread_state = threading.local()
         self._openserp_google_block_seen = False
 
@@ -644,6 +666,276 @@ class SearchDiscovery:
             # Browser resources are thread-local and must be closed by the same
             # executor thread that created them.
             self._close_browser()
+
+    def _general_session(self) -> requests.Session:
+        if self._provided_session and self.session is not None:
+            return self.session
+        value = getattr(self._thread_sessions, "session", None)
+        if value is None:
+            value = requests.Session()
+            self._thread_sessions.session = value
+        return value
+
+    def _external_get(self, url: str, **kwargs: Any) -> requests.Response:
+        return self._external_request("get", url, **kwargs)
+
+    def _external_post(self, url: str, **kwargs: Any) -> requests.Response:
+        return self._external_request("post", url, **kwargs)
+
+    def _external_request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        selected = None
+        domain = urlsplit(url).hostname or ""
+        if self.proxy_pool and self.proxy_profile != "direct":
+            selected = self.proxy_pool.choose(self.proxy_profile, domain)
+            if selected is None:
+                raise requests.ProxyError(f"{self.proxy_profile} proxy pool unavailable")
+            proxy_url, proxy_key = selected
+            usage_key = (self.proxy_profile, hashlib.sha256(proxy_key.encode()).hexdigest())
+            with self._proxy_usage_lock:
+                self._proxy_usage[usage_key] = self._proxy_usage.get(usage_key, 0) + 1
+            kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
+        try:
+            response = getattr(self._general_session(), method)(url, **kwargs)
+        except requests.RequestException:
+            if selected:
+                self.proxy_pool.report(selected[1], domain, failed=True)
+            raise
+        if selected:
+            self.proxy_pool.report(selected[1], domain, response.status_code)
+        return response
+
+    @staticmethod
+    def _read_limited(response: requests.Response) -> bytes:
+        declared = int(response.headers.get("Content-Length", "0") or 0)
+        if declared > MAX_FEED_BYTES:
+            raise ValueError("feed_too_large")
+        chunks: list[bytes] = []
+        size = 0
+        for chunk in response.iter_content(65_536):
+            size += len(chunk)
+            if size > MAX_FEED_BYTES:
+                raise ValueError("feed_too_large")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    @staticmethod
+    def _parse_feed(content: bytes, source: str) -> list[SearchResult]:
+        root = ElementTree.fromstring(content)
+        results: list[SearchResult] = []
+        for entry in root.iter():
+            if entry.tag.rsplit("}", 1)[-1].lower() not in {"item", "entry"}:
+                continue
+            title, link = "", ""
+            trend_links: list[str] = []
+            for child in entry.iter():
+                tag = child.tag.rsplit("}", 1)[-1].lower()
+                if tag == "title" and not title:
+                    title = "".join(child.itertext()).strip()
+                elif child is not entry and tag == "link" and not link:
+                    rel = child.attrib.get("rel", "alternate")
+                    if rel == "alternate":
+                        link = (child.attrib.get("href") or child.text or "").strip()
+                elif tag == "news_item_url":
+                    value = (child.text or "").strip()
+                    if value:
+                        trend_links.append(value)
+            for value in trend_links or ([link] if link else []):
+                results.append(SearchResult(value, title or value, (source,)))
+        return results
+
+    @staticmethod
+    def _offline_google_news_url(url: str) -> str | None:
+        host = (urlsplit(url).hostname or "").lower()
+        if host != "news.google.com":
+            return url
+        token = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
+        try:
+            raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+        except (ValueError, TypeError):
+            return None
+        match = re.search(rb"https?://[^\x00-\x20]+", raw)
+        return match.group(0).decode("utf-8", "ignore") if match else None
+
+    def _resolve_google_news(self, result: SearchResult) -> SearchResult | None:
+        host = (urlsplit(result.url).hostname or "").lower()
+        if host != "news.google.com":
+            return result
+        offline = self._offline_google_news_url(result.url)
+        if offline:
+            return SearchResult(offline, result.title, result.engines)
+        try:
+            response = self._external_get(result.url, timeout=min(self.timeout, 5), allow_redirects=True, stream=True)
+            try:
+                response.raise_for_status()
+                resolved = str(response.url or "").strip()
+                if resolved and resolved != result.url:
+                    return SearchResult(resolved, result.title, result.engines)
+                soup = BeautifulSoup(response.content, "html.parser")
+                node = soup.select_one("[data-n-a-id][data-n-a-ts][data-n-a-sg]")
+                if node:
+                    article_id = str(node.get("data-n-a-id") or "")
+                    timestamp = int(str(node.get("data-n-a-ts") or "0"))
+                    signature = str(node.get("data-n-a-sg") or "")
+                    request_payload = json.dumps([
+                        "garturlreq", [
+                            ["en-US", "US", ["FINANCE_TOP_INDICES", "WEB_TEST_1_0_0"], None, None, 1, 1, "US:en", None, 180, None, None, None, None, None, 0, None, None, [1608992183, 723341000]],
+                            "en-US", "US", 1, [2, 3, 4, 8], 1, 0, "655000234", 0, 0, None, 0,
+                        ], article_id, timestamp, signature], separators=(",", ":"))
+                    batch = json.dumps([[["Fbv4je", request_payload, None, "generic"]]], separators=(",", ":"))
+                    decoded = self._external_post(
+                        "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                        data={"f.req": batch}, headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+                        timeout=self.timeout,
+                    )
+                    try:
+                        decoded.raise_for_status()
+                        match = re.search(r'garturlres\\",\\"(https?[^"\\]+)', decoded.text)
+                        if match:
+                            resolved = json.loads(f'"{match.group(1)}"')
+                            if resolved and "news.google.com" not in resolved:
+                                return SearchResult(resolved, result.title, result.engines)
+                    finally:
+                        decoded.close()
+            finally:
+                response.close()
+        except Exception:
+            return None
+        return None
+
+    def _prepare_google_news(self, result: SearchResult) -> SearchResult:
+        """Decode cheaply now and bound slower network resolution in the background."""
+        offline = self._offline_google_news_url(result.url)
+        if offline:
+            return SearchResult(offline, result.title, result.engines)
+        key, cached = self._cached("google_news_resolve", result.url, "global")
+        if cached:
+            return cached[0]
+        with _NEWS_RESOLUTION_LOCK:
+            if result.url in _NEWS_RESOLUTION_PENDING or len(_NEWS_RESOLUTION_PENDING) >= _NEWS_RESOLUTION_LIMIT:
+                return result
+            _NEWS_RESOLUTION_PENDING.add(result.url)
+
+        def resolve() -> None:
+            try:
+                with _NEWS_RESOLUTION_WORKERS:
+                    resolved = self._resolve_google_news(result)
+                if resolved:
+                    self._store_cache(
+                        key, "google_news_resolve", result.url, "global", 1,
+                        [resolved], 604800,
+                    )
+            finally:
+                with _NEWS_RESOLUTION_LOCK:
+                    _NEWS_RESOLUTION_PENDING.discard(result.url)
+
+        threading.Thread(target=resolve, name="google-news-resolver", daemon=True).start()
+        return result
+
+    @staticmethod
+    def _news_url(query: str, locale: str) -> str:
+        country, language = (locale.split(":", 1) + ["en"])[:2]
+        hl = f"{language}-{country}" if language in {"en", "zh"} else language
+        return "https://news.google.com/rss/search?q=" + quote(query, safe="") + f"&hl={quote(hl)}&gl={quote(country)}&ceid={quote(locale)}"
+
+    def _feed_targets(
+        self, queries: tuple[str, ...], kinds: tuple[str, ...] = ("news", "generic"),
+    ) -> dict[str, tuple[str, str, str, int]]:
+        rendered: dict[str, tuple[str, str, str, int]] = {}
+        for query in queries:
+            ttl = self.news_base_interval_seconds
+            if "news" in kinds:
+                for locale in self.news_locales:
+                    rendered[self._news_url(query, locale)] = ("google_news", query, locale, ttl)
+            if "generic" in kinds:
+                for name, template in self.feeds:
+                    encoded = quote(query, safe="")
+                    url = (template.replace("{query}", encoded)
+                           .replace("{hl}", "zh-CN" if self.language == "zh" else "en-SG")
+                           .replace("{ceid}", "SG:zh-Hans" if self.language == "zh" else "SG:en"))
+                    rendered[url] = (name, query, self.locale, ttl)
+        return rendered
+
+    def discover_feeds(
+        self, queries: tuple[str, ...], kinds: tuple[str, ...] = ("news", "generic"),
+    ) -> tuple[list[SearchResult], list[str]]:
+        rendered = self._feed_targets(queries, kinds)
+        if not rendered:
+            return [], []
+
+        def fetch(item: tuple[str, tuple[str, str, str, int]]) -> tuple[list[SearchResult], str | None]:
+            url, (name, query, locale, ttl) = item
+            key, cached = self._cached(name, query, locale)
+            if cached is not None:
+                return cached, None
+            try:
+                stale = self.cache_get(key, name) if self.cache_get else None
+                headers = {}
+                if stale and stale.get("etag"):
+                    headers["If-None-Match"] = str(stale["etag"])
+                if stale and stale.get("last_modified"):
+                    headers["If-Modified-Since"] = str(stale["last_modified"])
+                response = self._external_get(
+                    url, timeout=self.timeout, stream=True, headers=headers,
+                )
+                try:
+                    if response.status_code == 304 and stale:
+                        return self._deserialize(stale.get("payload")), None
+                    response.raise_for_status()
+                    results = self._parse_feed(self._read_limited(response), name)
+                finally:
+                    response.close()
+                if "google_news" in name or "google-news" in name:
+                    results = [self._prepare_google_news(row) for row in results]
+                self._store_cache(key, name, query, locale, 1, results, ttl, response=response)
+                if self.source_result_recorder:
+                    self.source_result_recorder(name, success=True, result_count=len(results))
+                return results, None
+            except Exception as exc:
+                if self.source_result_recorder:
+                    self.source_result_recorder(name, success=False)
+                return [], f"{name}: {type(exc).__name__}"
+
+        found: dict[str, SearchResult] = {}
+        errors: list[str] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(rendered))) as executor:
+            for results, error in executor.map(fetch, rendered.items()):
+                if error:
+                    errors.append(error)
+                for result in results:
+                    previous = found.get(result.url)
+                    if previous:
+                        found[result.url] = SearchResult(result.url, previous.title, tuple(dict.fromkeys((*previous.engines, *result.engines))))
+                    else:
+                        found[result.url] = result
+        return list(found.values()), errors
+
+    def discover_trends(self) -> tuple[list[SearchResult], list[str]]:
+        geos = tuple(dict.fromkeys(locale.split(":", 1)[0] for locale in self.news_locales)) or ("US", "SG")
+        found: dict[str, SearchResult] = {}
+        errors: list[str] = []
+        for geo in geos:
+            key, cached = self._cached("google_trends", "daily-trends", geo)
+            if cached is not None:
+                results = cached
+            else:
+                try:
+                    response = self._external_get(f"https://trends.google.com/trending/rss?geo={geo}", timeout=self.timeout, stream=True)
+                    try:
+                        response.raise_for_status()
+                        results = self._parse_feed(self._read_limited(response), "google_trends")
+                    finally:
+                        response.close()
+                    self._store_cache(key, "google_trends", "daily-trends", geo, 1, results, self.trends_interval_seconds, response=response)
+                    if self.source_result_recorder:
+                        self.source_result_recorder("google_trends", success=True, result_count=len(results))
+                except Exception as exc:
+                    errors.append(f"google_trends: {type(exc).__name__}")
+                    if self.source_result_recorder:
+                        self.source_result_recorder("google_trends", success=False)
+                    continue
+            for result in results:
+                found.setdefault(result.url, result)
+        return list(found.values()), errors
 
     def discover_many(self, queries: tuple[str, ...], pages: int) -> tuple[list[SearchResult], list[str]]:
         if not queries:

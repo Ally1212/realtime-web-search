@@ -15,6 +15,35 @@ DEFAULT_CONTINUOUS_AI_EXPANSIONS = (
 )
 
 
+DEFAULT_GOOGLE_NEWS_LOCALES = "US:en,GB:en,SG:en,SG:zh-Hans,HK:zh-Hant,TW:zh-Hant"
+
+# Extra RSS/Atom discovery feeds, overridable with DISCOVERY_FEEDS_JSON.
+# URLs may use {query}, {hl} and {ceid} placeholders.
+DEFAULT_DISCOVERY_FEEDS: tuple[tuple[str, str], ...] = ()
+
+
+def _discovery_feeds() -> tuple[tuple[str, str], ...]:
+    import json as _json
+    raw = os.getenv("DISCOVERY_FEEDS_JSON", "").strip()
+    if not raw:
+        return DEFAULT_DISCOVERY_FEEDS
+    payload = _json.loads(raw)
+    if not isinstance(payload, list):
+        raise ValueError("DISCOVERY_FEEDS_JSON must be a JSON array")
+    feeds: list[tuple[str, str]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("each discovery feed must be an object")
+        name = str(item.get("name", "")).strip()
+        url = str(item.get("url", "")).strip()
+        if not name or not url.startswith(("http://", "https://")):
+            raise ValueError("each discovery feed requires name and an HTTP(S) url")
+        if "{" in url.replace("{query}", "").replace("{hl}", "").replace("{ceid}", ""):
+            raise ValueError("discovery feed URLs only support {query} {hl} {ceid} placeholders")
+        feeds.append((name[:80], url))
+    return tuple(dict.fromkeys(feeds))
+
+
 def _enabled(name: str, default: bool = True) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -94,6 +123,16 @@ class Config:
     )
     max_links_per_page: int = int(os.getenv("MAX_LINKS_PER_PAGE", "100"))
     google_web_enabled: bool = _enabled("GOOGLE_WEB_ENABLED", True)
+    google_news_locales: tuple[str, ...] = _csv(
+        "GOOGLE_NEWS_LOCALES", DEFAULT_GOOGLE_NEWS_LOCALES
+    )
+    google_news_base_interval_seconds: int = int(
+        os.getenv("GOOGLE_NEWS_BASE_INTERVAL_SECONDS", "3600")
+    )
+    google_trends_interval_seconds: int = int(
+        os.getenv("GOOGLE_TRENDS_INTERVAL_SECONDS", "900")
+    )
+    discovery_feeds: tuple[tuple[str, str], ...] = _discovery_feeds()
     google_free_providers: tuple[str, ...] = _csv("GOOGLE_FREE_PROVIDERS", "openserp,wml")
     openserp_url: str = os.getenv("OPENSERP_URL", "http://127.0.0.1:7000")
     openserp_request_timeout_seconds: int = int(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import hashlib
 import time
 from datetime import datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from scrapy.downloadermiddlewares.robotstxt import RobotsTxtMiddleware
 from scrapy.exceptions import IgnoreRequest
 from twisted.internet.task import LoopingCall
 
-from .campaign_store import CampaignStore, PageRecord
+from .campaign_store import CAMPAIGN_SOURCES, CampaignStore, PageRecord
 from .config import Config
 from .discovery import SearchDiscovery
 from .fetcher import detect_language, extract_text, is_public_url, normalize_url, relevant_to
@@ -236,6 +237,18 @@ class FocusedSpider(scrapy.Spider):
         # their explicit platform-provided limit.
         self.daily_target = int(campaign["daily_target"]) if self.whale_task else 0
         self.proxy_profile = str(campaign["proxy_profile"])
+        raw_sources = campaign.get("sources") or ["google_web"]
+        if isinstance(raw_sources, str):
+            try:
+                raw_sources = json.loads(raw_sources)
+            except ValueError:
+                raw_sources = ["google_web"]
+        self.sources = tuple(
+            dict.fromkeys(
+                str(value) for value in raw_sources
+                if str(value) in CAMPAIGN_SOURCES
+            )
+        ) or ("google_web",)
         self.robots_bypass_domains = self.config.robots_bypass_domains
         self.accepted = 0
         self._search_discovery: SearchDiscovery | None = None
@@ -342,6 +355,10 @@ class FocusedSpider(scrapy.Spider):
             openserp_url=self.config.openserp_url,
             openserp_request_timeout_seconds=self.config.openserp_request_timeout_seconds,
             searxng_url=self.config.searxng_url,
+            feeds=self.config.discovery_feeds,
+            news_locales=self.config.google_news_locales,
+            news_base_interval_seconds=self.config.google_news_base_interval_seconds,
+            trends_interval_seconds=self.config.google_trends_interval_seconds,
             persistent_browser_enabled=self.config.persistent_browser_enabled,
             persistent_browser_profile_root=str(self.config.persistent_browser_profile_root),
             persistent_browser_max_contexts=self.config.persistent_browser_max_contexts,
@@ -387,7 +404,32 @@ class FocusedSpider(scrapy.Spider):
         # Discovery uses requests and its own bounded thread pools. Never let
         # those blocking calls stall the shared long-lived Scrapy reactor.
         discovery_started = time.monotonic()
-        results, errors = await asyncio.to_thread(discovery.discover_many, queries, pages)
+        if "google_web" in self.sources:
+            results, errors = await asyncio.to_thread(discovery.discover_many, queries, pages)
+        else:
+            results, errors = [], []
+        if "google_news" in self.sources:
+            feed_started = time.monotonic()
+            news_results, news_errors = await asyncio.to_thread(
+                discovery.discover_feeds, queries, ("news",)
+            )
+            self._observe_stage("discovery_news", time.monotonic() - feed_started)
+            results.extend(news_results)
+            errors.extend(news_errors)
+        if "rss" in self.sources and self.config.discovery_feeds:
+            rss_started = time.monotonic()
+            rss_results, rss_errors = await asyncio.to_thread(
+                discovery.discover_feeds, queries, ("generic",)
+            )
+            self._observe_stage("discovery_rss", time.monotonic() - rss_started)
+            results.extend(rss_results)
+            errors.extend(rss_errors)
+        if "google_trends" in self.sources:
+            trends_started = time.monotonic()
+            trend_results, trend_errors = await asyncio.to_thread(discovery.discover_trends)
+            self._observe_stage("discovery_trends", time.monotonic() - trends_started)
+            results.extend(trend_results)
+            errors.extend(trend_errors)
         self._observe_stage("discovery", time.monotonic() - discovery_started)
         self._increment(discovered=len(results))
         for error in errors:
