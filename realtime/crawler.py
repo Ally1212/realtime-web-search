@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import hashlib
 import time
@@ -15,7 +16,7 @@ from twisted.internet.task import LoopingCall
 
 from .campaign_store import CAMPAIGN_SOURCES, CampaignStore, PageRecord
 from .config import Config
-from .discovery import SearchDiscovery
+from .discovery import SearchDiscovery, SearchResult
 from .fetcher import detect_language, extract_text, is_public_url, normalize_url, relevant_to
 from .keyword_catalog import AI_ANCHORS
 from .proxy_pool import ProxyPool
@@ -302,6 +303,46 @@ class FocusedSpider(scrapy.Spider):
             except Exception as exc:
                 self.logger.error("search discovery close failed: %s", type(exc).__name__)
 
+    @staticmethod
+    def _resolve_news_candidates(
+        discovery: SearchDiscovery, candidates: list[tuple[str, tuple[str, ...]]],
+    ) -> dict[str, str]:
+        """Synchronously resolve news.google.com redirect URLs to publisher URLs.
+
+        Unresolved shells are guaranteed JavaScript shells that always fail
+        extraction, so resolving first saves a wasted crawl per URL. Resolved
+        URLs are cached for a week via the shared discovery cache.
+        """
+        resolved_map: dict[str, str] = {}
+
+        def work(item: tuple[str, tuple[str, ...]]) -> None:
+            url, engines = item
+            try:
+                key, cached = discovery._cached("google_news_resolve", url, "global")
+                if cached:
+                    resolved_map[url] = cached[0].url
+                    return
+                resolved = discovery._resolve_google_news(SearchResult(url, "", engines))
+            except Exception:
+                return
+            if not resolved:
+                return
+            host = (urlsplit(resolved.url).hostname or "").lower()
+            if host == "news.google.com":
+                return
+            resolved_map[url] = resolved.url
+            try:
+                discovery._store_cache(
+                    key, "google_news_resolve", url, "global", 1,
+                    [resolved], 604800,
+                )
+            except Exception:
+                pass
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(work, candidates))
+        return resolved_map
+
     async def start(self):  # type: ignore[no-untyped-def]
         self._counter_loop = LoopingCall(self._flush_counters)
         self._counter_loop.start(2, now=False)
@@ -487,6 +528,31 @@ class FocusedSpider(scrapy.Spider):
                 self.config.discovery_min_novelty_ratio,
                 self.config.discovery_exhausted_cooldown_seconds,
             )
+        news_pending = [
+            (url, engines) for url, engines in novel_candidates
+            if (urlsplit(url).hostname or "").lower() == "news.google.com"
+        ]
+        if news_pending:
+            resolve_started = time.monotonic()
+            resolved_map = await asyncio.to_thread(
+                self._resolve_news_candidates, discovery, news_pending,
+            )
+            self._observe_stage("news_resolve", time.monotonic() - resolve_started)
+            if resolved_map:
+                self.store.record_event(
+                    self.campaign_id, "", "news_resolved",
+                    error_code=f"{len(resolved_map)}/{len(news_pending)}",
+                )
+            substituted: dict[str, tuple[str, ...]] = {}
+            for url, engines in novel_candidates:
+                target = resolved_map.get(url, url)
+                if (urlsplit(target).hostname or "").lower() == "news.google.com":
+                    # Still unresolved: skip this round; the resolve cache will
+                    # let a later round crawl the publisher URL directly.
+                    continue
+                previous = substituted.get(target, ())
+                substituted[target] = tuple(dict.fromkeys((*previous, *engines)))
+            novel_candidates = list(substituted.items())
         # DNS/public-address validation is expensive. Never run it for URLs
         # already known to be processed.
         for offset in range(0, len(novel_candidates), 64):
