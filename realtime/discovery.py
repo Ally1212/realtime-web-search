@@ -754,7 +754,14 @@ class SearchDiscovery:
         except (ValueError, TypeError):
             return None
         match = re.search(rb"https?://[^\x00-\x20]+", raw)
-        return match.group(0).decode("utf-8", "ignore") if match else None
+        if not match:
+            return None
+        decoded = match.group(0).decode("utf-8", "ignore")
+        # Newer tokens embed the canonical news.google.com URL rather than the
+        # publisher URL; treating that as resolved just yields another shell.
+        if (urlsplit(decoded).hostname or "").lower() == "news.google.com":
+            return None
+        return decoded
 
     def _resolve_google_news(self, result: SearchResult) -> SearchResult | None:
         host = (urlsplit(result.url).hostname or "").lower()
@@ -844,7 +851,14 @@ class SearchDiscovery:
         for query in queries:
             ttl = self.news_base_interval_seconds
             if "news" in kinds:
-                for locale in self.news_locales:
+                # Match feed locales to the campaign language so resolved
+                # content passes the relevance check instead of being dropped.
+                want_zh = self.language == "zh"
+                locales = [
+                    locale for locale in self.news_locales
+                    if ("zh" in locale.lower()) == want_zh
+                ] or list(self.news_locales)
+                for locale in locales:
                     rendered[self._news_url(query, locale)] = ("google_news", query, locale, ttl)
             if "generic" in kinds:
                 for name, template in self.feeds:

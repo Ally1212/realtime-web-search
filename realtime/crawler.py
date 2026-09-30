@@ -339,7 +339,7 @@ class FocusedSpider(scrapy.Spider):
             except Exception:
                 pass
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
             list(executor.map(work, candidates))
         return resolved_map
 
