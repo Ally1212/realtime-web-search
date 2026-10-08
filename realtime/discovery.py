@@ -65,7 +65,7 @@ MAX_FEED_BYTES = 5_000_000
 _NEWS_RESOLUTION_PENDING: set[str] = set()
 _NEWS_RESOLUTION_LOCK = threading.Lock()
 _NEWS_RESOLUTION_LIMIT = 32
-_NEWS_RESOLUTION_WORKERS = threading.BoundedSemaphore(2)
+_NEWS_RESOLUTION_WORKERS = threading.BoundedSemaphore(8)
 
 
 class SearchDiscovery:
@@ -337,7 +337,7 @@ class SearchDiscovery:
         # OpenSERP uses Chrome through the credential-hiding relay. Authenticated
         # HTTP CONNECT is less reliable there; authenticated SOCKS5 preserves
         # per-exit lanes and measured substantially better in isolation.
-        protocols = frozenset({"socks5"}) if provider == "openserp" else None
+        protocols = frozenset({"http", "socks5"}) if provider == "openserp" else None
         # Private exits are higher quality, but Google traffic can temporarily
         # exhaust their host-level reservations. WML is a lightweight fallback
         # and can safely use the independently measured public Google pool.
@@ -431,12 +431,11 @@ class SearchDiscovery:
                 "openserp_unavailable", "openserp_not_configured",
                 "openserp_invalid_response", "openserp_parser_failure",
                 "openserp_engine_error", "openserp_bad_request",
-                "google_http_403", "google_http_429",
             } or code.startswith("openserp_http_")
-            # With OpenSERP, a Google CAPTCHA/HTTP block indicates that this
-            # request shape is currently recognized by Google. It is a provider
-            # canary failure, not evidence that this particular proxy is bad.
-            openserp_google_block = provider == "openserp" and (
+            # Mixed-provider runs can switch channels after a failed canary.
+            # A Google-only run must instead quarantine the failed exit and
+            # retain access to other exits, which can still return valid results.
+            openserp_google_block = provider == "openserp" and len(self.providers) > 1 and (
                 captcha or code in {"google_http_403", "google_http_429", "google_consent"}
             )
             # A canary is only useful once per provider page search. Threads
@@ -448,6 +447,9 @@ class SearchDiscovery:
                     openserp_google_block = False
                 else:
                     self._openserp_google_block_seen = True
+            wml_exit_block = provider == "wml" and (
+                captcha or code in {"google_http_403", "google_http_429"}
+            )
             classification = evidence.get("classification") or (
                 ("results" if results else "empty") if failure is None
                 else "timeout" if code == "google_timeout"
@@ -460,7 +462,11 @@ class SearchDiscovery:
                 # cool the whole provider and prevent trying another exit.
                 canary = provider == 'openserp' and self.proxy_provider_attempts > 1
                 cooldown = min(self.source_cooldown_seconds, 300) if canary else self.source_cooldown_seconds
-                if service_failure or openserp_google_block or (not proxy_hash and (streak >= 3 or captcha)):
+                if (
+                    service_failure
+                    or openserp_google_block
+                    or (not proxy_hash and not wml_exit_block and (streak >= 3 or captcha))
+                ):
                     self._provider_cooldowns.cool(provider, cooldown)
                 # Google blocks are exit-specific, but repeatedly burning slots
                 # on a provider whose every exit is blocked is worse than a
@@ -688,7 +694,7 @@ class SearchDiscovery:
         if self.proxy_pool and self.proxy_profile != "direct":
             selected = self.proxy_pool.choose(self.proxy_profile, domain)
             if selected is None:
-                raise requests.ProxyError(f"{self.proxy_profile} proxy pool unavailable")
+                raise requests.exceptions.ProxyError(f"{self.proxy_profile} proxy pool unavailable")
             proxy_url, proxy_key = selected
             usage_key = (self.proxy_profile, hashlib.sha256(proxy_key.encode()).hexdigest())
             with self._proxy_usage_lock:
@@ -775,7 +781,7 @@ class SearchDiscovery:
             try:
                 response.raise_for_status()
                 resolved = str(response.url or "").strip()
-                if resolved and resolved != result.url:
+                if resolved and (urlsplit(resolved).hostname or "").lower() not in ("news.google.com", "consent.google.com") and resolved != result.url:
                     return SearchResult(resolved, result.title, result.engines)
                 soup = BeautifulSoup(response.content, "html.parser")
                 node = soup.select_one("[data-n-a-id][data-n-a-ts][data-n-a-sg]")
@@ -796,7 +802,7 @@ class SearchDiscovery:
                     )
                     try:
                         decoded.raise_for_status()
-                        match = re.search(r'garturlres\\",\\"(https?[^"\\]+)', decoded.text)
+                        match = re.search(r'garturlres\\",\s*\\"(https?[^"\\]+)', decoded.text)
                         if match:
                             resolved = json.loads(f'"{match.group(1)}"')
                             if resolved and "news.google.com" not in resolved:
@@ -815,7 +821,7 @@ class SearchDiscovery:
         if offline:
             return SearchResult(offline, result.title, result.engines)
         key, cached = self._cached("google_news_resolve", result.url, "global")
-        if cached:
+        if cached and (urlsplit(cached[0].url).hostname or "").lower() != "news.google.com":
             return cached[0]
         with _NEWS_RESOLUTION_LOCK:
             if result.url in _NEWS_RESOLUTION_PENDING or len(_NEWS_RESOLUTION_PENDING) >= _NEWS_RESOLUTION_LIMIT:

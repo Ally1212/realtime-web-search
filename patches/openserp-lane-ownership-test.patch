@@ -1,0 +1,19 @@
+--- /dev/null
++++ b/core/proxy_lane_owned_test.go
+@@ -0,0 +1,16 @@
++package core
++import (
++ "testing"
++ "unsafe"
++)
++func TestNormalizeProxyLaneKeyOwnsBorrowedSession(t *testing.T) {
++ buffer := []byte("session-1234")
++ borrowed := unsafe.String(unsafe.SliceData(buffer), len(buffer))
++ key := NormalizeProxyLaneKey(ProxyLaneKey{Engine:"google", SessionID:borrowed})
++ store := NewLaneStore(1)
++ store.SaveCookies(key, nil)
++ copy(buffer, []byte("session-9999"))
++ if key.SessionID != "session-1234" { t.Fatal("retained mutable request header") }
++ store.SaveCookies(NormalizeProxyLaneKey(ProxyLaneKey{Engine:"google", SessionID:"next-session"}), nil)
++ if store.Stats().Active != 1 {t.Fatal("LRU did not retain its bound")}
++}

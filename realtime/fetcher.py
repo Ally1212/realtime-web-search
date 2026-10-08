@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 import socket
 import threading
 import time
@@ -20,6 +21,7 @@ from trafilatura import bare_extraction
 MAX_DOWNLOAD_BYTES = 5_000_000
 MAX_TEXT_CHARS = 100_000
 TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src"}
+SEARCH_FILTERS = re.compile(r'(?<!\S)-?(?:site|after|before|filetype):(?:"[^"]*"|\S+)', re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -76,7 +78,9 @@ def relevant_to(text: str, title: str, terms: tuple[str, ...]) -> bool:
     title_folded = title.casefold()
     text_folded = text.casefold()
     for term in terms:
-        phrase = " ".join(term.casefold().split())
+        # Search filters constrain discovery, not the article's topic. Keep
+        # the same relevance threshold for the remaining content terms.
+        phrase = " ".join(SEARCH_FILTERS.sub("", term).casefold().split())
         if not phrase:
             continue
         if phrase in title_folded or phrase in text_folded:

@@ -81,6 +81,9 @@ class WorkerManager:
                 self.run_campaign(campaign_id)
 
     def run(self) -> None:
+        removed = self.queue.deduplicate_ready()
+        if removed:
+            print(f"removed duplicate ready entries={removed}", flush=True)
         for campaign_id in self.store.active_local_campaign_ids():
             self.queue.recover(campaign_id)
         threading.Thread(target=self.proxy_sync_loop, daemon=True).start()

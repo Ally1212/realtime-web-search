@@ -1,0 +1,45 @@
+--- a/google/search.go
++++ b/google/search.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"errors"
+ 	"fmt"
++	"os"
+ 	"regexp"
+ 	"strconv"
+ 	"strings"
+@@ -274,6 +275,7 @@
+ 		if core.IsContextDone(err) {
+ 			return nil, err
+ 		}
++		saveDiagnosticPage(page)
+ 		return nil, core.ErrSearchTimeout
+ 	}
+ 	gogl.logger.Debug("Search result selector matched: %s (%d elements)", matchedSelector, len(searchResultElems))
+@@ -483,6 +485,7 @@
+ 		if len(searchResultElems) == 0 {
+ 			return nil, nil
+ 		}
++		saveDiagnosticPage(page)
+ 		return nil, core.ErrSearchTimeout
+ 	}
+ 	if query.Features {
+@@ -638,3 +641,18 @@
+ func (gogl *Google) close(ctx context.Context, page *rod.Page) {
+ 	core.DeferClosePage(ctx, page, &gogl.Browser)()
+ }
++
++// Diagnostic snapshots are opt-in, bounded and omit request/proxy headers.
++func saveDiagnosticPage(page *rod.Page) {
++ directory := os.Getenv("OPENSERP_DIAGNOSTIC_DIR")
++ if directory == "" || page == nil { return }
++ if os.MkdirAll(directory, 0700) != nil { return }
++ files, err := os.ReadDir(directory)
++ if err != nil || len(files) >= 40 { return }
++ html, err := page.HTML()
++ if err != nil { return }
++ file, err := os.CreateTemp(directory, "google-failed-*.html")
++ if err != nil { return }
++ defer file.Close()
++ _, _ = file.WriteString(html)
++}

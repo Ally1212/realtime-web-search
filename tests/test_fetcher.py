@@ -62,3 +62,10 @@ class FetcherTests(unittest.TestCase):
         self.assertFalse(relevant_to("Sports results and weather", "News", ("AI policy",)))
         self.assertFalse(relevant_to("Visit Singapore for food and culture", "Singapore", ("Singapore AI policy",)))
         self.assertEqual(detect_language("这是一个中文网页，包含足够多的中文内容用于判断。"), "zh")
+
+    def test_search_filters_do_not_count_as_article_topic_words(self):
+        query = 'site:example.com chicken recipes after:2025-01-01 before:2026-01-01 filetype:html'
+        self.assertTrue(relevant_to('These chicken recipes explain roasting and food safety.', 'Chicken recipes', (query,)))
+        self.assertFalse(relevant_to('Sports scores and weather forecasts.', 'News', (query,)))
+        self.assertFalse(relevant_to('example.com 2025-01-01 html', 'Filters', (query,)))
+        self.assertFalse(relevant_to('An unrelated article', 'News', ('site:example.com after:2025-01-01',)))

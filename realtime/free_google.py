@@ -197,6 +197,19 @@ class GoogleTransport:
         error = str(payload.get("error") or "").strip().lower() if isinstance(payload, dict) else ""
         reason = str(payload.get("reason") or "").strip().lower() if isinstance(payload, dict) else ""
         code = error or reason
+        # OpenSERP 0.8.12 can wrap Chromium proxy failures as engine_internal.
+        # Preserve their exit-specific meaning so the scheduler quarantines the
+        # failed proxy instead of cooling every OpenSERP request.
+        message = str(payload.get("message") or "").lower() if isinstance(payload, dict) else ""
+        if status == 502 and code == "engine_internal":
+            for marker, proxy_reason in (
+                ("err_proxy_connection_failed", "openserp_proxy_connect"),
+                ("err_socks_connection_failed", "openserp_proxy_connect"),
+                ("err_tunnel_connection_failed", "openserp_proxy_connect"),
+                ("err_proxy_auth", "openserp_proxy_auth"),
+            ):
+                if marker in message:
+                    return GoogleBlocked(proxy_reason, status)
         if status == 429:
             return GoogleBlocked(
                 "google_captcha" if code == "captcha_detected" else "google_http_429",

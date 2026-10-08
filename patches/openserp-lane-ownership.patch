@@ -1,0 +1,31 @@
+--- a/core/proxy_lane.go
++++ b/core/proxy_lane.go
+@@ -191,8 +191,15 @@
+ 		if !hasOldest {
+ 			return
+ 		}
++		previousSize := len(s.lanes)
+ 		delete(s.lanes, oldestKey)
+ 		s.evictedLRU++
++		if len(s.lanes) >= previousSize {
++			// A corrupted borrowed map key must never hold the mutex forever.
++			s.evictedLRU += len(s.lanes)
++			clear(s.lanes)
++			return
++		}
+ 	}
+ }
+ 
+@@ -213,9 +220,9 @@
+ 
+ func NormalizeProxyLaneKey(key ProxyLaneKey) ProxyLaneKey {
+ 	return ProxyLaneKey{
+-		Tenant:    strings.TrimSpace(key.Tenant),
+-		Engine:    normalizeEngineName(key.Engine),
+-		SessionID: strings.TrimSpace(key.SessionID),
++		Tenant:    strings.Clone(strings.TrimSpace(key.Tenant)),
++		Engine:    strings.Clone(normalizeEngineName(key.Engine)),
++		SessionID: strings.Clone(strings.TrimSpace(key.SessionID)),
+ 	}
+ }
+ 

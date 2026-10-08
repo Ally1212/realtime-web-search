@@ -319,7 +319,7 @@ class FocusedSpider(scrapy.Spider):
             url, engines = item
             try:
                 key, cached = discovery._cached("google_news_resolve", url, "global")
-                if cached:
+                if cached and (urlsplit(cached[0].url).hostname or "").lower() != "news.google.com":
                     resolved_map[url] = cached[0].url
                     return
                 resolved = discovery._resolve_google_news(SearchResult(url, "", engines))
@@ -445,32 +445,25 @@ class FocusedSpider(scrapy.Spider):
         # Discovery uses requests and its own bounded thread pools. Never let
         # those blocking calls stall the shared long-lived Scrapy reactor.
         discovery_started = time.monotonic()
+        async def discover_source(stage, function, *args):
+            started = time.monotonic()
+            outcome = await asyncio.to_thread(function, *args)
+            self._observe_stage(stage, time.monotonic() - started)
+            return outcome
+
+        jobs = []
         if "google_web" in self.sources:
-            results, errors = await asyncio.to_thread(discovery.discover_many, queries, pages)
-        else:
-            results, errors = [], []
+            jobs.append(discover_source("discovery_web", discovery.discover_many, queries, pages))
         if "google_news" in self.sources:
-            feed_started = time.monotonic()
-            news_results, news_errors = await asyncio.to_thread(
-                discovery.discover_feeds, queries, ("news",)
-            )
-            self._observe_stage("discovery_news", time.monotonic() - feed_started)
-            results.extend(news_results)
-            errors.extend(news_errors)
+            jobs.append(discover_source("discovery_news", discovery.discover_feeds, queries, ("news",)))
         if "rss" in self.sources and self.config.discovery_feeds:
-            rss_started = time.monotonic()
-            rss_results, rss_errors = await asyncio.to_thread(
-                discovery.discover_feeds, queries, ("generic",)
-            )
-            self._observe_stage("discovery_rss", time.monotonic() - rss_started)
-            results.extend(rss_results)
-            errors.extend(rss_errors)
+            jobs.append(discover_source("discovery_rss", discovery.discover_feeds, queries, ("generic",)))
         if "google_trends" in self.sources:
-            trends_started = time.monotonic()
-            trend_results, trend_errors = await asyncio.to_thread(discovery.discover_trends)
-            self._observe_stage("discovery_trends", time.monotonic() - trends_started)
-            results.extend(trend_results)
-            errors.extend(trend_errors)
+            jobs.append(discover_source("discovery_trends", discovery.discover_trends))
+        results, errors = [], []
+        for source_results, source_errors in await asyncio.gather(*jobs):
+            results.extend(source_results)
+            errors.extend(source_errors)
         self._observe_stage("discovery", time.monotonic() - discovery_started)
         self._increment(discovered=len(results))
         for error in errors:
@@ -532,39 +525,38 @@ class FocusedSpider(scrapy.Spider):
             (url, engines) for url, engines in novel_candidates
             if (urlsplit(url).hostname or "").lower() == "news.google.com"
         ]
-        if news_pending:
+        async def page_requests(items):
+            for offset in range(0, len(items), 64):
+                batch = items[offset:offset + 64]
+                public = await asyncio.gather(*(
+                    asyncio.to_thread(is_public_url, url) for url, _ in batch
+                ))
+                for (url, engines), allowed in zip(batch, public):
+                    if allowed:
+                        yield self._page_request(url, engines)
+
+        # Start fetching publisher links immediately, rather than waiting for
+        # hundreds of Google News redirects to resolve first.
+        direct_candidates = [(url, engines) for url, engines in novel_candidates
+                             if (urlsplit(url).hostname or "").lower() != "news.google.com"]
+        async for request in page_requests(direct_candidates):
+            yield request
+        for offset in range(0, len(news_pending), 64):
+            batch = news_pending[offset:offset + 64]
             resolve_started = time.monotonic()
-            resolved_map = await asyncio.to_thread(
-                self._resolve_news_candidates, discovery, news_pending,
-            )
+            resolved_map = await asyncio.to_thread(self._resolve_news_candidates, discovery, batch)
             self._observe_stage("news_resolve", time.monotonic() - resolve_started)
             if resolved_map:
-                self.store.record_event(
-                    self.campaign_id, "", "news_resolved",
-                    error_code=f"{len(resolved_map)}/{len(news_pending)}",
-                )
-            substituted: dict[str, tuple[str, ...]] = {}
-            for url, engines in novel_candidates:
-                target = resolved_map.get(url, url)
-                if (urlsplit(target).hostname or "").lower() == "news.google.com":
-                    # Still unresolved: skip this round; the resolve cache will
-                    # let a later round crawl the publisher URL directly.
+                self.store.record_event(self.campaign_id, "", "news_resolved",
+                                        error_code=f"{len(resolved_map)}/{len(batch)}")
+            substituted = {}
+            for url, engines in batch:
+                target = resolved_map.get(url)
+                if not target or (urlsplit(target).hostname or "").lower() == "news.google.com":
                     continue
-                previous = substituted.get(target, ())
-                substituted[target] = tuple(dict.fromkeys((*previous, *engines)))
-            novel_candidates = list(substituted.items())
-        # DNS/public-address validation is expensive. Never run it for URLs
-        # already known to be processed.
-        for offset in range(0, len(novel_candidates), 64):
-            batch = novel_candidates[offset:offset + 64]
-            public = await asyncio.gather(*(
-                asyncio.to_thread(is_public_url, url) for url, _ in batch
-            ))
-            for (url, engines), allowed in zip(batch, public):
-                if not allowed:
-                    continue
-                yield self._page_request(url, engines)
-                # Keep Whale google_search tasks restricted to Google-discovered URLs.
+                substituted[target] = tuple(dict.fromkeys((*substituted.get(target, ()), *engines)))
+            async for request in page_requests(list(substituted.items())):
+                yield request
 
     def _page_request(
         self, url: str, engines: tuple[str, ...] = (), *, short_retry: bool = False,

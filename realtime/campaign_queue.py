@@ -19,28 +19,62 @@ class CampaignQueue:
             self.redis.lpush(self.READY, campaign_id)
 
     def recover(self, campaign_id: str) -> None:
-        """Requeue work interrupted when the single worker process stopped."""
-        with self.redis.pipeline() as pipe:
-            pipe.delete(f"realtime:campaign:queued:{campaign_id}")
-            pipe.zrem(self.DELAYED, campaign_id)
-            pipe.execute()
-        self.enqueue(campaign_id)
+        """Recover interrupted work without duplicating ready work or bypassing delays."""
+        self.redis.eval("""
+            local due = redis.call('ZSCORE', KEYS[2], ARGV[1])
+            if due and tonumber(due) > tonumber(ARGV[2]) then
+                redis.call('LREM', KEYS[1], 0, ARGV[1])
+                redis.call('DEL', KEYS[3])
+                return 0
+            end
+            redis.call('ZREM', KEYS[2], ARGV[1])
+            if redis.call('LPOS', KEYS[1], ARGV[1]) then
+                redis.call('SET', KEYS[3], '1', 'EX', 3600)
+                return 0
+            end
+            redis.call('SET', KEYS[3], '1', 'EX', 3600)
+            redis.call('LPUSH', KEYS[1], ARGV[1])
+            return 1
+        """, 3, self.READY, self.DELAYED,
+            f"realtime:campaign:queued:{campaign_id}", campaign_id, time.time())
+
+    def deduplicate_ready(self) -> int:
+        """Repair old queue duplication while preserving oldest-first pop order."""
+        return int(self.redis.eval("""
+            local rows = redis.call('LRANGE', KEYS[1], 0, -1)
+            local seen, keep = {}, {}
+            for i = #rows, 1, -1 do
+                if not seen[rows[i]] then
+                    seen[rows[i]] = true
+                    keep[#keep + 1] = rows[i]
+                end
+            end
+            if #rows ~= #keep then
+                redis.call('DEL', KEYS[1])
+                for i = #keep, 1, -1 do redis.call('RPUSH', KEYS[1], keep[i]) end
+            end
+            return #rows - #keep
+        """, 1, self.READY))
 
     def schedule(self, campaign_id: str, delay_seconds: int = 300) -> None:
         self.redis.zadd(self.DELAYED, {campaign_id: time.time() + delay_seconds})
 
     def promote_due(self) -> int:
-        due = self.redis.zrangebyscore(self.DELAYED, 0, time.time(), start=0, num=100)
-        if not due:
-            return 0
-        with self.redis.pipeline() as pipe:
-            for campaign_id in due:
-                pipe.zrem(self.DELAYED, campaign_id)
-                pipe.delete(f"realtime:campaign:queued:{campaign_id}")
-            pipe.execute()
-        for campaign_id in due:
-            self.enqueue(campaign_id)
-        return len(due)
+        # Several worker threads promote concurrently; claim and enqueue in a
+        # single Redis operation so a stale due list cannot queue a task twice.
+        return int(self.redis.eval("""
+            local due = redis.call('ZRANGEBYSCORE', KEYS[2], 0, ARGV[1], 'LIMIT', 0, 100)
+            local promoted = 0
+            for _, cid in ipairs(due) do
+                redis.call('ZREM', KEYS[2], cid)
+                if not redis.call('LPOS', KEYS[1], cid) then
+                    redis.call('LPUSH', KEYS[1], cid)
+                    promoted = promoted + 1
+                end
+                redis.call('SET', ARGV[2] .. cid, '1', 'EX', 3600)
+            end
+            return promoted
+        """, 2, self.READY, self.DELAYED, time.time(), "realtime:campaign:queued:"))
 
     def pop(self, timeout: int = 5) -> str | None:
         result = self.redis.brpop(self.READY, timeout=timeout)

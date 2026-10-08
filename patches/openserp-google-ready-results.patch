@@ -1,0 +1,11 @@
+--- a/google/selectors.go
++++ b/google/selectors.go
+@@ -49,7 +49,7 @@
+ 	// double-count or concatenate sibling titles. ResultsBroad is the legacy
+ 	// attribute selector, kept as a fallback for SERP layouts without tF2Cxc.
+ 	Results:      "div.tF2Cxc:not(:has(div.tF2Cxc))",
+-	ResultsBroad: "div[data-hveid][data-ved]",
++	ResultsBroad: "div[data-hveid][data-ved]:has(h3)",
+ 	Ad:           "div[data-text-ad], [data-text-ad]",
+ 	Link:         "a",
+ 	Title:        "h3",

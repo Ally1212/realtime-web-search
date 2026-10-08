@@ -6,6 +6,14 @@ from realtime.free_google import GoogleTransport
 
 
 class FreeGoogleTests(unittest.TestCase):
+    def test_wrapped_chromium_proxy_failure_is_exit_specific(self):
+        for marker in ("ERR_PROXY_CONNECTION_FAILED", "ERR_SOCKS_CONNECTION_FAILED", "ERR_TUNNEL_CONNECTION_FAILED"):
+            with self.subTest(marker=marker):
+                failure = GoogleTransport._openserp_error(502, {"error": "engine_internal", "message": "navigation failed: net::" + marker})
+                self.assertEqual(failure.reason, "openserp_proxy_connect")
+        failure = GoogleTransport._openserp_error(502, {"error": "engine_internal", "message": "browser unexpectedly closed"})
+        self.assertEqual(failure.reason, "openserp_engine_error")
+
     @staticmethod
     def _openserp_response(session, *, results=None, page=3, query="人工智能"):
         response = session.get.return_value
@@ -38,7 +46,8 @@ class FreeGoogleTests(unittest.TestCase):
         session = MagicMock()
         session.__enter__.return_value = session
         response = self._openserp_response(session)
-        with patch("realtime.free_google.requests.Session", return_value=session):
+        with patch("realtime.free_google.requests.Session", return_value=session), \
+             patch("realtime.free_google.public_result", side_effect=lambda url: url.startswith("https://example.com/")):
             transport = GoogleTransport(
                 5, "zh", "", openserp_url="http://openserp:7000",
                 openserp_request_timeout_seconds=25,
@@ -92,7 +101,8 @@ class FreeGoogleTests(unittest.TestCase):
             Mock(status_code=429, headers={}),
         ]
         session.get.side_effect = redirects
-        with patch("realtime.free_google.requests.Session", return_value=session):
+        with patch("realtime.free_google.requests.Session", return_value=session), \
+             patch("realtime.free_google.public_result", side_effect=lambda url: url.startswith("https://example.com/")):
             transport = GoogleTransport(5, "en", "")
             parsed = transport.openserp("Target", 1, "http://proxy.example:80", None)
         self.assertEqual([row.url for row in parsed], ["https://example.com/target"])

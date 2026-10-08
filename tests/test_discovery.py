@@ -17,21 +17,22 @@ class DiscoveryTests(unittest.TestCase):
             SearchDiscovery._proxy_hash('wml', key),
         )
 
-    def test_openserp_selects_only_socks_exits(self):
-        with tempfile.TemporaryDirectory() as directory:
-            http = ProxyRecord('192.0.2.1', 8080, 'http')
-            socks = ProxyRecord('192.0.2.2', 1080, 'socks5')
-            cache = ProxyCache(Path(directory))
-            cache.publish('private', [http, socks], None)
-            pool = ProxyPool(Config(proxy_cache_dir=Path(directory), openserp_proxy_relay_host='proxy-relay'))
-            discovery = SearchDiscovery(
-                providers=("openserp",), proxy_pool=pool, proxy_profile="private",
-                proxy_reserver=lambda *args, **kwargs: (True, 0),
-            )
-            with patch.object(ProxyRecord, 'fresh', return_value=True):
-                selected = discovery._select_proxy('openserp')
-                self.assertEqual(selected[1], socks.key)
-                self.assertEqual(selected[0].count('socks5'), 0)
+    def test_openserp_supports_http_and_socks_exits_through_relay(self):
+        for protocol, port in (('http', 8080), ('socks5', 1080)):
+            with self.subTest(protocol=protocol), tempfile.TemporaryDirectory() as directory:
+                record = ProxyRecord('192.0.2.1', port, protocol)
+                cache = ProxyCache(Path(directory))
+                cache.publish('private', [record], None)
+                pool = ProxyPool(Config(proxy_cache_dir=Path(directory), openserp_proxy_relay_host='proxy-relay'))
+                discovery = SearchDiscovery(
+                    providers=("openserp",), proxy_pool=pool, proxy_profile="private",
+                    proxy_reserver=lambda *args, **kwargs: (True, 0),
+                )
+                with patch.object(ProxyRecord, 'fresh', return_value=True):
+                    selected = discovery._select_proxy('openserp')
+                    self.assertEqual(selected[1], record.key)
+                    self.assertTrue(selected[0].startswith('http://proxy-relay:'))
+                    self.assertNotIn('192.0.2.1', selected[0])
 
     def test_openserp_captcha_cools_shared_provider_before_wml(self):
         pool = Mock()
@@ -106,13 +107,13 @@ class DiscoveryTests(unittest.TestCase):
         pool.google_identity_for_scope.return_value = ('group', ['alias'])
         registry = ProviderCooldownRegistry()
         first = SearchDiscovery(
-            providers=('openserp',), proxy_pool=pool, proxy_profile='private',
+            providers=('openserp', 'wml'), proxy_pool=pool, proxy_profile='private',
             proxy_group_reserver=Mock(return_value=(True, 0)),
             source_slot_acquirer=Mock(return_value={'allowed': True}),
             provider_cooldowns=registry,
         )
         second = SearchDiscovery(
-            providers=('openserp',), proxy_pool=pool, proxy_profile='private',
+            providers=('openserp', 'wml'), proxy_pool=pool, proxy_profile='private',
             proxy_group_reserver=Mock(return_value=(True, 0)),
             source_slot_acquirer=Mock(return_value={'allowed': True}),
             provider_cooldowns=registry,
@@ -131,14 +132,14 @@ class DiscoveryTests(unittest.TestCase):
         pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
         pool.google_identity_for_scope.return_value = ('group', ['alias'])
         d = SearchDiscovery(
-            providers=('openserp',), proxy_pool=pool, proxy_profile='private',
+            providers=('openserp', 'wml'), proxy_pool=pool, proxy_profile='private',
             proxy_group_reserver=Mock(return_value=(True, 0)),
             source_slot_acquirer=Mock(return_value={'allowed': True}),
             proxy_result_recorder=recorder,
         )
         d.transport.fetch = Mock(side_effect=GoogleBlocked('google_captcha', captcha=True))
         with self.assertRaisesRegex(GoogleBlocked, 'google_captcha'):
-            d._discover_google_page('AI', 1)
+            d._attempt('openserp', 'AI', 1)
         pool.defer.assert_not_called()
         recorder.assert_not_called()
         self.assertTrue(d._provider_cooldowns.cooling('openserp'))
@@ -383,6 +384,31 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(d.transport.fetch.call_count, 3)
         self.assertFalse(d._provider_cooldowns.cooling("wml"))
 
+    def test_wml_google_block_rotates_exit_without_cooling_provider(self):
+        pool = Mock()
+        pool.available_count.return_value = 2
+        pool.choose.side_effect = [
+            ('http://proxy-1.example:80', 'proxy-1'),
+            ('http://proxy-2.example:80', 'proxy-2'),
+        ]
+        pool.google_identity.return_value = ('group', ['alias-1'])
+        expected = [SearchResult('https://example.com/ai', 'AI', ('google_web',))]
+        d = SearchDiscovery(
+            providers=('wml',), proxy_pool=pool, proxy_profile='private',
+            proxy_provider_attempts=2,
+            proxy_group_reserver=Mock(return_value=(True, 0)),
+            source_slot_acquirer=Mock(return_value={'allowed': True}),
+        )
+        d.transport.fetch = Mock(side_effect=[
+            GoogleBlocked('google_http_403'),
+            expected,
+        ])
+
+        self.assertEqual(d._discover_google_page('AI', 1), expected)
+        self.assertEqual(d.transport.fetch.call_count, 2)
+        self.assertFalse(d._provider_cooldowns.cooling('wml'))
+        pool.defer.assert_called_once_with('proxy-1', 'www.google.com', 300)
+
     def test_exhausts_proxy_pool_before_direct_fallback(self):
         pool = Mock()
         pool.available_count.return_value = 3
@@ -466,7 +492,7 @@ class DiscoveryTests(unittest.TestCase):
         pool.choose.return_value = ('http://proxy.example:80', 'proxy-key')
         pool.google_identity_for_scope.return_value = ('group', ['alias'])
         d = SearchDiscovery(
-            providers=('openserp',), proxy_pool=pool, proxy_profile='private',
+            providers=('openserp', 'wml'), proxy_pool=pool, proxy_profile='private',
             proxy_group_reserver=Mock(return_value=(True, 0)),
             source_slot_acquirer=Mock(return_value={'allowed': True}),
         )
@@ -474,6 +500,29 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(GoogleBlocked, 'google_http_429'):
             d._attempt('openserp', 'AI', 1)
         self.assertTrue(d._provider_cooldowns.cooling('openserp'))
+
+    def test_openserp_only_quarantines_blocked_exit_and_searches_next_exit(self):
+        for reason in ('google_captcha', 'google_http_429'):
+            with self.subTest(reason=reason):
+                pool, recorder = Mock(), Mock()
+                pool.available_count.return_value = 2
+                pool.choose.side_effect = [('http://proxy-1:80', 'proxy-1'), ('http://proxy-2:80', 'proxy-2')]
+                pool.google_identity_for_scope.return_value = ('group', ['alias'])
+                expected = [SearchResult('https://example.com/guide', 'Guide', ('google_web',))]
+                d = SearchDiscovery(
+                    providers=('openserp',), proxy_pool=pool, proxy_profile='private',
+                    proxy_provider_attempts=2, proxy_cooldown_seconds=900,
+                    proxy_group_reserver=Mock(return_value=(True, 0)),
+                    source_slot_acquirer=Mock(return_value={'allowed': True}),
+                    proxy_result_recorder=recorder,
+                )
+                d.transport.fetch = Mock(side_effect=[GoogleBlocked(reason, captcha=reason == 'google_captcha'), expected])
+                self.assertEqual(d._discover_google_page('cooking guide', 1), expected)
+                self.assertFalse(d._provider_cooldowns.cooling('openserp'))
+                pool.defer.assert_called_once_with('proxy-1', 'www.google.com', 900)
+                self.assertFalse(recorder.call_args_list[0].kwargs['success'])
+                self.assertEqual(recorder.call_args_list[0].kwargs['cooldown_seconds'], 900)
+                self.assertTrue(recorder.call_args_list[1].kwargs['success'])
 
     def test_wml_falls_back_to_public_google_when_private_is_unavailable(self):
         pool = Mock()
@@ -560,6 +609,21 @@ class FeedDiscoveryTests(unittest.TestCase):
         results = SearchDiscovery._parse_feed(TRENDS_SAMPLE, 'google_trends')
         self.assertEqual([r.url for r in results], ['https://news-site.example/story-1'])
         self.assertEqual(results[0].title, '热点话题')
+
+    def test_google_news_internal_redirect_still_decodes_publisher(self):
+        import json
+        response = Mock()
+        response.url = "https://news.google.com/articles/internal?hl=en-US"
+        response.content = b'<div data-n-a-id="article" data-n-a-ts="123" data-n-a-sg="signature"></div>'
+        decoded = Mock()
+        decoded.text = json.dumps([["wrb.fr", "Fbv4je", json.dumps(["garturlres", "https://publisher.example/article", 1])]])
+        discovery = SearchDiscovery()
+        with patch.object(discovery, "_external_get", return_value=response), patch.object(discovery, "_external_post", return_value=decoded) as post:
+            result = discovery._resolve_google_news(SearchResult("https://news.google.com/rss/articles/internal", "title", ("google_news",)))
+        self.assertEqual(result.url, "https://publisher.example/article")
+        post.assert_called_once()
+        response.close.assert_called_once()
+        decoded.close.assert_called_once()
 
     def test_offline_google_news_url_decodes_publisher(self):
         import base64
