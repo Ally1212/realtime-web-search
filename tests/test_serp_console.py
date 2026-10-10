@@ -201,6 +201,52 @@ class ConsoleIntegrationTests(unittest.TestCase):
         self.assertEqual(sum(x['attempts'] for x in bounded['requests']),0)
         self.assertAlmostEqual(sum(float(x['elapsed_seconds']) for x in bounded['hourly']),3600)
 
+    def test_supervisor_page_decrease_completes_only_unleased_finished_supply_frontiers(self):
+        from scripts.google_web_longrun import CONTROL
+        self.store.save_settings({'web_max_pages':2},self.config)
+        run='google-serp-20261010'
+        with self.base.connect() as db:
+            db.execute('INSERT INTO serp_supply_runs(run_id,keyword_offset) VALUES(%s,0)',(run,))
+        ids={}
+        for index,kind in enumerate(('finished','manual','unfinished','leased','stopped')):
+            cid=self.base.create_campaign('page switch '+kind,[],1,'direct',['google_web'])
+            ids[kind]=cid
+            if kind!='manual':
+                with self.base.connect() as db:
+                    db.execute('INSERT INTO serp_supply_campaigns(run_id,campaign_id,sequence) VALUES(%s,%s,%s)',(run,cid,index))
+            batch=self.base.acquire_google_page_batch(cid,'page switch','en:serp-v1',2,1,21600)
+            if kind=='unfinished':
+                self.base.record_google_page_result(batch,1,success=False,error='google_query_inflight')
+            else:
+                self.assertTrue(self.base.record_google_page_result(batch,1,success=True,result_count=7))
+            if kind=='leased':
+                self.base.acquire_google_page_batch(cid,'page switch','en:serp-v1',2,1,21600)
+            if kind=='stopped':
+                with self.base.connect() as db:
+                    db.execute("UPDATE campaigns SET status='stopped' WHERE id=%s",(cid,))
+        def rows():
+            with self.base.connect() as db:
+                return {str(r['campaign_id']):r for r in db.execute('SELECT * FROM google_page_frontier').fetchall()}
+        before=rows()
+        stale=str(self.store.settings(self.config)['updated_at'])
+        self.store.save_settings({'continuous_enabled':False},self.config)
+        args=[sys.executable,'-c',CONTROL,json.dumps({'web_max_pages':1}),stale]
+        env=dict(os.environ,DATABASE_URL=self.dsn)
+        child=subprocess.run(args,env=env,capture_output=True,text=True)
+        self.assertNotEqual(child.returncode,0)
+        self.assertEqual(rows()[ids['finished']]['state'],'pending')
+        args[-1]=str(self.store.settings(self.config)['updated_at'])
+        child=subprocess.run(args,env=env,capture_output=True,text=True)
+        self.assertEqual(child.returncode,0,child.stderr)
+        after=rows();finished=after[ids['finished']]
+        self.assertEqual((finished['state'],finished['next_page'],finished['max_page']),('completed',2,1))
+        self.assertEqual(finished['page_stats'],before[ids['finished']]['page_stats'])
+        self.assertIsNone(self.base.acquire_google_page_batch(ids['finished'],'page switch','en:serp-v1',1,1,21600))
+        for kind in ('manual','unfinished','leased','stopped'):
+            self.assertEqual(after[ids[kind]],before[ids[kind]],kind)
+        self.assertEqual(json.loads(child.stdout)['frontier_pages_reconciled'],1)
+        self.assertFalse(self.store.settings(self.config)['continuous_enabled'])
+
     def test_results_filters_pagination_export_and_topic_without_links(self):
         self.seed_results()
         self.assertEqual(self.store.browse({})['total'],4)

@@ -108,3 +108,11 @@ UTC 14:31:46.365168 进入 18 槽组，排空、worker 重建和恢复时间计�
 18 槽组小时检查（UTC 15:32:02.593049）：完整 3,616.227881 秒新增 6,950 个唯一链接，平均 6,918.81 / 小时；1,347 / 1,363 次请求成功（98.83%）。纯 Web / OpenSERP、实际配置、queue_safe、worker 稳定性和正文基线检查均通过；没有 worker 重启或 OOM。证据 phase3-hour-checkpoint.json 标记 checkpoint_only / not_added_to_ranking，继续完整 75 分钟阶段，不能将这个快照与最终结果重复累计。
 
 UTC 15:27:54 阶段诊断：成功返回结果的搜索平均耗时 47.25 秒、P95 54.34 秒；关键词 next index 105072 / 120000，cycle 0，无 after 日期过滤。当前查询耗时比 12 槽组长，但尚不能把差异全部归因于并发。UTC 15:28 的资源抽样中本项目 OpenSERP 使用约 306% CPU、5.61 GiB 内存，worker 约 106 MiB；这是瞬时抽样，不能当作整段资源平均。证据 phase3-diagnostics-1528.json、phase3-resources-1528.txt。没有为采样重启或调整服务，后续继续测试低并发以比较实际平均产能。
+
+## 降低搜索页数的切换保护（UTC 15:37）
+
+隔离 PostgreSQL 复现：完成第 1 页但尚待第 2 页的 frontier，在两页切回一页后仍为 pending / next_page=2；原 acquire 将请求页夹到 1，而 record 要求 page=next_page，可能在请求后拒绝推进。监督器的 CAS 设置事务现只在降低页数时，将本 run 活动自动任务中已覆盖新页数、没有有效在途 lease 的 frontier 标记 completed，并保留 next_page、page_stats 和全部请求/URL 历史。未完成第 1 页、有效在途 lease、手动任务及 stopped 任务均不改动，操作员修改设置时仍在所有写入前拒绝执行。非零调整会记录 page-limit-reconciliation-*.json，不额外加入产量排名。
+
+相关 24 项测试通过，覆盖真实页面进度、原记录保留、手动/停止/在途任务隔离、CAS 用户关闭保护以及统计选优。UTC 15:37:23 仅替换监督器，未暂停采集、重建 worker、改变当前设置或游标；所有既有阶段边界与计数保持不变，冻结包校验通过。新监督器 SHA256 b95748eed2e2b7fedae185d2bdd0d7b2e66c4db7e2795ce12df02ce0bc28522d，MainPID 3578451。原文件和前快照保存在 page-limit-guard/，证据 page-limit-guard-applied.json；首次实际降低页数后的调整效果仍待后续阶段核验。
+
+共享 OpenSERP 运行配置独立核验：镜像 realtime-openserp:0.8.12-ready-results-20261007，自 UTC 2026-10-07 10:56:42 启动，重启次数 0；环境覆盖最大进程数为 16、timeout 45 秒、Google 360 次/60 秒及 burst 24，生产 block_resources=image,font,media。缓存关闭、resilience.max_retries=0、endpoint fallback 关闭，extract 关闭。各组共用此服务，未为了诊断更改；证据 openserp-shared-runtime-1534.json。

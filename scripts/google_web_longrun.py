@@ -66,23 +66,34 @@ def settings(payload):
 CONTROL = '''import json,os,sys
 from datetime import datetime
 from psycopg.types.json import Jsonb
+from realtime.config import Config
 from realtime.serp_console import ConsoleStore
 s=ConsoleStore(os.environ['DATABASE_URL'])
+c=Config()
 payload=json.loads(sys.argv[1]);expected=datetime.fromisoformat(sys.argv[2])
 assert set(payload)<= {'continuous_enabled','continuous_sources','content_fetch_enabled','web_max_pages'}
 with s.store.connect() as db:
  row=db.execute('SELECT * FROM serp_collector_settings WHERE id=true FOR UPDATE').fetchone()
  if row['updated_at']!=expected:
   raise RuntimeError('operator changed settings; do not resume automatically')
- cfg=dict(row['runtime_config']);cfg.update({k:v for k,v in payload.items() if k!='content_fetch_enabled'})
+ cfg=dict(row['runtime_config']);old_pages=cfg.get('web_max_pages',c.google_web_max_pages)
+ cfg.update({k:v for k,v in payload.items() if k!='content_fetch_enabled'})
+ reconciled=[]
+ if 'web_max_pages' in payload and payload['web_max_pages']<old_pages:
+  # A query that already finished page 1 must not request page 1 again
+  # with next_page=2 and lose its lease after reducing the page limit.
+  reconciled=db.execute("UPDATE google_page_frontier f SET max_page=%s,state='completed',lease_token=NULL,lease_expires_at=NULL,next_run_at=GREATEST(f.next_run_at,clock_timestamp()+(%s*interval '1 second')),updated_at=clock_timestamp() FROM campaigns task,serp_supply_campaigns supply WHERE f.campaign_id=task.id AND supply.campaign_id=task.id AND supply.run_id=%s AND task.status='active' AND f.enabled AND f.next_page>%s AND (f.state IN ('pending','cooling','failed') OR (f.state='running' AND f.lease_expires_at<=clock_timestamp())) RETURNING f.campaign_id,f.query_hash,f.locale",(payload['web_max_pages'],max(1,c.google_web_query_cache_seconds),'google-serp-20261010',payload['web_max_pages'])).fetchall()
  updated=db.execute('UPDATE serp_collector_settings SET runtime_config=%s,content_fetch_enabled=%s,updated_at=clock_timestamp() WHERE id=true RETURNING updated_at',(Jsonb(cfg),payload.get('content_fetch_enabled',row['content_fetch_enabled']))).fetchone()['updated_at']
  db.execute("UPDATE campaigns c SET sources=%s FROM serp_supply_campaigns s WHERE s.campaign_id=c.id AND s.run_id=%s AND c.status='active'",(Jsonb(cfg['continuous_sources']),'google-serp-20261010'))
-print(json.dumps(dict(updated_at=updated),default=str))
+print(json.dumps(dict(updated_at=updated,frontier_pages_reconciled=len(reconciled),reconciled_frontiers=reconciled),default=str))
 '''
 
 
 def controlled_settings(payload, expected):
-    return json.loads(command(['docker','exec','-i',PROJECT+'-web-1','python','-',json.dumps(payload),expected],CONTROL))
+    applied=json.loads(command(['docker','exec','-i',PROJECT+'-web-1','python','-',json.dumps(payload),expected],CONTROL))
+    if applied['frontier_pages_reconciled']:
+        save(STATE/f"page-limit-reconciliation-{now().strftime('%Y%m%dT%H%M%S%f')}.json",dict(at=now(),payload=payload,applied=applied,retained_page_stats=True))
+    return applied
 
 
 SNAPSHOT = '''import json,os,sys
