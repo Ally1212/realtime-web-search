@@ -7,7 +7,7 @@ import re
 import json
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, urlsplit
 from xml.etree import ElementTree
@@ -16,6 +16,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .proxy_pool import ProxyPool
+from .discovery_audit import DiscoveryAudit
 
 
 _DISCOVERY_LIMITERS: dict[int, threading.BoundedSemaphore] = {}
@@ -33,6 +34,7 @@ class SearchResult:
     url: str
     title: str
     engines: tuple[str, ...]
+    serp_fields: dict[str, Any] = field(default_factory=dict, compare=False)
 
 
 class GoogleBlocked(RuntimeError):
@@ -121,6 +123,10 @@ class SearchDiscovery:
         google_serp_save_html: bool = False,
         google_serp_evidence_dir: str = "state/serp-evidence",
         serp_attempt_recorder: Callable[..., None] | None = None,
+        serp_response_recorder: Callable[..., None] | None = None,
+        serp_features_enabled: bool = False,
+        validate_target_dns: bool = True,
+        auxiliary_audit_recorder: Callable[..., None] | None = None,
         proxy_provider_attempts: int = 1,
         max_curl_sessions: int = 24,
         provider_cooldowns: ProviderCooldownRegistry | None = None,
@@ -134,6 +140,9 @@ class SearchDiscovery:
         self.proxy_profile = proxy_profile
         self.language = language if language in {"en", "zh"} else "en"
         self.locale = "zh-CN" if self.language == "zh" else "en-SG"
+        self.should_continue = None
+        self.serp_cache_reader = None
+        self.serp_cache_writer = None
         self.global_limiter = _discovery_limiter(global_concurrency)
         self.query_concurrency = max(1, query_concurrency)
         self.proxy_usage_recorder = proxy_usage_recorder
@@ -180,6 +189,8 @@ class SearchDiscovery:
             timeout, self.language, searxng_url,
             openserp_url=openserp_url,
             openserp_request_timeout_seconds=openserp_request_timeout_seconds,
+            serp_features_enabled=serp_features_enabled,
+            validate_target_dns=validate_target_dns,
             persistent_browser_enabled=persistent_browser_enabled,
             persistent_browser_profile_root=persistent_browser_profile_root,
             persistent_browser_max_contexts=persistent_browser_max_contexts,
@@ -192,6 +203,8 @@ class SearchDiscovery:
             max_curl_sessions=max_curl_sessions,
         )
         self.serp_attempt_recorder = serp_attempt_recorder
+        self.serp_response_recorder = serp_response_recorder
+        self.auxiliary_audit = DiscoveryAudit(auxiliary_audit_recorder)
         # Zero means exhaust every currently available rotating proxy before
         # moving to a direct/shared-exit fallback.
         self.proxy_provider_attempts = max(0, proxy_provider_attempts)
@@ -226,7 +239,8 @@ class SearchDiscovery:
 
     @staticmethod
     def _serialize(results: list[SearchResult]) -> list[dict[str, Any]]:
-        return [{"url": row.url, "title": row.title, "engines": list(row.engines)} for row in results]
+        return [{"url": row.url, "title": row.title, "engines": list(row.engines),
+                 **({"serp_fields": row.serp_fields} if row.serp_fields else {})} for row in results]
 
     @staticmethod
     def _deserialize(payload: object) -> list[SearchResult]:
@@ -239,6 +253,7 @@ class SearchDiscovery:
             results.append(SearchResult(
                 str(row["url"]), str(row.get("title") or row["url"]),
                 tuple(str(value) for value in row.get("engines") or ()),
+                dict(row["serp_fields"]) if isinstance(row.get("serp_fields"), dict) else {},
             ))
         return results
 
@@ -247,6 +262,10 @@ class SearchDiscovery:
         if not self.cache_get:
             return key, None
         row = self.cache_get(key, source)
+        if row and source == 'google_web' and self.serp_cache_reader:
+            # A reused response must remain attributable to this task.
+            if self.serp_cache_reader(key) is None:
+                return key, None
         return key, self._deserialize(row.get("payload")) if row else None
 
     def _store_cache(
@@ -262,6 +281,10 @@ class SearchDiscovery:
             etag=response.headers.get("ETag") if response else None,
             last_modified=response.headers.get("Last-Modified") if response else None,
         )
+        if source == 'google_web' and self.serp_cache_writer:
+            request_id = getattr(self._thread_state, 'last_serp_request_id', None)
+            if request_id:
+                self.serp_cache_writer(key, request_id, ttl)
 
     def _flush_proxy_usage(self) -> None:
         if not self.proxy_usage_recorder:
@@ -400,11 +423,15 @@ class SearchDiscovery:
         return "google_transport_error"
 
     def _attempt(self, provider: str, query: str, page: int) -> list[SearchResult]:
+        if self.should_continue and not self.should_continue():
+            raise GoogleBlocked("campaign_inactive")
         source = f"google_{provider}"
         if self._provider_cooldowns.cooling(provider):
             raise GoogleBlocked("google_provider_cooling")
         self._reserve_source(source)
         self._reserve_source("google_web")
+        if self.should_continue and not self.should_continue():
+            raise GoogleBlocked("campaign_inactive")
         proxy_url, proxy_key = self._select_proxy(provider)
         proxy_hash = self._proxy_hash(provider, proxy_key) if proxy_key else ""
         if proxy_hash:
@@ -450,7 +477,7 @@ class SearchDiscovery:
             wml_exit_block = provider == "wml" and (
                 captcha or code in {"google_http_403", "google_http_429"}
             )
-            classification = evidence.get("classification") or (
+            classification = "captcha" if captcha else evidence.get("classification") or (
                 ("results" if results else "empty") if failure is None
                 else "timeout" if code == "google_timeout"
                 else "http_error" if code.startswith("google_http_") else "error"
@@ -491,6 +518,18 @@ class SearchDiscovery:
                     "service_error": evidence.get("service_error"),
                 }
                 self.attempts.append(attempt_record)
+            if self.serp_response_recorder:
+                # A failed write prevents this page being cached or marked complete.
+                self._thread_state.last_serp_request_id = self.serp_response_recorder(
+                    provider=provider, query=query, page=page, language=self.language,
+                    region=self.transport.region,
+                    results=results, response=self.transport.last_serp_response,
+                    elapsed_seconds=elapsed, classification=classification,
+                    http_status=evidence.get("http_status"), error_code=code or None,
+                    upstream_request_id=evidence.get("upstream_request_id"),
+                    upstream_version=evidence.get("upstream_version"),
+                    upstream_cache_status=evidence.get("upstream_cache_status"),
+                )
             if self.serp_attempt_recorder:
                 try:
                     self.serp_attempt_recorder(
@@ -499,6 +538,7 @@ class SearchDiscovery:
                         request_url=evidence.get("request_url"),
                         http_status=evidence.get("http_status"),
                         result_count=len(results), elapsed_seconds=round(elapsed, 3),
+                        result_urls=[result.url for result in results],
                         classification=classification, error_code=code or None,
                         raw_sha256=evidence.get("raw_sha256"),
                         raw_html_path=evidence.get("raw_html_path"),
@@ -616,6 +656,8 @@ class SearchDiscovery:
                 self.singleflight_releaser(cache_key, lease)
 
     def _discover(self, query: str, pages: int) -> tuple[list[SearchResult], list[str]]:
+        if self.should_continue and not self.should_continue():
+            return [], []
         found: dict[str, SearchResult] = {}
         errors: list[str] = []
         page_limit = min(max(1, pages), self.google_web_max_pages)
@@ -635,6 +677,8 @@ class SearchDiscovery:
                 else:
                     page_start, page_end = 1, 0
             for page in range(page_start, page_end + 1):
+                if self.should_continue and not self.should_continue():
+                    break
                 try:
                     page_results = self._discover_google_page(query, page)
                     for result in page_results:
@@ -689,6 +733,10 @@ class SearchDiscovery:
         return self._external_request("post", url, **kwargs)
 
     def _external_request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        with self.auxiliary_audit.request(method, url) as audit:
+            return self._external_request_traced(audit, method, url, **kwargs)
+
+    def _external_request_traced(self, audit: dict[str, Any], method: str, url: str, **kwargs: Any) -> requests.Response:
         selected = None
         domain = urlsplit(url).hostname or ""
         if self.proxy_pool and self.proxy_profile != "direct":
@@ -701,6 +749,8 @@ class SearchDiscovery:
                 self._proxy_usage[usage_key] = self._proxy_usage.get(usage_key, 0) + 1
             kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
         try:
+            if audit:
+                audit['attempted'] = True
             response = getattr(self._general_session(), method)(url, **kwargs)
         except requests.RequestException:
             if selected:
@@ -708,6 +758,7 @@ class SearchDiscovery:
             raise
         if selected:
             self.proxy_pool.report(selected[1], domain, response.status_code)
+        self.auxiliary_audit.response(audit, response)
         return response
 
     @staticmethod
@@ -770,11 +821,19 @@ class SearchDiscovery:
         return decoded
 
     def _resolve_google_news(self, result: SearchResult) -> SearchResult | None:
+        with self.auxiliary_audit.phase('google_news_resolve', 'news_resolve', result.url, 'global') as audit:
+            resolved = self._resolve_google_news_traced(result, audit)
+            audit['results'] = [resolved] if resolved else []
+            return resolved
+
+    def _resolve_google_news_traced(self, result: SearchResult, audit: dict[str, Any]) -> SearchResult | None:
         host = (urlsplit(result.url).hostname or "").lower()
         if host != "news.google.com":
+            audit['offline'] = True
             return result
         offline = self._offline_google_news_url(result.url)
         if offline:
+            audit['offline'] = True
             return SearchResult(offline, result.title, result.engines)
         try:
             response = self._external_get(result.url, timeout=min(self.timeout, 5), allow_redirects=True, stream=True)
@@ -783,7 +842,9 @@ class SearchDiscovery:
                 resolved = str(response.url or "").strip()
                 if resolved and (urlsplit(resolved).hostname or "").lower() not in ("news.google.com", "consent.google.com") and resolved != result.url:
                     return SearchResult(resolved, result.title, result.engines)
-                soup = BeautifulSoup(response.content, "html.parser")
+                content = response.content
+                self.auxiliary_audit.content(response, content)
+                soup = BeautifulSoup(content, "html.parser")
                 node = soup.select_one("[data-n-a-id][data-n-a-ts][data-n-a-sg]")
                 if node:
                     article_id = str(node.get("data-n-a-id") or "")
@@ -802,6 +863,7 @@ class SearchDiscovery:
                     )
                     try:
                         decoded.raise_for_status()
+                        self.auxiliary_audit.content(decoded, decoded.content)
                         match = re.search(r'garturlres\\",\s*\\"(https?[^"\\]+)', decoded.text)
                         if match:
                             resolved = json.loads(f'"{match.group(1)}"')
@@ -811,7 +873,8 @@ class SearchDiscovery:
                         decoded.close()
             finally:
                 response.close()
-        except Exception:
+        except Exception as exc:
+            audit['error_type'] = type(exc).__name__
             return None
         return None
 
@@ -884,8 +947,14 @@ class SearchDiscovery:
 
         def fetch(item: tuple[str, tuple[str, str, str, int]]) -> tuple[list[SearchResult], str | None]:
             url, (name, query, locale, ttl) = item
+            with self.auxiliary_audit.phase(name, 'feed', query, locale) as audit:
+                return fetch_traced(item, audit)
+
+        def fetch_traced(item: tuple[str, tuple[str, str, str, int]], audit: dict[str, Any]) -> tuple[list[SearchResult], str | None]:
+            url, (name, query, locale, ttl) = item
             key, cached = self._cached(name, query, locale)
             if cached is not None:
+                audit.update(cache_hit=True, results=cached, input_results=cached)
                 return cached, None
             try:
                 stale = self.cache_get(key, name) if self.cache_get else None
@@ -899,18 +968,25 @@ class SearchDiscovery:
                 )
                 try:
                     if response.status_code == 304 and stale:
-                        return self._deserialize(stale.get("payload")), None
+                        results = self._deserialize(stale.get("payload"))
+                        audit.update(results=results, input_results=results)
+                        return results, None
                     response.raise_for_status()
-                    results = self._parse_feed(self._read_limited(response), name)
+                    content = self._read_limited(response)
+                    self.auxiliary_audit.content(response, content)
+                    results = self._parse_feed(content, name)
+                    audit['input_results'] = results
                 finally:
                     response.close()
                 if "google_news" in name or "google-news" in name:
                     results = [self._prepare_google_news(row) for row in results]
+                audit['results'] = results
                 self._store_cache(key, name, query, locale, 1, results, ttl, response=response)
                 if self.source_result_recorder:
                     self.source_result_recorder(name, success=True, result_count=len(results))
                 return results, None
             except Exception as exc:
+                audit['error_type'] = type(exc).__name__
                 if self.source_result_recorder:
                     self.source_result_recorder(name, success=False)
                 return [], f"{name}: {type(exc).__name__}"
@@ -924,7 +1000,7 @@ class SearchDiscovery:
                 for result in results:
                     previous = found.get(result.url)
                     if previous:
-                        found[result.url] = SearchResult(result.url, previous.title, tuple(dict.fromkeys((*previous.engines, *result.engines))))
+                        found[result.url] = replace(previous, engines=tuple(dict.fromkeys((*previous.engines, *result.engines))))
                     else:
                         found[result.url] = result
         return list(found.values()), errors
@@ -934,28 +1010,39 @@ class SearchDiscovery:
         found: dict[str, SearchResult] = {}
         errors: list[str] = []
         for geo in geos:
-            key, cached = self._cached("google_trends", "daily-trends", geo)
-            if cached is not None:
-                results = cached
-            else:
-                try:
-                    response = self._external_get(f"https://trends.google.com/trending/rss?geo={geo}", timeout=self.timeout, stream=True)
-                    try:
-                        response.raise_for_status()
-                        results = self._parse_feed(self._read_limited(response), "google_trends")
-                    finally:
-                        response.close()
-                    self._store_cache(key, "google_trends", "daily-trends", geo, 1, results, self.trends_interval_seconds, response=response)
-                    if self.source_result_recorder:
-                        self.source_result_recorder("google_trends", success=True, result_count=len(results))
-                except Exception as exc:
-                    errors.append(f"google_trends: {type(exc).__name__}")
-                    if self.source_result_recorder:
-                        self.source_result_recorder("google_trends", success=False)
-                    continue
+            with self.auxiliary_audit.phase('google_trends', 'trends', 'daily-trends', geo) as audit:
+                results, error = self._discover_trends_geo(geo, audit)
+            if error:
+                errors.append(error)
             for result in results:
                 found.setdefault(result.url, result)
         return list(found.values()), errors
+
+    def _discover_trends_geo(self, geo: str, audit: dict[str, Any]) -> tuple[list[SearchResult], str | None]:
+        key, cached = self._cached("google_trends", "daily-trends", geo)
+        if cached is not None:
+            results = cached
+            audit.update(cache_hit=True, results=results, input_results=results)
+        else:
+            try:
+                response = self._external_get(f"https://trends.google.com/trending/rss?geo={geo}", timeout=self.timeout, stream=True)
+                try:
+                    response.raise_for_status()
+                    content = self._read_limited(response)
+                    self.auxiliary_audit.content(response, content)
+                    results = self._parse_feed(content, "google_trends")
+                    audit.update(results=results, input_results=results)
+                finally:
+                    response.close()
+                self._store_cache(key, "google_trends", "daily-trends", geo, 1, results, self.trends_interval_seconds, response=response)
+                if self.source_result_recorder:
+                    self.source_result_recorder("google_trends", success=True, result_count=len(results))
+            except Exception as exc:
+                audit['error_type'] = type(exc).__name__
+                if self.source_result_recorder:
+                    self.source_result_recorder("google_trends", success=False)
+                return [], f"google_trends: {type(exc).__name__}"
+        return results, None
 
     def discover_many(self, queries: tuple[str, ...], pages: int) -> tuple[list[SearchResult], list[str]]:
         if not queries:
@@ -968,9 +1055,9 @@ class SearchDiscovery:
                 for query, (results, query_errors) in zip(queries, batches):
                     for result in results:
                         previous = found.get(result.url)
-                        found[result.url] = SearchResult(
-                            result.url, previous.title if previous else result.title,
-                            tuple(dict.fromkeys((*(previous.engines if previous else ()), *result.engines))),
+                        found[result.url] = replace(
+                            previous or result,
+                            engines=tuple(dict.fromkeys((*(previous.engines if previous else ()), *result.engines))),
                         )
                     errors.extend(f"{query}: {value}" for value in query_errors)
             return list(found.values()), list(dict.fromkeys(errors))

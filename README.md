@@ -1,6 +1,16 @@
 # Realtime Web Search
 
-面向关键词的持续网页采集系统。OpenSERP 是唯一的 Google 搜索发现入口；Scrapy 并发抓取正文，并按正文指纹去重。本地模式保存正文并在网站展示；Whale 模式通过 Outbox 上传。
+持续 Google 搜索与热点采集系统。Web 使用 OpenSERP，News 使用 Google News 搜索 RSS，Trends 使用 Google Trending Now RSS。默认保存结果及结构化元数据，统计跨来源历史去重后的新 URL；正文默认关闭，保留持久化开关。最新范围见 [三来源需求与项目检查](docs/google-sources-requirements-2026-10-10.md)。
+
+## 当前 SERP 模式（2026-10-10）
+
+`CONTENT_FETCH_ENABLED=false` 是首次初始化默认值；初始化后以数据库中的 `content_fetch_enabled` 为准，重启保留已保存的状态。首页提供正文开关、查询提交、结果列表和完整 JSON；旧正文页面为 `/articles`。开启后使用原正文任务路径，占用相同任务槽；关闭会取消运行中的正文进程组。
+
+当前版本持续采集 Google Web、News、Trends；任务创建时可单选或组合来源，列表可按来源筛选。Web 基线为每关键词 1 页、共享 6 个任务槽；News 按关键词返回新闻；Trends 按地区返回当前热门话题及相关报道，未实现关键词历史热度曲线。普通第三方 RSS 不在本轮范围。尚未完成三来源模式 24 小时产能验证。
+
+接口：`POST /api/local-campaigns` 接受 `sources` 创建异步任务；`GET /api/serp/requests?source=google_news` 按来源筛选；`GET /api/serp/requests/{id}` 返回完整 JSON；`GET /api/serp/stats` 返回实际最近 24 小时统计与来源贡献；`GET/POST /api/collector-settings` 读取或设置正文开关。三来源共用 URL registry；来源新链接可能重叠，首次发现贡献之和等于全局新增。News 未解析的 Google 跳转地址明确标记，RSS 顺序不当作 Google 排名。
+
+当前网站冻结包为 `state/serp-website-20261010/revisions/r2`，原三来源包 `state/google-sources-20261010/revisions/r2` 保留。`realtime-google-serp.service` 和 Compose 固定网站冻结包的 `compose.website.json`，供给 run ID/cursor 沿用原 Web 版本。网页绑定服务器 `127.0.0.1:8093`，通过 SSH 转发访问。以下正文、Whale 与历史实验章节仅在相应模式开启时适用，不代表当前生产正在抓取正文。
 
 ## 组件
 
@@ -15,7 +25,9 @@
 
 ## 工作链路
 
-系统把“发现”和“采集”分开运行：Google Web 只负责发现候选 URL；正文进程访问原站，提取正文和明确发布时间；随后执行相关性、长度、页面质量、历史 URL 与正文 SHA-256 去重。通过校验的数据进入 Outbox，由 Whale 批量接收；失败上传保留幂等键重试，已确认正文会从本地临时存储清除。
+默认链路：查询/地区 → Google Web / News / Trending Now → 按来源解析结构化响应 → 同事务保存请求与全局新 URL → 缓存并继续采集。相同网址再次出现保留来源记录，但新增量只计一次；不同网址的正文相同不影响链接资格。此路径不访问目标文章页面。News 与 Trends 使用持久缓存及共享查询锁，多个任务复用同一地区趋势不重复请求。
+
+开启正文模式后，正文进程访问原站，提取正文和明确发布时间；随后执行相关性、长度、页面质量、历史 URL 与正文 SHA-256 去重。Whale 模式将通过校验的数据进入 Outbox；失败上传保留幂等键重试，已确认正文会从本地临时存储清除。
 
 高吞吐实验使用持久化流水线，将搜索、正文抓取和上传解耦。查询页、URL 状态、失败原因、冷却时间和回执都写入账本，重启后可以继续；正文工作进程复用站点会话，并按域名公平调度，避免单一站点占满并发。
 
@@ -32,7 +44,7 @@ cp .env.example .env
 docker compose up -d --build postgres valkey openserp web local-worker
 ```
 
-打开 <http://localhost:8091>，输入关键词即可创建本地采集任务。每个搜索批次固定覆盖 Google Web 前 11 页，过滤重复链接、抓取正文并保存在 PostgreSQL；页面每 2 秒显示最新结果。`local-worker` 强制设置 `WHALE_ENABLED=false`，不会创建 Whale Outbox 消息，也不会上传 Whale。
+打开 <http://localhost:8091>（端口以 `.env` 为准），输入关键词即可创建 Google SERP 任务。分页由 `GOOGLE_WEB_MAX_PAGES` 控制；生产基线为 1 页。默认正文关闭，保存搜索结果及新 URL；`local-worker` 强制设置 `WHALE_ENABLED=false`，不会创建 Whale Outbox 消息，也不会上传 Whale。
 
 默认 Campaign 使用私有代理；生产 Worker 的公网出口 IP 必须提前加入代理节点防火墙白名单。如未配置代理，可在 `.env` 中设置 `DEFAULT_PROXY_PROFILE=direct`。
 
@@ -210,3 +222,9 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+## 三来源采集工作台
+
+当前网站已整合 Google Web、News、Trending Now。任务创建及启动/暂停/继续/停止、地区选择、跨请求结果筛选、完整 JSON、CSV/JSONL 全部筛选导出、24 小时全局与来源统计、正文及持续采集设置均连接真实后端。正文默认关闭；高级商业模块和历史热度曲线明确未支持。
+
+[功能检查、操作流程与生产验收](docs/serp-website-2026-10-10.md)。生产入口仍为 SSH 转发后的 `http://127.0.0.1:8093`，部署冻结于 `state/serp-website-20261010/revisions/r2`。

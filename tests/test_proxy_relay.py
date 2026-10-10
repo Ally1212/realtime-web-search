@@ -71,6 +71,8 @@ class ProxyRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await reader.readexactly(4), b'PING')
             writer.write(b'PONG')
             await writer.drain()
+            writer.close()
+            await writer.wait_closed()
 
         upstream_server = await asyncio.start_server(upstream, '127.0.0.1', 0)
         upstream_port = upstream_server.sockets[0].getsockname()[1]
@@ -87,6 +89,8 @@ class ProxyRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(b'200 Connection Established', await reader.readuntil(b'\r\n\r\n'))
             self.assertEqual(await reader.readexactly(4), b'PONG')
             self.assertEqual(await asyncio.wait_for(seen, 1), (b'user', b'pass'))
+            writer.close()
+            await writer.wait_closed()
         finally:
             relay_server.close()
             upstream_server.close()

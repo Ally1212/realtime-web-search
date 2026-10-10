@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+import asyncio
 import inspect
 
-from twisted.internet.defer import Deferred, DeferredList, maybeDeferred
+from twisted.internet.defer import Deferred
 from scrapy.utils.defer import maybe_deferred_to_future
 
 
@@ -17,7 +18,9 @@ def abort_browser_resource(request: Any) -> bool:
 class HybridDownloadHandler:
     """Keep curl-cffi on the hot path and invoke Playwright only when requested."""
 
-    lazy = True
+    # The nested Playwright handler subscribes to engine_started during init.
+    # Construct it before that signal, even if the first request uses curl.
+    lazy = False
 
     def __init__(self, crawler: Any):
         from scrapy.utils.misc import build_from_crawler
@@ -45,9 +48,17 @@ class HybridDownloadHandler:
             return await result
         return result
 
-    def close(self):  # type: ignore[no-untyped-def]
+    async def close(self):  # type: ignore[no-untyped-def]
         handlers = [self.curl, self.playwright]
-        return DeferredList([
-            maybeDeferred(handler.close) for handler in handlers
+
+        async def close_handler(handler):  # type: ignore[no-untyped-def]
+            result = handler.close()
+            if isinstance(result, Deferred):
+                await maybe_deferred_to_future(result)
+            elif inspect.isawaitable(result):
+                await result
+
+        await asyncio.gather(*(
+            close_handler(handler) for handler in handlers
             if handler is not None and hasattr(handler, "close")
-        ])
+        ))

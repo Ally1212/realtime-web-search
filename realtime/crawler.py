@@ -226,6 +226,13 @@ class FocusedSpider(scrapy.Spider):
         self.campaign_id = campaign_id
         self.query = str(campaign["query"])
         self.whale_task = self.store.whale_task_for_campaign(campaign_id)
+        self.serp_options = {}
+        if not self.whale_task:
+            from .serp_console import ConsoleStore
+            console = ConsoleStore(self.config.database_url)
+            self.config = console.effective_config(self.config)
+            saved = console.settings(self.config)
+            self.serp_options = {'web_region': saved['web_region'], 'web_language': saved['web_language'], **console.task_options(campaign_id)}
         task_payload = dict((self.whale_task or {}).get("payload") or {})
         aliases = tuple(campaign["aliases"])
         self.terms = tuple(dict.fromkeys(
@@ -233,6 +240,8 @@ class FocusedSpider(scrapy.Spider):
         ))
         inferred_language = "zh" if any("\u4e00" <= char <= "\u9fff" for char in self.query) else "en"
         self.search_language = str(task_payload.get("language") or inferred_language)
+        if self.serp_options.get('web_language') in ('en', 'zh'):
+            self.search_language = self.serp_options['web_language']
         self.keyword_kind = str(task_payload.get("kind") or "base")
         # Zero means unlimited for a locally-created campaign. Whale tasks keep
         # their explicit platform-provided limit.
@@ -320,6 +329,8 @@ class FocusedSpider(scrapy.Spider):
             try:
                 key, cached = discovery._cached("google_news_resolve", url, "global")
                 if cached and (urlsplit(cached[0].url).hostname or "").lower() != "news.google.com":
+                    with discovery.auxiliary_audit.phase('google_news_resolve', 'news_resolve', url, 'global') as audit:
+                        audit.update(cache_hit=True, results=[cached[0]], input_results=[cached[0]])
                     resolved_map[url] = cached[0].url
                     return
                 resolved = discovery._resolve_google_news(SearchResult(url, "", engines))
@@ -344,6 +355,10 @@ class FocusedSpider(scrapy.Spider):
         return resolved_map
 
     async def start(self):  # type: ignore[no-untyped-def]
+        if not self.config.content_fetch_enabled:
+            from .serp_worker import run_serp_campaign
+            await asyncio.to_thread(run_serp_campaign, self.campaign_id, self.config, self.store)
+            return
         self._counter_loop = LoopingCall(self._flush_counters)
         self._counter_loop.start(2, now=False)
         whale_task = self.whale_task
@@ -410,11 +425,28 @@ class FocusedSpider(scrapy.Spider):
             google_serp_save_html=self.config.google_serp_save_html,
             google_serp_evidence_dir=str(self.config.google_serp_evidence_dir),
             serp_attempt_recorder=self.store.record_google_serp_attempt,
+            serp_response_recorder=self._record_serp_response,
+            serp_features_enabled=self.config.serp_features_enabled,
+            validate_target_dns=False,
+            auxiliary_audit_recorder=(lambda **event: self.store.record_discovery_audit(
+                self.campaign_id, **event,
+            )) if hasattr(self.store, 'record_discovery_audit') else None,
             deep_cache_seconds=self.config.google_web_deep_cache_seconds,
             singleflight_acquirer=self.store.acquire_query_lease,
             singleflight_releaser=self.store.release_query_lease,
         )
         self._search_discovery = discovery
+        discovery.locale += ':serp-v1'
+        if self.serp_options:
+            from .serp_console import ConsoleStore
+            console = ConsoleStore(self.config.database_url)
+            discovery.should_continue = lambda: console.runnable(self.campaign_id)
+            discovery.task_options = self.serp_options
+            discovery.serp_cache_reader = lambda key: console.cached_feed(key, self.campaign_id)
+            discovery.serp_cache_writer = console.cache_feed
+            discovery.transport.region = self.serp_options['web_region']
+            if self.serp_options['web_region'] != 'US':
+                discovery.locale += ':' + self.serp_options['web_region']
         queries = self.terms
         if whale_task and dict(whale_task.get("payload") or {}).get("continuous"):
             # Send the full catalog query, including event modifiers. Aliases
@@ -454,12 +486,13 @@ class FocusedSpider(scrapy.Spider):
         jobs = []
         if "google_web" in self.sources:
             jobs.append(discover_source("discovery_web", discovery.discover_many, queries, pages))
-        if "google_news" in self.sources:
-            jobs.append(discover_source("discovery_news", discovery.discover_feeds, queries, ("news",)))
+        if any(s in self.sources for s in ('google_news','google_trends')):
+            from .google_feeds import collect_sources
+            from .serp_store import SerpStore
+            jobs.append(discover_source('discovery_google_feeds',collect_sources,discovery,self.store,
+                                        SerpStore(self.config.database_url),self.campaign_id,queries,self.sources,self.config))
         if "rss" in self.sources and self.config.discovery_feeds:
             jobs.append(discover_source("discovery_rss", discovery.discover_feeds, queries, ("generic",)))
-        if "google_trends" in self.sources:
-            jobs.append(discover_source("discovery_trends", discovery.discover_trends))
         results, errors = [], []
         for source_results, source_errors in await asyncio.gather(*jobs):
             results.extend(source_results)
@@ -558,10 +591,16 @@ class FocusedSpider(scrapy.Spider):
             async for request in page_requests(list(substituted.items())):
                 yield request
 
+    def _record_serp_response(self, **event):
+        from .serp_store import SerpStore
+        return SerpStore(self.config.database_url).record(self.campaign_id, **event)
+
     def _page_request(
         self, url: str, engines: tuple[str, ...] = (), *, short_retry: bool = False,
         browser: bool = False,
     ) -> scrapy.Request:
+        if not self.config.content_fetch_enabled:
+            raise RuntimeError('content_fetch_disabled')
         return scrapy.Request(
             url,
             callback=self.parse_page,

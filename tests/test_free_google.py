@@ -142,6 +142,51 @@ class FreeGoogleTests(unittest.TestCase):
         self.assertEqual(process.communicate.call_args.kwargs["timeout"], 8)
         kill.assert_called_once_with(process)
 
+    def test_browser_returns_child_page_evidence_for_success_and_captcha(self):
+        import json
+        for captcha in (False, True):
+            with self.subTest(captcha=captcha):
+                evidence = dict(classification="captcha" if captcha else "results", http_status=200,
+                                request_url="https://www.google.com/search?q=AI", raw_sha256="abc",
+                                raw_html_path="state/serp-evidence/abc.html", headless=False,
+                                unexpected_secret="must not propagate")
+                payload = dict(error="google_captcha", captcha=True) if captcha else dict(results=[
+                    dict(url="https://example.com/ai", title="AI")])
+                process = Mock(returncode=0)
+                process.communicate.return_value = (json.dumps(dict(payload, evidence=evidence)), "")
+                transport = GoogleTransport(5, "en", "", google_serp_save_html=True)
+                with patch("realtime.free_google.subprocess.Popen", return_value=process):
+                    if captcha:
+                        with self.assertRaises(GoogleBlocked) as blocked:
+                            transport.browser("AI", 1, "http://user:secret@proxy.example:80")
+                        self.assertTrue(blocked.exception.captcha)
+                    else:
+                        self.assertEqual(transport.browser("AI", 1, None)[0].url, "https://example.com/ai")
+                self.assertEqual(transport.last_evidence["classification"], evidence["classification"])
+                self.assertEqual(transport.last_evidence["raw_html_path"], evidence["raw_html_path"])
+                self.assertNotIn("unexpected_secret", transport.last_evidence)
+                sent = json.loads(process.communicate.call_args.args[0])
+                self.assertTrue(sent["save_html"])
+
+    def test_browser_probe_emits_page_evidence_on_block(self):
+        import io
+        import json
+        from realtime import browser_probe
+        transport = Mock()
+        transport._browser_page.side_effect = GoogleBlocked("google_captcha", captcha=True)
+        transport.last_evidence = dict(classification="captcha", http_status=200, raw_sha256="abc")
+        incoming = io.StringIO(json.dumps(dict(query="AI", page=1, language="en", timeout=5,
+                                               save_html=True, evidence_dir="state/test-evidence")))
+        outgoing = io.StringIO()
+        with patch.object(browser_probe, "GoogleTransport", return_value=transport) as factory, \
+             patch.object(browser_probe.sys, "stdin", incoming), patch.object(browser_probe.sys, "stdout", outgoing):
+            browser_probe.main()
+        result = json.loads(outgoing.getvalue())
+        self.assertTrue(result["captcha"])
+        self.assertEqual(result["evidence"], transport.last_evidence)
+        self.assertTrue(factory.call_args.kwargs["google_serp_save_html"])
+        transport.close.assert_called_once()
+
     def test_wml_page_with_unusable_result_anchors_is_confirmed_empty(self):
         session = Mock()
         response = session.get.return_value
@@ -236,6 +281,29 @@ class FreeGoogleTests(unittest.TestCase):
         self.assertTrue(error.exception.captcha)
         page.locator.assert_not_called()
         page.wait_for_timeout.assert_not_called()
+
+    def test_browser_navigation_timeout_never_reenters_dom_and_keeps_known_captcha_url(self):
+        for url, captcha in (("about:blank", False), ("https://www.google.com/sorry/index", True)):
+            with self.subTest(url=url):
+                transport = GoogleTransport(5, "en", "")
+                context, page = Mock(), Mock()
+                context.new_page.return_value = page
+                page.goto.side_effect = TimeoutError("navigation stalled")
+                page.content.side_effect = AssertionError("DOM must not be queried after navigation timeout")
+                page.url = url
+                page.is_closed.return_value = False
+                transport.local.browser = (None, Mock(), Mock(), context)
+                if captcha:
+                    with self.assertRaises(GoogleBlocked) as error:
+                        transport._browser_page("AI", 1, None)
+                    self.assertTrue(error.exception.captcha)
+                else:
+                    with self.assertRaises(TimeoutError):
+                        transport._browser_page("AI", 1, None)
+                page.content.assert_not_called()
+                page.close.assert_called_once()
+                self.assertEqual(transport.last_evidence["classification"], "captcha" if captcha else "timeout")
+                self.assertIsNone(transport.last_evidence["http_status"])
 
     def test_curl_session_cache_is_bounded(self):
         transport = GoogleTransport(5, "en", "")

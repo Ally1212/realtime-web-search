@@ -54,6 +54,10 @@ def main() -> None:
     parser.add_argument("campaign_id")
     args = parser.parse_args()
     config = Config()
+    if not config.content_fetch_enabled:
+        from .serp_worker import run_serp_campaign
+        run_serp_campaign(args.campaign_id, config)
+        return
     # v2 invalidates pending requests created before discovery URL handling
     # was stabilized. Keep the old directory untouched so the
     # operational change remains recoverable.

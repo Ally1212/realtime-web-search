@@ -64,6 +64,8 @@ class GoogleTransport:
         *, persistent_browser_enabled: bool = False,
         openserp_url: str = "http://127.0.0.1:7000",
         openserp_request_timeout_seconds: int = 25,
+        serp_features_enabled: bool = False,
+        validate_target_dns: bool = True,
         persistent_browser_profile_root: str = "state/browser-profiles",
         persistent_browser_max_contexts: int = 4,
         persistent_browser_request_interval_seconds: int = 30,
@@ -76,9 +78,12 @@ class GoogleTransport:
     ):
         self.timeout = timeout
         self.language = language
+        self.region = "US"
         self.searxng_url = searxng_url.rstrip("/")
         self.openserp_url = openserp_url.rstrip("/")
         self.openserp_request_timeout_seconds = max(1, openserp_request_timeout_seconds)
+        self.serp_features_enabled = serp_features_enabled
+        self.validate_target_dns = validate_target_dns
         self.local = threading.local()
         self.local.last_evidence = {}
         self.persistent_browser_enabled = persistent_browser_enabled
@@ -102,11 +107,16 @@ class GoogleTransport:
     def last_evidence(self) -> dict:
         return getattr(self.local, "last_evidence", {}) or {}
 
+    @property
+    def last_serp_response(self) -> dict:
+        return getattr(self.local, "last_serp_response", {}) or {}
+
     def fetch(
         self, provider: str, query: str, page: int, proxy_url: str | None,
         *, proxy_key: str | None = None,
     ) -> list[SearchResult]:
         self.local.last_evidence = {}
+        self.local.last_serp_response = {}
         try:
             return self._fetch(provider, query, page, proxy_url, proxy_key=proxy_key)
         except Exception as exc:
@@ -185,12 +195,18 @@ class GoogleTransport:
             if response.status_code not in {301, 302, 303, 307, 308}:
                 return ""
             location = urljoin(url, str(response.headers.get("Location") or "").strip())
-            return location if public_result(location) else ""
+            return location if self._valid_result_url(location) else ""
         except requests.RequestException:
             return ""
         finally:
             if response is not None:
                 response.close()
+
+    def _valid_result_url(self, url: str) -> bool:
+        if self.validate_target_dns:
+            return public_result(url)
+        from .serp_fields import public_serp_url
+        return public_serp_url(url)
 
     @staticmethod
     def _openserp_error(status: int, payload: object) -> GoogleBlocked:
@@ -235,6 +251,7 @@ class GoogleTransport:
     def openserp(
         self, query: str, page: int, proxy_url: str | None, proxy_key: str | None,
     ) -> list[SearchResult]:
+        self.local.last_serp_response = {}
         if not self.openserp_url:
             raise GoogleBlocked("openserp_not_configured")
         session = getattr(self.local, "openserp_session", None)
@@ -247,9 +264,9 @@ class GoogleTransport:
             "start": (page - 1) * 10,
             "limit": 10,
             "lang": "ZH" if self.language == "zh" else "EN",
-            "region": "US",
+            "region": self.region,
             "format": "json",
-            "features": "false",
+            "features": "true" if self.serp_features_enabled else "false",
             "extract": 0,
         }
         request_url = self.openserp_url + "/google/search?" + urlencode(params)
@@ -327,15 +344,18 @@ class GoogleTransport:
                     continue
                 url = str(item.get("url") or "").strip()
                 title = str(item.get("title") or "").strip()
-                if not title:
-                    continue
                 if (urlsplit(url).hostname or "").lower().endswith("google.com") and urlsplit(url).path.rstrip("/") == "/goto":
                     wrapped_google_results += 1
                     url = self._resolve_google_goto(session, url, proxy_url)
                     if url:
                         resolved_google_results += 1
-                if public_result(url) and url not in results:
-                    results[url] = SearchResult(url, title, ("google_web",))
+                if self._valid_result_url(url) and url not in results:
+                    from .serp_fields import organic_result
+                    results[url] = SearchResult(
+                        url, title, ("google_web",), organic_result(item, url=url, page=page),
+                    )
+            from .serp_fields import response_envelope
+            self.local.last_serp_response = response_envelope(payload, params, list(results.values()))
             classification = "results" if results else "empty"
             self._openserp_evidence(
                 response, raw, classification, request_url, payload,
@@ -527,12 +547,15 @@ class GoogleTransport:
     def browser(self, query: str, page_number: int, proxy_url: str | None) -> list[SearchResult]:
         # Chromium/driver shutdown can hang beyond Playwright navigation timeouts.
         # Isolate the last-resort browser so it cannot occupy a discovery worker forever.
+        self.local.last_evidence = {}
         process = subprocess.Popen(
             [sys.executable, "-m", "realtime.browser_probe"], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
         )
         payload = json.dumps({"query": query, "page": page_number, "proxy": proxy_url,
-                              "language": self.language, "timeout": self.timeout})
+                              "language": self.language, "timeout": self.timeout,
+                              "save_html": self.google_serp_save_html,
+                              "evidence_dir": str(self.google_serp_evidence_dir)})
         try:
             stdout, _ = process.communicate(payload, timeout=self.timeout + 5)
         except subprocess.TimeoutExpired:
@@ -542,6 +565,13 @@ class GoogleTransport:
             result = json.loads(stdout)
         except ValueError:
             raise GoogleBlocked("google_browser_runtime_error") from None
+        if not isinstance(result, dict):
+            raise GoogleBlocked("google_browser_runtime_error")
+        evidence = result.get("evidence")
+        if isinstance(evidence, dict):
+            self.local.last_evidence = {key: evidence[key] for key in (
+                "classification", "http_status", "request_url", "raw_sha256", "raw_html_path", "headless",
+            ) if key in evidence}
         if result.get("error"):
             raise GoogleBlocked(result["error"], captcha=bool(result.get("captcha")))
         if process.returncode:
@@ -619,6 +649,8 @@ class GoogleTransport:
             "q": query, "start": (page_number - 1) * 10, "num": 10,
             "hl": "zh-CN" if self.language == "zh" else "en", "pws": 0,
         })
+        content = b""
+        status = None
         try:
             response = page.goto(request_url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
             status = response.status if response else 200
@@ -653,18 +685,22 @@ class GoogleTransport:
                     raise GoogleBlocked(reason)
                 page.wait_for_timeout(250)
         except GoogleBlocked:
-            self.close_browser_page(page)
             raise
-        except Exception:
-            # The navigation itself can time out on a CAPTCHA; inspect before classifying.
-            try:
-                blocked = SearchDiscovery._google_block(type("Response", (), {
-                    "url": page.url, "status_code": 200, "content": page.content().encode(),
-                })())
-                if blocked:
-                    raise blocked
-            finally:
-                self.close_browser_page(page)
+        except Exception as exc:
+            # After navigation times out, another DOM RPC can hang until the
+            # outer watchdog fires and hide the original error. Inspect only
+            # the already observed HTML and Playwright's cached URL instead.
+            blocked = SearchDiscovery._google_block(type("Response", (), {
+                "url": page.url, "status_code": status, "content": content,
+            })())
+            self._evidence(
+                content, http_status=status,
+                classification="captcha" if blocked and blocked.captcha else "http_error" if blocked
+                else "timeout" if SearchDiscovery._error_code(exc) == "google_timeout" else "error",
+                headless=not bool(os.getenv("DISPLAY")), request_url=request_url,
+            )
+            if blocked:
+                raise blocked from None
             raise
         finally:
             self.close_browser_page(page)

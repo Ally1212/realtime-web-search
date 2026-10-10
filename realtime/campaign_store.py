@@ -77,6 +77,16 @@ CREATE TABLE IF NOT EXISTS pages (
 );
 ALTER TABLE pages ADD COLUMN IF NOT EXISTS indexed_at timestamptz;
 ALTER TABLE pages ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS page_content_hashes (
+  content_hash char(64) PRIMARY KEY,
+  page_id bigint NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  first_seen timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS page_content_hashes_page ON page_content_hashes(page_id);
+CREATE TABLE IF NOT EXISTS campaign_schema_migrations (
+  name text PRIMARY KEY,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sources jsonb NOT NULL DEFAULT '["google_web"]'::jsonb;
 CREATE TABLE IF NOT EXISTS campaign_pages (
   campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -328,6 +338,31 @@ CREATE INDEX IF NOT EXISTS google_serp_attempts_proxy
   ON google_serp_attempts(proxy_key_hash,created_at DESC);
 CREATE INDEX IF NOT EXISTS google_serp_attempts_classification
   ON google_serp_attempts(classification,created_at DESC);
+ALTER TABLE google_serp_attempts ADD COLUMN IF NOT EXISTS result_urls jsonb NOT NULL DEFAULT '[]'::jsonb;
+CREATE TABLE IF NOT EXISTS google_known_result_urls (
+  url text PRIMARY KEY,
+  first_seen timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS discovery_aux_audit_events (
+  event_id uuid PRIMARY KEY,
+  campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  trace_id uuid NOT NULL,
+  request_id uuid,
+  kind text NOT NULL CHECK (kind IN ('request_started','request_finished','content_examined','discovery_result')),
+  source text NOT NULL,
+  operation text NOT NULL,
+  occurred_at timestamptz NOT NULL,
+  data jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS discovery_aux_audit_campaign_time
+  ON discovery_aux_audit_events(campaign_id,occurred_at);
+CREATE INDEX IF NOT EXISTS discovery_aux_audit_trace ON discovery_aux_audit_events(trace_id);
+CREATE UNIQUE INDEX IF NOT EXISTS discovery_aux_audit_request_kind
+  ON discovery_aux_audit_events(request_id,kind) WHERE request_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS discovery_known_result_urls (
+  url text PRIMARY KEY,
+  first_seen timestamptz NOT NULL
+);
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS consecutive_failures bigint NOT NULL DEFAULT 0;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS latency_seconds_total double precision NOT NULL DEFAULT 0;
 ALTER TABLE discovery_source_runtime ADD COLUMN IF NOT EXISTS last_error text;
@@ -380,7 +415,7 @@ class CampaignStore:
         if initialize:
             with _INITIALIZE_LOCK:
                 if dsn not in _INITIALIZED_DSNS:
-                    self.initialize()
+                    self.initialize(reuse_existing=True)
                     _INITIALIZED_DSNS.add(dsn)
 
     def connect(self):  # type: ignore[no-untyped-def]
@@ -778,23 +813,78 @@ class CampaignStore:
         network_bytes: int | None = None,
         service_error_type: str | None = None,
         service_error: str | None = None,
+        result_urls: list[str] | None = None,
     ) -> None:
+        from .fetcher import normalize_url
+        urls = sorted({normalize_url(url) for url in (result_urls or [])})
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO google_serp_attempts(provider,query,page,proxy_key_hash,"
                 "request_url,http_status,result_count,elapsed_seconds,classification,"
                 "error_code,raw_sha256,raw_html_path,headless,upstream_request_id,"
                 "upstream_version,upstream_attempts,upstream_cache_status,network_bytes,"
-                    "service_error_type,service_error) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "service_error_type,service_error,result_urls) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
                 (
                     provider, query, page, proxy_key_hash, request_url, http_status,
                     result_count, elapsed_seconds, classification, error_code,
                     raw_sha256, raw_html_path, headless, upstream_request_id,
                     upstream_version, upstream_attempts, upstream_cache_status,
-                    network_bytes, service_error_type, service_error,
+                    network_bytes, service_error_type, service_error, json.dumps(urls),
                 ),
             )
+            if urls:
+                with connection.cursor() as cursor:
+                    cursor.executemany(
+                        'INSERT INTO google_known_result_urls(url) VALUES(%s) ON CONFLICT DO NOTHING',
+                        [(url,) for url in urls],
+                    )
+
+    def record_discovery_audit(
+        self, campaign_id: str, *, event_id: str, trace_id: str, request_id: str | None,
+        kind: str, source: str, operation: str, occurred_at: str, data: dict[str, Any],
+    ) -> None:
+        """Append auxiliary evidence; never store bodies, RPC payloads or credentials."""
+        from .discovery_audit import AUDIT_DATA_KEYS
+
+        if kind not in AUDIT_DATA_KEYS or set(data) != AUDIT_DATA_KEYS[kind]:
+            raise ValueError("invalid auxiliary discovery audit fields")
+        if (kind == 'discovery_result') != (request_id is None):
+            raise ValueError("invalid auxiliary discovery request correlation")
+        with self.connect() as connection:
+            with connection.transaction():
+                inserted = connection.execute(
+                    "INSERT INTO discovery_aux_audit_events "
+                    "(event_id,campaign_id,trace_id,request_id,kind,source,operation,occurred_at,data) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) "
+                    "ON CONFLICT(event_id) DO NOTHING RETURNING event_id",
+                    (event_id, campaign_id, trace_id, request_id, kind, source, operation,
+                     occurred_at, json.dumps(data, ensure_ascii=False)),
+                ).fetchone()
+                if not inserted:
+                    # A retry may repeat identical evidence, but cannot replace it.
+                    previous = connection.execute(
+                        "SELECT campaign_id,trace_id,request_id,kind,source,operation,occurred_at,data "
+                        "FROM discovery_aux_audit_events WHERE event_id=%s", (event_id,),
+                    ).fetchone()
+                    expected = dict(campaign_id=str(campaign_id), trace_id=str(trace_id),
+                                    request_id=str(request_id) if request_id else None,
+                                    kind=kind, source=source, operation=operation,
+                                    occurred_at=datetime.fromisoformat(occurred_at), data=data)
+                    actual = dict(previous)
+                    for key in ('campaign_id', 'trace_id', 'request_id'):
+                        actual[key] = str(actual[key]) if actual[key] else None
+                    if actual != expected:
+                        raise ValueError("conflicting immutable discovery audit event")
+                if kind == 'discovery_result' and data['eligible_result_urls']:
+                    with connection.cursor() as cursor:
+                        cursor.executemany(
+                            "INSERT INTO discovery_known_result_urls(url,first_seen) VALUES(%s,%s) "
+                            "ON CONFLICT(url) DO UPDATE SET first_seen="
+                            "LEAST(discovery_known_result_urls.first_seen,EXCLUDED.first_seen) "
+                            "WHERE EXCLUDED.first_seen<discovery_known_result_urls.first_seen",
+                            [(url, occurred_at) for url in sorted(set(data['eligible_result_urls']))],
+                        )
 
     def record_google_proxy_result(
         self, proxy_hash: str, *, success: bool, cooldown_seconds: int = 0,
@@ -1017,15 +1107,86 @@ class CampaignStore:
                 )
                 return True
 
-    def initialize(self) -> None:
+    @staticmethod
+    def _schema_marker() -> str:
+        return 'campaign_schema_v1_' + hashlib.sha256(SCHEMA.encode()).hexdigest()
+
+    @staticmethod
+    def _schema_is_current(connection: psycopg.Connection, marker: str) -> bool:
+        if not connection.execute(
+            "SELECT to_regclass('campaign_schema_migrations') AS name"
+        ).fetchone()['name']:
+            return False
+        return bool(connection.execute(
+            'SELECT 1 FROM campaign_schema_migrations WHERE name=%s', (marker,)
+        ).fetchone())
+
+    def initialize(self, *, reuse_existing: bool = False) -> None:
+        """Cold processes reuse a committed schema revision without repeating DDL.
+
+        Explicit initialize() retains its migration/cleanup behavior. A schema
+        change must be deployed with old writers stopped; this lock only
+        serializes initializers using the new protocol.
+        """
         with self.connect() as connection:
-            connection.execute(SCHEMA)
-            # Delivered Whale payloads must not retain a second body copy.
-            # Locally-created campaigns keep their extracted body in pages.
+            with connection.transaction():
+                marker = self._schema_marker()
+                if reuse_existing and self._schema_is_current(connection, marker):
+                    return
+                # Lock before CREATE/ALTER, including concurrent empty-schema
+                # bootstraps; lock identity follows the actual database/schema.
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended("
+                    "'campaign-schema:'||current_database()||':'||current_schema(),0))"
+                )
+                if reuse_existing and self._schema_is_current(connection, marker):
+                    return
+                connection.execute(SCHEMA)
+                self._initialize_content_hash_history(connection)
+                # Delivered Whale payloads must not retain a second body copy.
+                connection.execute(
+                    "UPDATE whale_ingest_outbox SET payload='{}'::jsonb "
+                    "WHERE status IN ('delivered','rejected') AND payload<>'{}'::jsonb"
+                )
+                connection.execute(
+                    'INSERT INTO campaign_schema_migrations(name) VALUES(%s) ON CONFLICT DO NOTHING',
+                    (marker,),
+                )
+
+    @staticmethod
+    def _initialize_content_hash_history(connection: psycopg.Connection) -> None:
+        """Backfill retained hashes once; unavailable historical text is not recoverable."""
+        migration = "20261009_page_content_hash_history_v1"
+        if connection.execute(
+            "SELECT 1 FROM campaign_schema_migrations WHERE name=%s", (migration,)
+        ).fetchone():
+            return
+        connection.execute("SELECT pg_advisory_xact_lock(20261009, 1)")
+        if connection.execute(
+            "SELECT 1 FROM campaign_schema_migrations WHERE name=%s", (migration,)
+        ).fetchone():
+            return
+        # Run only during a separate deployment with all old writers stopped.
+        # Preserve existing owners and rows rather than merging legacy collisions.
+        connection.execute("LOCK TABLE pages IN SHARE ROW EXCLUSIVE MODE")
+        connection.execute(
+            "INSERT INTO page_content_hashes(content_hash,page_id) "
+            "SELECT content_hash,id FROM pages ORDER BY id ON CONFLICT DO NOTHING"
+        )
+        connection.execute(
+            "INSERT INTO page_content_hashes(content_hash,page_id) "
+            "SELECT encode(sha256(convert_to(content,'UTF8')),'hex'),id FROM pages "
+            "WHERE content<>'' ORDER BY id ON CONFLICT DO NOTHING"
+        )
+        if connection.execute("SELECT to_regclass('page_admission_audit') AS name").fetchone()["name"]:
             connection.execute(
-                "UPDATE whale_ingest_outbox SET payload='{}'::jsonb "
-                "WHERE status IN ('delivered','rejected') AND payload<>'{}'::jsonb"
+                "INSERT INTO page_content_hashes(content_hash,page_id) "
+                "SELECT original_content_hash,page_id FROM page_admission_audit "
+                "ORDER BY page_id ON CONFLICT DO NOTHING"
             )
+        connection.execute(
+            "INSERT INTO campaign_schema_migrations(name) VALUES(%s)", (migration,)
+        )
 
     def create_campaign(
         self, query: str, aliases: list[str], daily_target: int, proxy_profile: str,
@@ -1577,26 +1738,61 @@ class CampaignStore:
         whale_payload: dict[str, Any] | None = None,
     ) -> tuple[int, bool, bool, bool]:
         """Returns (page_id, new association, duplicate content, needs indexing)."""
+        if page.content and hashlib.sha256(page.content.encode()).hexdigest() != page.content_hash:
+            raise ValueError("page content_hash does not match its body")
         with self.connect() as connection:
             with connection.transaction():
+                # Serialize both first insert and refresh, including cross-URL dedup.
+                # All writers acquire these locks in the same order.
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(20261010, hashtext(%s))", (page.url,)
+                )
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(20261011, hashtext(%s))", (page.content_hash,)
+                )
                 existing = connection.execute(
-                    "SELECT id,url,content_hash,content,indexed_at FROM pages WHERE url=%s OR content_hash=%s "
-                    "ORDER BY (content_hash=%s) DESC LIMIT 1 FOR UPDATE",
-                    (page.url, page.content_hash, page.content_hash),
+                    "WITH candidates AS (SELECT id FROM pages WHERE url=%s "
+                    "UNION SELECT id FROM pages WHERE content_hash=%s "
+                    "UNION SELECT page_id FROM page_content_hashes WHERE content_hash=%s) "
+                    "SELECT p.id,p.url,p.content_hash,p.content,p.indexed_at,"
+                    "(p.content_hash=%s OR h.page_id IS NOT NULL) AS hash_seen "
+                    "FROM candidates c JOIN pages p ON p.id=c.id LEFT JOIN page_content_hashes h "
+                    "ON h.page_id=p.id AND h.content_hash=%s "
+                    "ORDER BY (p.content_hash=%s) DESC,(h.page_id IS NOT NULL) DESC,p.id "
+                    "LIMIT 1 FOR UPDATE OF p",
+                    (page.url, page.content_hash, page.content_hash, page.content_hash,
+                     page.content_hash, page.content_hash),
                 ).fetchone()
-                duplicate_content = bool(existing and existing["content_hash"] == page.content_hash)
+                duplicate_content = bool(existing and existing["hash_seen"])
                 needs_indexing = not existing or existing["indexed_at"] is None
                 if existing:
                     page_id = int(existing["id"])
-                    stored_content = str(existing["content"] or "") if whale_task_id else page.content
-                    connection.execute(
-                        "UPDATE pages SET title=%s,summary=%s,content=%s,language=%s,http_status=%s,"
-                        "fetched_at=%s,source_engines=%s::jsonb WHERE id=%s",
-                        (
-                            page.title, page.summary, stored_content, page.language, page.http_status,
-                            page.fetched_at, json.dumps(page.source_engines), page_id,
-                        ),
+                    historical_version = (
+                        duplicate_content and existing["content_hash"] != page.content_hash
+                        and existing["content"] != page.content
+                        and existing["url"] != page.url
                     )
+                    preserve_local_body = bool(whale_task_id and existing["content"])
+                    # An alias with old text must not roll back a newer canonical body.
+                    # A fresh fetch of the canonical URL can legitimately revert text.
+                    # Whale uploads must not overwrite locally retained text or its metadata.
+                    if not historical_version and not preserve_local_body:
+                        stored_content = "" if whale_task_id else page.content
+                        content_changed = (
+                            existing["content_hash"] != page.content_hash
+                            or existing["content"] != stored_content
+                        )
+                        needs_indexing = needs_indexing or content_changed
+                        connection.execute(
+                            "UPDATE pages SET content_hash=%s,title=%s,summary=%s,content=%s,"
+                            "language=%s,http_status=%s,fetched_at=%s,source_engines=%s::jsonb,"
+                            "indexed_at=CASE WHEN %s THEN NULL ELSE indexed_at END WHERE id=%s",
+                            (
+                                page.content_hash, page.title, page.summary, stored_content,
+                                page.language, page.http_status, page.fetched_at,
+                                json.dumps(page.source_engines), content_changed, page_id,
+                            ),
+                        )
                 else:
                     stored_content = "" if whale_task_id else page.content
                     row = connection.execute(
@@ -1610,17 +1806,12 @@ class CampaignStore:
                     if row:
                         page_id = int(row["id"])
                     else:
-                        # Another worker inserted the same URL or content hash concurrently.
-                        concurrent = connection.execute(
-                            "SELECT id,content_hash,indexed_at FROM pages WHERE url=%s OR content_hash=%s "
-                            "ORDER BY (content_hash=%s) DESC LIMIT 1 FOR UPDATE",
-                            (page.url, page.content_hash, page.content_hash),
-                        ).fetchone()
-                        if not concurrent:
-                            raise RuntimeError("page deduplication race could not be resolved")
-                        page_id = int(concurrent["id"])
-                        duplicate_content = concurrent["content_hash"] == page.content_hash
-                        needs_indexing = concurrent["indexed_at"] is None
+                        # This can only be an old writer bypassing the locking protocol.
+                        raise RuntimeError("page deduplication requires all writers to use hash history")
+                connection.execute(
+                    "INSERT INTO page_content_hashes(content_hash,page_id) VALUES(%s,%s) "
+                    "ON CONFLICT DO NOTHING", (page.content_hash, page_id),
+                )
                 inserted = connection.execute(
                     "INSERT INTO campaign_pages(campaign_id,page_id) VALUES(%s,%s) "
                     "ON CONFLICT DO NOTHING RETURNING page_id",

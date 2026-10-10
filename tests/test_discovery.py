@@ -486,6 +486,16 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(recorder.call_args.args[0], hashlib.sha256(b"proxy-key").hexdigest())
         self.assertFalse(recorder.call_args.kwargs["success"])
 
+    def test_browser_captcha_is_audited_even_without_child_page_evidence(self):
+        recorder = Mock()
+        d = SearchDiscovery(providers=("browser",), serp_attempt_recorder=recorder,
+                            source_slot_acquirer=Mock(return_value={"allowed": True}))
+        d.transport.fetch = Mock(side_effect=GoogleBlocked("google_captcha", captcha=True))
+        with self.assertRaises(GoogleBlocked):
+            d._attempt("browser", "AI", 1)
+        self.assertEqual(recorder.call_args.kwargs["classification"], "captcha")
+        self.assertEqual(recorder.call_args.kwargs["error_code"], "google_captcha")
+
     def test_openserp_google_blocks_enable_short_local_canary_cooldown(self):
         pool = Mock()
         pool.available_count.return_value = 1

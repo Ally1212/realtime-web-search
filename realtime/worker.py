@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
+import signal
 import subprocess
 import sys
 import threading
@@ -15,7 +17,13 @@ from .proxy_pool import ProxyApiError, ProxySynchronizer
 class WorkerManager:
     def __init__(self, config: Config):
         self.config = config
-        self.store = CampaignStore(config.database_url)
+        self.store = CampaignStore(config.database_url, initialize=False)
+        from .serp_store import SerpStore
+        self.serp = SerpStore(config.database_url)
+        self.serp.initialize(config.content_fetch_enabled)
+        from .serp_console import ConsoleStore
+        self.console = ConsoleStore(config.database_url)
+        self.console.initialize_console(config)
         self.queue = CampaignQueue(config.valkey_url)
         self.syncer = ProxySynchronizer(config)
         self.stop = threading.Event()
@@ -37,6 +45,13 @@ class WorkerManager:
             self.stop.wait(max(5, retry))
 
     def run_campaign(self, campaign_id: str) -> None:
+        config = self.config
+        if hasattr(self, 'console'):
+            if not self.console.runnable(campaign_id):
+                # Keep automatic tasks retryable while their global switch is off.
+                self.queue.schedule(campaign_id, 30)
+                return
+            config = self.console.effective_config(self.config)
         campaign = self.store.campaign(campaign_id)
         if (
             not campaign
@@ -58,27 +73,65 @@ class WorkerManager:
                 self.store.record_event(campaign_id, "", "proxy_unavailable", error_code="empty_pool")
                 self.queue.schedule(campaign_id, 300)
                 return
-        result = subprocess.run(
-            [sys.executable, "-m", "realtime.scrapy_runner", campaign_id],
-            check=False,
-        )
+        returncode = 0
+        if not self.serp.content_fetch_enabled(self.config.content_fetch_enabled):
+            from .serp_worker import run_serp_campaign
+            run_serp_campaign(campaign_id, config, self.store, self.serp)
+        else:
+            # The child gets the effective runtime switch, not a stale env default.
+            child_env = dict(os.environ, CONTENT_FETCH_ENABLED='true')
+            child = subprocess.Popen([sys.executable, "-m", "realtime.scrapy_runner", campaign_id], env=child_env, start_new_session=True)
+            try:
+                while child.poll() is None:
+                    if self.stop.wait(1) or not self.serp.content_fetch_enabled() or (hasattr(self, 'console') and not self.console.runnable(campaign_id)):
+                        os.killpg(child.pid, signal.SIGTERM)
+                        try:
+                            child.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(child.pid, signal.SIGKILL)
+                            child.wait()
+                        break
+                returncode = child.returncode or 0
+            finally:
+                if child.poll() is None:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait()
         campaign = self.store.campaign(campaign_id)
         if campaign and campaign["status"] == "active":
-            if result.returncode:
+            if returncode:
                 self.store.record_event(
-                    campaign_id, "", "worker_failed", error_code=f"exit_{result.returncode}"
+                    campaign_id, "", "worker_failed", error_code=f"exit_{returncode}"
                 )
                 self.queue.schedule(campaign_id, 60)
             else:
                 frontier_delay = self.store.next_google_frontier_delay(campaign_id)
-                self.queue.schedule(campaign_id, frontier_delay if frontier_delay is not None else 300)
+                delay = frontier_delay if frontier_delay is not None else 300
+                if 'google_news' in (campaign.get('sources') or []):
+                    delay = min(delay,config.google_news_base_interval_seconds)
+                if 'google_trends' in (campaign.get('sources') or []):
+                    delay = min(delay,config.google_trends_interval_seconds)
+                self.queue.schedule(campaign_id,delay)
 
     def worker_loop(self) -> None:
         while not self.stop.is_set():
             self.queue.promote_due()
             campaign_id = self.queue.pop(timeout=5)
             if campaign_id:
-                self.run_campaign(campaign_id)
+                try:
+                    self.run_campaign(campaign_id)
+                except Exception as exc:
+                    print(f"campaign retry after {type(exc).__name__}", flush=True)
+                    self.queue.schedule(campaign_id, 60)
+
+    def supply_loop(self) -> None:
+        from .serp_worker import SerpSupply
+        supply = SerpSupply(self.config, self.store, self.queue)
+        while not self.stop.is_set():
+            try:
+                supply.tick()
+            except Exception as exc:
+                print(f"SERP keyword supply retry after {type(exc).__name__}", flush=True)
+            self.stop.wait(30)
 
     def run(self) -> None:
         removed = self.queue.deduplicate_ready()
@@ -87,6 +140,8 @@ class WorkerManager:
         for campaign_id in self.store.active_local_campaign_ids():
             self.queue.recover(campaign_id)
         threading.Thread(target=self.proxy_sync_loop, daemon=True).start()
+        # The website can enable supply even when the startup environment was off.
+        threading.Thread(target=self.supply_loop, daemon=True).start()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.config.crawler_slots) as pool:
             futures = [pool.submit(self.worker_loop) for _ in range(self.config.crawler_slots)]
             try:

@@ -13,10 +13,13 @@ class CampaignQueue:
         # Blocking pops wait up to five seconds, so the socket timeout must be longer.
         self.redis = Redis.from_url(url, decode_responses=True, socket_timeout=30)
 
-    def enqueue(self, campaign_id: str) -> None:
+    def enqueue(self, campaign_id: str, *, priority: bool = False) -> None:
         marker = f"realtime:campaign:queued:{campaign_id}"
         if self.redis.set(marker, "1", nx=True, ex=3600):
-            self.redis.lpush(self.READY, campaign_id)
+            if priority:
+                self.redis.rpush(self.READY, campaign_id)
+            else:
+                self.redis.lpush(self.READY, campaign_id)
 
     def recover(self, campaign_id: str) -> None:
         """Recover interrupted work without duplicating ready work or bypassing delays."""

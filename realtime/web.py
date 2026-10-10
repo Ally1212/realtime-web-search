@@ -13,6 +13,7 @@ from .campaign_queue import CampaignQueue
 from .campaign_store import CAMPAIGN_SOURCES, CampaignStore
 from .proxy_pool import ProxyCache
 from .experiment_web import DASHBOARD_HTML, ExperimentDashboard
+from .serp_fields import GOOGLE_SOURCES
 
 
 HTML = r'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI Google 数据采集</title><style>
@@ -117,7 +118,7 @@ loadCampaigns().then(refreshCurrent);setInterval(refreshCurrent,2000);setInterva
 </script></body></html>'''
 
 
-NAVIGATION = '<nav style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:20px"><a href="/stats">实验统计</a><a href="/stats/legacy">旧任务统计</a><a href="/">本地关键词采集</a></nav>'
+NAVIGATION = '<nav style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:20px"><a href="/">Google SERP</a><a href="/articles">历史正文</a><a href="/stats">历史实验统计</a></nav>'
 HTML = HTML.replace('<main>', '<main>' + NAVIGATION, 1)
 STATS_HTML = STATS_HTML.replace('<main>', '<main>' + NAVIGATION + '<p style="color:#946200">此页仅显示旧任务；本次 24 小时实验请查看“实验统计”。</p>', 1)
 
@@ -144,7 +145,25 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:  # noqa: N802
+        from .serp_console_http import post
+        if post(self):
+            return
         path = urlparse(self.path).path
+        if path == '/api/collector-settings':
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if length < 1 or length > 1024:
+                    raise ValueError('invalid settings payload size')
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict) or set(payload) != {'content_fetch_enabled'}:
+                    raise ValueError('expected content_fetch_enabled boolean')
+                from .serp_store import SerpStore
+                self.send_json(SerpStore(self.config.database_url).set_content_fetch(payload['content_fetch_enabled']))
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                self.send_json({'error': str(exc)}, 400)
+            except Exception:
+                self.send_json({'error': 'collector settings unavailable'}, 503)
+            return
         action = re.fullmatch(r"/api/campaigns/([0-9a-f-]+)/(pause|resume|stop)", path)
         if action:
             campaign_id, operation = action.groups()
@@ -163,7 +182,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = min(int(self.headers.get("Content-Length", "0")), 16_384)
             payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload,dict):
+                raise ValueError('请求必须是 JSON 对象')
+            sources_value = payload.get('sources',['google_web'])
+            allowed = GOOGLE_SOURCES if local_mode else CAMPAIGN_SOURCES
+            if not isinstance(sources_value,list) or not sources_value or any(not isinstance(s,str) or s not in allowed for s in sources_value):
+                raise ValueError('请选择有效采集来源：'+', '.join(allowed))
+            sources = list(dict.fromkeys(sources_value))
             query = str(payload.get("query", "")).strip()
+            if not query and sources == ['google_trends']:
+                query = '当前热门趋势'
             if not query or len(query) > 300:
                 raise ValueError("关键词不能为空且不能超过 300 字符")
             aliases_value = payload.get("aliases", [])
@@ -177,12 +205,6 @@ class Handler(BaseHTTPRequestHandler):
             proxy_profile = str(payload.get("proxy_profile", self.config.default_proxy_profile))
             if proxy_profile not in {"private", "public", "direct"}:
                 raise ValueError("proxy_profile 必须是 private、public 或 direct")
-            sources_value = payload.get("sources", ["google_web"])
-            if not isinstance(sources_value, list):
-                raise ValueError("sources 必须是字符串数组")
-            sources = [str(value) for value in sources_value if str(value) in CAMPAIGN_SOURCES]
-            if not sources:
-                sources = ["google_web"]
             campaign_id = self.store.create_campaign(query, aliases, daily_target, proxy_profile, sources)
             self.queue.enqueue(campaign_id)
             self.send_json(
@@ -191,6 +213,7 @@ class Handler(BaseHTTPRequestHandler):
                     "campaign_id": campaign_id,
                     "status": "active",
                     "upload_to_whale": False,
+                    "sources": sources,
                 },
                 202,
             )
@@ -198,7 +221,29 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, 400)
 
     def do_GET(self) -> None:  # noqa: N802
+        from .serp_console_http import get
+        if get(self):
+            return
         parsed = urlparse(self.path)
+        if parsed.path in {'/api/collector-settings', '/api/serp/stats', '/api/serp/requests'} or parsed.path.startswith('/api/serp/requests/'):
+            try:
+                from .serp_store import SerpStore
+                serp = SerpStore(self.config.database_url)
+                if parsed.path == '/api/collector-settings':
+                    self.send_json({'content_fetch_enabled': serp.content_fetch_enabled(self.config.content_fetch_enabled), 'search_scope': 'google_web_news_trends', 'supported_sources': list(GOOGLE_SOURCES), 'continuous_sources': list(self.config.serp_continuous_sources), 'trends_mode': 'trending_now_rss'})
+                elif parsed.path == '/api/serp/stats':
+                    self.send_json(serp.stats())
+                elif parsed.path == '/api/serp/requests':
+                    values = parse_qs(parsed.query)
+                    self.send_json({'requests': serp.recent((values.get('campaign_id') or [None])[0], int((values.get('limit') or ['50'])[0]), (values.get('source') or [None])[0])})
+                else:
+                    result = serp.request(parsed.path.removeprefix('/api/serp/requests/'))
+                    self.send_json(result if result is not None else {'error': 'SERP request not found'}, 200 if result is not None else 404)
+            except (ValueError, TypeError):
+                self.send_json({'error': 'invalid SERP request parameters'}, 400)
+            except Exception:
+                self.send_json({'error': 'SERP results unavailable'}, 503)
+            return
         if parsed.path == "/stats":
             self.send_body(DASHBOARD_HTML.encode(), "text/html; charset=utf-8")
             return
@@ -217,6 +262,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'error': 'experiment statistics unavailable'}, 503)
             return
         if parsed.path == "/":
+            from .serp_page import page
+            self.send_body(page(HTML).encode(), "text/html; charset=utf-8")
+            return
+        if parsed.path == "/articles":
             self.send_body(HTML.encode(), "text/html; charset=utf-8")
             return
         if parsed.path == "/healthz":
