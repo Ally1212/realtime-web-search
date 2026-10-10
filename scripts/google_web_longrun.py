@@ -1,6 +1,6 @@
 """Durable Google Web-only, link-only experiments; never run article migrations.
 
-Sequential 90-minute measurements include failed requests, cooldowns and switching.
+Sequential measurements cover a full hour and include failures and switching.
 The retained URL registry is shared across all stages. At the deadline, keep the
 best eligible measured configuration running. A website off switch stops this
 supervisor; it is never silently overridden.
@@ -34,6 +34,8 @@ PLANS = [
  dict(key='s18-p1-i60-r4',slots=18,pages=1,interval=60,initial_rps=2,max_rps=4,revision='optimized'),
  dict(key='s24-p1-i45-r4',slots=24,pages=1,interval=45,initial_rps=2,max_rps=4,revision='optimized'),
  dict(key='baseline-repeat-s6-p1',slots=6,pages=1,interval=90,initial_rps=1,max_rps=2,revision='optimized'),
+ dict(key='s8-p1',slots=8,pages=1,interval=90,initial_rps=1,max_rps=2,revision='optimized'),
+ dict(key='s4-p1',slots=4,pages=1,interval=90,initial_rps=1,max_rps=2,revision='optimized'),
 ]
 
 
