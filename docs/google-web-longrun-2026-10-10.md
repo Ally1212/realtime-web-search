@@ -45,6 +45,8 @@
 
 该段来源及配置核验通过，正文基线不变，无 worker 重启或 OOM。UTC 10:00–11:00 单个自然小时新增 7,340；选优采用包含首尾不足小时的整段平均 6,555.93，不采用单小时峰值。证据 result-02-baseline-r3-s6-p1.json。数字已按 google-tracking-v2 重算，修正前 10,024 / 6,629.34 及小时数 7,421 作废，原始结果留档。
 
+此 r3 版本存在已确认的停止任务无限重排缺陷，数量和时长作为控制基线保留；最终长期候选均使用已修复版本，见下述 queue_safe 门槛。
+
 第二组在 UTC 11:14:45 起算，包含排空、worker 重建与恢复等待。实际 worker 已挂载本轮冻结优化代码，网站继续 r3。UTC 11:41 的只读诊断确认第二组没有 after 日期过滤，平均成功请求约 18 秒；队列仍有继承的 stopped 条目等待自然出队，不手动清空来美化本组产能。
 
 UTC 11:37 本机 SSH 观察连接被关闭；重新连接确认监督进程 MainPID 2572469 持续存活，阶段已自动切换且没有服务重启记录。这是观察连接中断，不作为生产停机证据，也未据此重启 worker。网站隧道重新建立，API 确认 pure Web / body false。
@@ -80,3 +82,11 @@ UTC 13:41:42.270882 关闭自动采集并排空请求，备份原文件后只替
 进一步检查生产标准库并用真实长连接复现：Python 3.12+ 的 Server.wait_closed 会等待旧监听已接受的所有连接结束。旧实现在刷新中逐个等待，会推迟新监听发布。回归测试在旧代码上超时失败；修正后关闭旧监听立即创建新监听，旧隧道仍能传输字节，测试通过。相关本地 21 passed、5 subtests；生产中转容器内 5 项测试通过。
 
 此补充修正于 UTC 13:52:30.330664–13:53:23.814151 排空并部署，暂停 53.483487 秒完整计入同一 12 槽组。worker 未重建，来源、正文基线及冻结包不变；监督服务恢复为 MainPID 3270956。当前中转文件 SHA256 cc8f8c78987c1ff2e4804e3d81b7e179a126d14f73ff6763f2b87f25e3bd54a4，维护证据 relay-refresh-maintenance-before.json、relay-refresh-maintenance-paused.json、relay-refresh-resume-confirmed.json，前版备份 relay-refresh-fix/original-proxy_relay.py。
+
+## 长期候选的队列稳定性门槛（UTC 14:00）
+
+核验生产冻结 baseline/realtime/worker.py：r3 在检查任务状态前调用 console.runnable，停止任务返回 false 后仍被 schedule(30)，导致永久重排。优化版本先检查 active 状态，线上已验证 stopped 样本出队后没有重新排队。为保证最终长期运行不恢复已知缺陷，result 增加 queue_safe，best 仅从 verified optimized 版本选择；旧 r3 数量、时长、请求和逐小时数据全部保留为控制基线。
+
+原资格标记和排名归档 queue-safety-gate/original-metrics，派生结果保留 eligibility_before_queue_safety_gate。排序防回归测试覆盖旧版本高产量、旧 eligible=true 且无 queue_safe 字段的记录，均不能恢复旧 worker；5 项选优测试通过。监督器更新未暂停采集、未重建 worker、未修改参数或计时边界；MainPID 3292255，证据 queue-safety-policy-applied.json。
+
+12 槽组小时快照（UTC 14:02:19.829493）：从原起点 UTC 13:01:09.813356 起算 3,670.016137 秒，新增 5,306 个唯一链接，平均 5,204.77 / 小时；1,054 / 1,130 次请求成功（93.27%）。纯 Web、正文基线、实际配置、queue_safe 和 worker 稳定性检查通过。所有代理故障、冷却和两次中转维护已计入。phase2-hour-checkpoint.json 标记 checkpoint_only / not_added_to_ranking；阶段继续至完整 90 分钟，避免重复累计中间观察。

@@ -131,8 +131,9 @@ def result(data, plan, baseline_pages):
     configuration_matches=all(actual[k]==plan[k] for k in ('slots','pages','interval','initial_rps','max_rps')) and list(actual['providers'])==['openserp']
     pure=other==0 and data['pages']==baseline_pages and not data['settings']['content_fetch_enabled'] and data['settings']['continuous_sources']==['google_web'] and data['active_manual_tasks']==0 and all(r['sources']==['google_web'] for r in data['active_supply'])
     success=web['successful']/web['attempts'] if web['attempts'] else 0
-    valid=seconds>=3600 and pure and configuration_matches and data['worker']['running'] and not data['worker']['oom'] and data['worker']['restarts']==0 and success>=.85 and web['attempts']>=100
-    return dict(key=plan['key'],plan=plan,url_normalization='google-tracking-v2',started_at=data['started_at'],measured_until=data['at'],elapsed_seconds=seconds,new_links=data['new_links'],new_links_per_hour=data['new_links']*3600/seconds if seconds>0 else 0,requests=web,success_rate=success,pure_google_web=pure,configuration_matches=configuration_matches,eligible=valid,hourly=data['hourly'],worker=data['worker'],source_runtime=data['source_runtime'],queue=data['queue'],host=data['host'])
+    queue_safe=plan.get('revision')=='optimized'
+    valid=seconds>=3600 and pure and configuration_matches and queue_safe and data['worker']['running'] and not data['worker']['oom'] and data['worker']['restarts']==0 and success>=.85 and web['attempts']>=100
+    return dict(key=plan['key'],plan=plan,url_normalization='google-tracking-v2',started_at=data['started_at'],measured_until=data['at'],elapsed_seconds=seconds,new_links=data['new_links'],new_links_per_hour=data['new_links']*3600/seconds if seconds>0 else 0,requests=web,success_rate=success,pure_google_web=pure,configuration_matches=configuration_matches,queue_safe=queue_safe,eligibility_notes=[] if queue_safe else ['legacy worker reschedules stopped tasks indefinitely; control baseline only'],eligible=valid,hourly=data['hourly'],worker=data['worker'],source_runtime=data['source_runtime'],queue=data['queue'],host=data['host'])
 
 
 def best(results):
@@ -140,7 +141,7 @@ def best(results):
     # their best hour. This also includes clean but slow/failed short stages.
     groups={}
     for row in results:
-        if not row['pure_google_web'] or not row['configuration_matches']:
+        if not row['pure_google_web'] or not row['configuration_matches'] or row['plan'].get('revision')!='optimized':
             continue
         identity=json.dumps({k:v for k,v in row['plan'].items() if k!='key'},sort_keys=True)
         groups.setdefault(identity,[]).append(row)
