@@ -76,3 +76,7 @@ UTC 13:41:42.270882 关闭自动采集并排空请求，备份原文件后只替
 中转文件新 SHA256 为 71ecabfb671def44daefdcda87b29042a2f5837cf8041ed66d3fe848732ec733；原文件保存在 relay-bind-fix/original-proxy_relay.py，维护与恢复证据为 relay-bind-maintenance-before.json、relay-bind-maintenance-paused.json、relay-bind-resume-confirmed.json。此次修复在 12 槽阶段中途发生，该组保留原起止边界，所有失败、冷却和维护暂停计入墙钟时长，不能仅将该组表现归因于并发差异。
 
 恢复后独立快照（UTC 13:45:20）：35 次新搜索全部为 results，新增 186 个历史去重链接，无错误组；首条完成于 UTC 13:43:20。证据 relay-fix-post-resume-diagnostics.json。这是恢复确认，不作为独立选优窗口。
+
+进一步检查生产标准库并用真实长连接复现：Python 3.12+ 的 Server.wait_closed 会等待旧监听已接受的所有连接结束。旧实现在刷新中逐个等待，会推迟新监听发布。回归测试在旧代码上超时失败；修正后关闭旧监听立即创建新监听，旧隧道仍能传输字节，测试通过。相关本地 21 passed、5 subtests；生产中转容器内 5 项测试通过。
+
+此补充修正于 UTC 13:52:30.330664–13:53:23.814151 排空并部署，暂停 53.483487 秒完整计入同一 12 槽组。worker 未重建，来源、正文基线及冻结包不变；监督服务恢复为 MainPID 3270956。当前中转文件 SHA256 cc8f8c78987c1ff2e4804e3d81b7e179a126d14f73ff6763f2b87f25e3bd54a4，维护证据 relay-refresh-maintenance-before.json、relay-refresh-maintenance-paused.json、relay-refresh-resume-confirmed.json，前版备份 relay-refresh-fix/original-proxy_relay.py。

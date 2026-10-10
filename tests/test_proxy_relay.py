@@ -10,6 +10,52 @@ from realtime.proxy_relay import relay_connection, _reconcile_relays
 
 
 class ProxyRelayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_does_not_wait_for_retired_listener_clients(self):
+        accepted = asyncio.Event()
+
+        async def old_tunnel(reader, writer):
+            accepted.set()
+            try:
+                writer.write(await reader.readexactly(4))
+                await writer.drain()
+                await reader.read()
+            except asyncio.IncompleteReadError:
+                pass
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        old = await asyncio.start_server(old_tunnel, '127.0.0.1', 0)
+        old_port = old.sockets[0].getsockname()[1]
+        client_reader, client_writer = await asyncio.open_connection('127.0.0.1', old_port)
+        await accepted.wait()
+        temporary = await asyncio.start_server(lambda r, w: w.close(), '127.0.0.1', 0)
+        free_port = temporary.sockets[0].getsockname()[1]
+        temporary.close()
+        await temporary.wait_closed()
+        record = ProxyRecord('127.0.0.1', 41003, 'http')
+        cache = Mock()
+        cache.load.return_value = (None, [record])
+        args = SimpleNamespace(bind='127.0.0.1', port_start=20000, port_count=30000)
+        servers = {'old': (old, old_port)}
+        try:
+            with patch('realtime.proxy_relay.proxy_relay_ports', return_value={record.key: free_port}):
+                pending = await asyncio.wait_for(_reconcile_relays(args, cache, servers, 'user', 'pass'), .5)
+            self.assertEqual(pending, 0)
+            self.assertFalse(old.is_serving())
+            self.assertTrue(servers[record.key][0].is_serving())
+            client_writer.write(b'PING')
+            await client_writer.drain()
+            self.assertEqual(await asyncio.wait_for(client_reader.readexactly(4), 1), b'PING')
+        finally:
+            client_writer.close()
+            await client_writer.wait_closed()
+            old.close()
+            await old.wait_closed()
+            for server, _ in servers.values():
+                server.close()
+                await server.wait_closed()
+
     async def test_busy_port_preserves_other_listeners_and_retries_when_free(self):
         occupied = await asyncio.start_server(lambda r, w: w.close(), '127.0.0.1', 0)
         busy_port = occupied.sockets[0].getsockname()[1]

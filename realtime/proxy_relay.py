@@ -174,7 +174,9 @@ async def _reconcile_relays(
     for key in obsolete:
         server, _ = servers.pop(key)
         server.close()
-        await server.wait_closed()
+        # close() releases the listener immediately. On Python 3.12+,
+        # wait_closed() also waits for accepted tunnels; those may remain
+        # open for minutes and must not delay publishing the new listeners.
     pending = 0
     for key, port in ports.items():
         if key in servers:
