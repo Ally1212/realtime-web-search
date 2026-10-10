@@ -4,13 +4,13 @@
 
 ## 当前 SERP 模式（2026-10-10）
 
-`CONTENT_FETCH_ENABLED=false` 是首次初始化默认值；初始化后以数据库中的 `content_fetch_enabled` 为准，重启保留已保存的状态。首页提供正文开关、查询提交、结果列表和完整 JSON；旧正文页面为 `/articles`。开启后使用原正文任务路径，占用相同任务槽；关闭会取消运行中的正文进程组。
+`CONTENT_FETCH_ENABLED=false` 是首次初始化默认值；初始化后以数据库中的 `content_fetch_enabled` 为准，重启保留已保存的状态。首页展示最新数据并提供自动采集开关；任务页提交查询，采集数据页筛选和导出，设置页管理正文等参数。旧正文页面为 `/articles`。开启后使用原正文任务路径，占用相同任务槽；关闭会取消运行中的正文进程组。
 
-当前版本持续采集 Google Web、News、Trends；任务创建时可单选或组合来源，列表可按来源筛选。Web 基线为每关键词 1 页、共享 6 个任务槽；News 按关键词返回新闻；Trends 按地区返回当前热门话题及相关报道，未实现关键词历史热度曲线。普通第三方 RSS 不在本轮范围。尚未完成三来源模式 24 小时产能验证。
+当前版本支持持续采集 Google Web、News、Trends；任务创建时可单选或组合来源，列表可按来源筛选。Web 基线为每关键词 1 页、共享 6 个任务槽；News 按关键词返回新闻；Trends 按地区返回当前热门话题及相关报道，未实现关键词历史热度曲线。普通第三方 RSS 不在本轮范围。尚未完成三来源模式 24 小时产能验证。
 
 接口：`POST /api/local-campaigns` 接受 `sources` 创建异步任务；`GET /api/serp/requests?source=google_news` 按来源筛选；`GET /api/serp/requests/{id}` 返回完整 JSON；`GET /api/serp/stats` 返回实际最近 24 小时统计与来源贡献；`GET/POST /api/collector-settings` 读取或设置正文开关。三来源共用 URL registry；来源新链接可能重叠，首次发现贡献之和等于全局新增。News 未解析的 Google 跳转地址明确标记，RSS 顺序不当作 Google 排名。
 
-当前网站冻结包为 `state/serp-website-20261010/revisions/r2`，原三来源包 `state/google-sources-20261010/revisions/r2` 保留。`realtime-google-serp.service` 和 Compose 固定网站冻结包的 `compose.website.json`，供给 run ID/cursor 沿用原 Web 版本。网页绑定服务器 `127.0.0.1:8093`，通过 SSH 转发访问。以下正文、Whale 与历史实验章节仅在相应模式开启时适用，不代表当前生产正在抓取正文。
+当前网站冻结包为 `state/serp-website-20261010/revisions/r3`，原三来源包 `state/google-sources-20261010/revisions/r2` 保留。`realtime-google-serp.service` 和 Compose 固定网站冻结包的 `compose.website.json`，供给 run ID/cursor 沿用原 Web 版本。网页绑定服务器 `127.0.0.1:8093`，通过 SSH 转发访问。以下正文、Whale 与历史实验章节仅在相应模式开启时适用，不代表当前生产正在抓取正文。
 
 ## 组件
 
@@ -227,4 +227,6 @@ python3 -m venv .venv
 
 当前网站已整合 Google Web、News、Trending Now。任务创建及启动/暂停/继续/停止、地区选择、跨请求结果筛选、完整 JSON、CSV/JSONL 全部筛选导出、24 小时全局与来源统计、正文及持续采集设置均连接真实后端。正文默认关闭；高级商业模块和历史热度曲线明确未支持。
 
-[功能检查、操作流程与生产验收](docs/serp-website-2026-10-10.md)。生产入口仍为 SSH 转发后的 `http://127.0.0.1:8093`，部署冻结于 `state/serp-website-20261010/revisions/r2`。
+[功能检查、操作流程与生产验收](docs/serp-website-2026-10-10.md)。生产入口仍为 SSH 转发后的 `http://127.0.0.1:8093`，部署冻结于 `state/serp-website-20261010/revisions/r3`。
+
+当前生产已按最新授权运行纯 Google Web 长时对照实验，News、Trends 和正文关闭。首页直接显示最新数据；顶部按钮可开关自动采集，关闭保留数据且实验监督器服从该操作。完整筛选与导出在“采集数据”页，统计与高级设置默认收起。实验范围和进展见 [纯 Web 长时选优](docs/google-web-longrun-2026-10-10.md)。

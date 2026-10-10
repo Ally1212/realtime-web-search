@@ -1,7 +1,11 @@
+import hashlib
 import json
 import os
+import subprocess
+import sys
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from http.server import ThreadingHTTPServer
 from urllib.request import Request, urlopen
@@ -40,6 +44,14 @@ class ConsoleValidationTests(unittest.TestCase):
         self.assertEqual(d.transport.language, 'zh')
         self.assertIn(':GB', d.locale)
         self.assertEqual(d.task_options['news_locale'], 'SG:zh-Hans')
+        d.close()
+
+    def test_configured_source_rate_cap_reaches_shared_scheduler(self):
+        c = dict(id=str(uuid4()), query='q', proxy_profile='direct')
+        store = Mock()
+        d = make_discovery(Config(google_web_max_rps=4),store,Mock(),c)
+        d.source_slot_acquirer('google_openserp', 2)
+        store.acquire_discovery_slot.assert_called_once_with('google_openserp',2,maximum_rps=4)
         d.close()
 
     def test_news_and_trends_use_task_editions(self):
@@ -142,6 +154,53 @@ class ConsoleIntegrationTests(unittest.TestCase):
         self.assertTrue(self.store.runnable(auto))
         self.assertEqual(self.base.campaign(auto)['sources'],['google_trends'])
 
+    def test_supervisor_compare_and_set_preserves_operator_stop_and_other_settings(self):
+        from scripts.google_web_longrun import CONTROL
+        self.store.save_settings({'continuous_enabled':False,'news_interval_seconds':600},self.config)
+        prior=str(self.store.settings(self.config)['updated_at'])
+        # A second website stop, even when already off, invalidates a pending resume.
+        self.store.save_settings({'continuous_enabled':False},self.config)
+        args=[sys.executable,'-c',CONTROL,json.dumps({'continuous_enabled':True}),prior]
+        child=subprocess.run(args,env=dict(os.environ,DATABASE_URL=self.dsn),capture_output=True)
+        self.assertNotEqual(child.returncode,0)
+        self.assertFalse(self.store.settings(self.config)['continuous_enabled'])
+        current=str(self.store.settings(self.config)['updated_at'])
+        args[-1]=current
+        child=subprocess.run(args,env=dict(os.environ,DATABASE_URL=self.dsn),capture_output=True)
+        self.assertEqual(child.returncode,0)
+        saved=self.store.settings(self.config)
+        self.assertTrue(saved['continuous_enabled'])
+        self.assertFalse(saved['content_fetch_enabled'])
+        self.assertEqual(saved['news_interval_seconds'],600)
+
+    def test_supervisor_snapshot_reads_existing_serp_schema_and_global_url_registry(self):
+        from scripts.google_web_longrun import SNAPSHOT
+        self.seed_results()
+        with self.store.store.connect() as db:
+            canonical=db.execute("SELECT u.* FROM serp_urls u JOIN serp_requests r ON r.request_id=u.first_request_id WHERE r.source='google_web' AND NOT u.historical LIMIT 1").fetchone()
+            alias=canonical['normalized_url']+('&' if '?' in canonical['normalized_url'] else '?')+'srsltid=legacy'
+            db.execute('INSERT INTO serp_urls(url_hash,normalized_url,first_request_id,canonical_url_hash) VALUES(%s,%s,%s,%s)',(hashlib.sha256(alias.encode()).hexdigest(),alias,canonical['first_request_id'],canonical['url_hash']))
+        start=(datetime.now(timezone.utc)-timedelta(hours=2)).isoformat()
+        child=subprocess.run([sys.executable,'-c',SNAPSHOT,start],env=dict(os.environ,DATABASE_URL=self.dsn,VALKEY_URL='redis://127.0.0.1:1/0'),capture_output=True,text=True)
+        self.assertEqual(child.returncode,0,child.stderr)
+        data=json.loads(child.stdout)
+        self.assertEqual(data['new_links'],1)
+        self.assertEqual(sum(x['n'] for x in data['hourly']),1)
+        self.assertTrue(any(x['n']==0 for x in data['hourly']))
+        self.assertGreaterEqual(sum(float(x['elapsed_seconds']) for x in data['hourly']),7200)
+        self.assertEqual(sum(x['attempts'] for x in data['requests']),4)
+        self.assertEqual(data['inflight'],0)
+        # Retrospective repairs must use the original cutoff, not include a
+        # neighbouring stage; this window ends before all fixture requests.
+        end=(datetime.fromisoformat(start)+timedelta(hours=1)).isoformat()
+        child=subprocess.run([sys.executable,'-c',SNAPSHOT,start,end],env=dict(os.environ,DATABASE_URL=self.dsn,VALKEY_URL='redis://127.0.0.1:1/0'),capture_output=True,text=True)
+        self.assertEqual(child.returncode,0,child.stderr)
+        bounded=json.loads(child.stdout)
+        self.assertEqual(datetime.fromisoformat(bounded['at']),datetime.fromisoformat(end))
+        self.assertEqual(bounded['new_links'],0)
+        self.assertEqual(sum(x['attempts'] for x in bounded['requests']),0)
+        self.assertAlmostEqual(sum(float(x['elapsed_seconds']) for x in bounded['hourly']),3600)
+
     def test_results_filters_pagination_export_and_topic_without_links(self):
         self.seed_results()
         self.assertEqual(self.store.browse({})['total'],4)
@@ -157,6 +216,26 @@ class ConsoleIntegrationTests(unittest.TestCase):
         self.assertEqual(exported[1]['data']['articles'],[])
         self.assertEqual(self.store.browse({'status':'error'},'requests')['total'],1)
         self.assertEqual(len(list(self.store.export({'campaign_id':self.cid},'requests'))),4)
+
+    def test_fast_pages_match_full_results_across_requests_and_empty_topics(self):
+        self.seed_results()
+        self.record('google_news', {'news_results': []}, 'empty')
+        # A page boundary can fall inside a response, after empty/error requests.
+        for filters in ({}, {'source':'google_trends'}, {'campaign_id':self.cid},
+                        {'q':'clean energy'}, {'new_only':'true'}, {'since':'2099-01-01'}):
+            expected = self.store.browse(filters)['rows']
+            pages = []
+            for offset in range(len(expected)+1):
+                page = self.store.browse(dict(filters, count_total='false', limit=1, offset=offset))
+                self.assertIsNone(page['total'])
+                self.assertEqual(page['has_more'], offset+1 < len(expected))
+                self.assertEqual(page['rows'], expected[offset:offset+1])
+                pages.extend(page['rows'])
+            self.assertEqual(pages, expected)
+        page = self.store.browse({'count_total':'false', 'limit':2}, 'requests')
+        self.assertEqual(len(page['rows']), 2)
+        self.assertTrue(page['has_more'])
+        self.assertIsNone(page['total'])
 
     def test_overview_and_cached_task_contributions_do_not_double_count(self):
         self.seed_results()
@@ -219,6 +298,8 @@ class ConsoleIntegrationTests(unittest.TestCase):
             call('/api/serp/tasks/'+cid+'/start',{});queue.enqueue.assert_called_once_with(cid,priority=True)
             for op in ('pause','resume','stop'): call('/api/serp/tasks/'+cid+'/'+op,{})
             _, body=call('/api/serp/results?source=google_news');self.assertEqual(json.loads(body)['total'],1)
+            _, body=call('/api/serp/results?count_total=false&limit=1')
+            fast=json.loads(body);self.assertIsNone(fast['total']);self.assertTrue(fast['has_more']);self.assertEqual(len(fast['rows']),1)
             _, body=call('/api/serp/export?mode=requests&format=jsonl');self.assertEqual(len(body.splitlines()),4)
             _, body=call('/api/serp/export?source=google_trends&format=csv');self.assertIn(b'json',body);self.assertIn(b'20,000+',body)
             with self.assertRaises(HTTPError) as e: call('/api/collector-settings',{'web_max_pages':99})

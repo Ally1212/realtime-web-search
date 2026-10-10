@@ -79,3 +79,17 @@ Web 的共享缓存现在也关联到每个消费任务；不增加真实请求�
 - `GET /api/serp/export?mode=results|requests&format=jsonl|csv`：同样的筛选，忽略分页，流式导出全部符合条件的留存记录。请求导出包含完整 response，CSV json 列保留结构化信息；对表格公式前缀做文本保护。
 - `GET/POST /api/collector-settings`：正文、持续开关、来源、自定义关键词、默认地区、Web 页数、News/Trends 间隔。数据库持久化，worker 每批次读取；非法字段拒绝。
 - 原 `/api/serp/requests` 和 `/api/serp/requests/{id}` 继续保留。
+
+## r3：停止自动采集、数据优先（2026-10-10）
+
+用户要求关闭自动采集并让数据直接可见。UTC 09:03:31 保存 `continuous_enabled=false`，最后在途请求 UTC 09:03:53 完成，总请求数 15,260，此后保持不变；部署默认自动开关改为 false，数据库状态持久保留。正文仍为 false，pages 332,768 行、max ID 333,185、最新正文 UTC 02:30:23 不变。
+
+当前 Compose/systemd 冻结 r3。r3 从 r2 复制代码，只替换网站页面与 ConsoleStore，未执行 schema 初始化或任何正文/hash 迁移；保留旧 override 和 systemd 文件，部署失败可回退。其他四个服务容器 ID 未变。
+
+首页展示最新 10 条真实采集数据：来源、查询关键词、采集时间、可点击标题、链接、摘要、请求 JSON。顶部按钮在四页可直接开启/关闭自动采集；按钮只更新该字段，不覆盖其他设置或未保存表单。关闭保留所有记录、阻止自动任务后续请求，手动任务单独控制。自动任务列表在总开关关闭时不再显示为运行中。统计/异常默认折叠；结果高级筛选、设置高级参数折叠，原功能保留。
+
+网页采用不计精确总数的快速分页 (`count_total=false`)，返回 `total=null` 和真实 `has_more`。首页/未按结果字段筛选的列表仅按时间读取所需请求，跳过空响应，正确支持页边界落在单响应内部。页面不再等待遍历约 60 万条结果后才显示数据；原 API 默认精确计数和导出全部筛选记录未改。
+
+完整回归 **381 passed、6 skipped、34 subtests**；冻结包 **109 passed、18 subtests**。新增集成测试比较快速分页与完整查询，覆盖空响应、异常请求、无报道话题、来源、任务、日期、关键词、新链接及页边界；HTTP 快速模式已验证。JS 语法与差异检查通过。生产首页、第二页、News/Trends、关键词筛选实测约 0.4–0.5 秒返回，设置及请求查看 HTTP 200。真实 Chrome 已显示关闭状态和实际数据，并打开完整请求 JSON；未为了验收开启自动采集。
+
+证据：`state/serp-simple-20261010/full-tests-final.log`、`frozen-tests-utf8.log`、`live-api-check.json`；部署核验在 `state/serp-website-20261010/revisions/r3/live-final-check.json`。

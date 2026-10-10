@@ -1,4 +1,5 @@
 import concurrent.futures
+import hashlib
 import json
 import os
 import signal
@@ -15,7 +16,7 @@ from psycopg.conninfo import make_conninfo
 from realtime.campaign_store import CampaignStore, _POOLS, _INITIALIZED_DSNS
 from realtime.config import Config
 from realtime.discovery import SearchDiscovery, SearchResult
-from realtime.serp_fields import organic_result, response_envelope, normalize_serp_url, public_serp_url
+from realtime.serp_fields import organic_result, response_envelope, normalize_serp_url, public_serp_url, URL_NORMALIZATION_VERSION
 from realtime.serp_store import SerpStore
 from realtime.serp_worker import run_serp_campaign, SerpSupply
 from realtime.worker import WorkerManager
@@ -34,6 +35,7 @@ def envelope(url='https://example.com/article', query='solar research', page=1):
 class SerpCollectionTests(unittest.TestCase):
     def test_url_registry_preserves_page_identity_without_dns_or_article_http(self):
         self.assertEqual(normalize_serp_url('https://EXAMPLE.com/a?ref=chapter2&page=3&utm_source=google#x'), 'https://example.com/a?ref=chapter2&page=3')
+        self.assertEqual(normalize_serp_url('https://example.com/a?article=17&srsltid=token&page=3&SrsLtId=another#x'), 'https://example.com/a?article=17&page=3')
         with patch('socket.getaddrinfo', side_effect=AssertionError('no target DNS')):
             self.assertTrue(public_serp_url('https://docs.google.com/document/d/public'))
             self.assertTrue(public_serp_url('https://not-resolved.example/article'))
@@ -102,6 +104,24 @@ class SerpCollectionTests(unittest.TestCase):
             manager.run_campaign(str(uuid4()))
         collect.assert_called_once()
 
+    def test_inactive_tasks_leave_queue_and_disabled_active_tasks_remain_retryable(self):
+        for state in ('stopped', 'paused', 'failed', 'active'):
+            with self.subTest(state=state):
+                manager = WorkerManager.__new__(WorkerManager)
+                manager.config = Config()
+                manager.store = Mock()
+                manager.store.campaign.return_value = {'status':state, 'proxy_profile':'direct'}
+                manager.store.is_local_campaign.return_value = True
+                manager.console = Mock()
+                manager.console.runnable.return_value = False
+                manager.queue = Mock()
+                cid = str(uuid4())
+                manager.run_campaign(cid)
+                if state == 'active':
+                    manager.queue.schedule.assert_called_once_with(cid, 30)
+                else:
+                    manager.queue.schedule.assert_not_called()
+
     def test_turning_off_cancels_running_body_group_and_child_uses_effective_switch(self):
         manager = WorkerManager.__new__(WorkerManager)
         manager.config = Config(content_fetch_enabled=False)
@@ -162,6 +182,56 @@ class SerpStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(self.serp.stats()['links']['total_new'], 1)
         with self.base.connect() as db:
             self.assertEqual(db.execute('SELECT count(*) n FROM pages').fetchone()['n'], 0)
+
+    def test_google_tracking_tokens_do_not_create_new_links_but_content_parameters_do(self):
+        base = 'https://example.com/article?page=3'
+        first = self.serp.record(self.cid, **self.event(url=base+'&srsltid=one'))
+        second = self.serp.record(self.cid, **self.event(url=base+'&srsltid=two', query='other query'))
+        third = self.serp.record(self.cid, **self.event(url='https://example.com/article?page=4&srsltid=three'))
+        self.assertEqual([self.serp.request(x)['new_unique_links'] for x in (first,second,third)], [1,0,1])
+        self.assertEqual(self.serp.request(second)['organic_results'][0]['normalized_link'], base)
+        self.assertEqual(self.serp.request(second)['organic_results'][0]['link'], base+'&srsltid=two')
+        self.assertEqual(self.serp.stats()['links']['total_new'], 2)
+
+    def test_legacy_tracking_repair_preserves_rows_and_originals_and_unions_sources(self):
+        base = 'https://example.com/article?page=3'
+        one = self.event(url=base+'&srsltid=one')
+        two = self.event(url=base+'&srsltid=two', query='news query');two['source']='google_news'
+        bare = self.event(url=base, query='bare query')
+        with patch('realtime.serp_store.normalize_serp_url', side_effect=lambda url:url):
+            first = self.serp.record(self.cid, **one)
+            second = self.serp.record(self.cid, **two)
+            third = self.serp.record(self.cid, **bare)
+        originals = {x:self.serp.request(x) for x in (first,second,third)}
+        known = 'https://example.com/known?srsltid=old'
+        known_hash = hashlib.sha256(known.encode()).hexdigest()
+        with self.base.connect() as db:
+            db.execute('INSERT INTO serp_urls(url_hash,normalized_url,historical) VALUES(%s,%s,true)', (known_hash,known))
+            before = db.execute('SELECT count(*) n FROM serp_urls').fetchone()['n']
+            db.execute('DELETE FROM serp_schema_versions WHERE name=%s', (URL_NORMALIZATION_VERSION,))
+        self.serp.initialize()
+        self.assertEqual([self.serp.request(x)['new_unique_links'] for x in (first,second,third)], [1,0,0])
+        stats = self.serp.stats()
+        self.assertEqual(stats['links']['total_new'], 1)
+        self.assertEqual(stats['sources']['google_news']['unique_new_urls'], 1)
+        self.assertEqual(stats['sources']['google_news']['first_discovery_contribution'], 0)
+        self.assertEqual(stats['sources']['google_web']['first_discovery_contribution'], 1)
+        with self.base.connect() as db:
+            self.assertGreaterEqual(db.execute('SELECT count(*) n FROM serp_urls').fetchone()['n'], before)
+            for request_id, original in originals.items():
+                saved = db.execute('SELECT normalization_original_response FROM serp_requests WHERE request_id=%s', (request_id,)).fetchone()['normalization_original_response']
+                self.assertEqual(saved, original)
+            old = db.execute('SELECT * FROM serp_urls WHERE url_hash=%s', (known_hash,)).fetchone()
+            self.assertEqual(old['normalized_url'], known)
+            self.assertTrue(old['historical'])
+            self.assertIsNotNone(old['canonical_url_hash'])
+            self.assertEqual(old['normalization_original']['row']['normalized_url'], known)
+            self.assertEqual(db.execute('SELECT count(*) n FROM pages').fetchone()['n'], 0)
+        future = self.serp.record(self.cid, **self.event(url='https://example.com/known?srsltid=changed'))
+        self.assertEqual(self.serp.request(future)['new_unique_links'], 0)
+        self.assertEqual(self.serp.record(self.cid, **two), second)
+        self.serp.initialize()
+        self.assertEqual(self.serp.stats()['links']['total_new'], 1)
 
     def test_retry_is_idempotent_and_identity_conflict_is_rejected(self):
         event = self.event()

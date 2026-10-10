@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import ipaddress
 
 SCHEMA_VERSION = "google-serp-v1"
+URL_NORMALIZATION_VERSION = "google-tracking-v2"
 GOOGLE_SOURCES = ("google_web", "google_news", "google_trends")
 
 
@@ -56,7 +57,7 @@ def normalize_serp_url(url: str) -> str:
     port = p.port
     netloc = host + (f':{port}' if port and (scheme, port) not in {('http', 80), ('https', 443)} else '')
     query = urlencode([(k,v) for k,v in parse_qsl(p.query,keep_blank_values=True)
-                       if not k.lower().startswith('utm_') and k.lower() not in {'fbclid','gclid','mc_cid','mc_eid'}])
+                       if not k.lower().startswith('utm_') and k.lower() not in {'fbclid','gclid','mc_cid','mc_eid','srsltid'}])
     return urlunsplit((scheme,netloc,p.path or '/',query,''))
 
 

@@ -222,12 +222,35 @@ class ConsoleStore(SerpStore):
 
     def browse(self, f, mode='results'):
         limit, offset = min(max(int(f.get('limit', 25)), 1), 100), max(int(f.get('offset', 0)), 0)
+        count_total = f.get('count_total', 'true') != 'false'
         query, params, order, tail = self.browse_query(f, mode)
         with self.store.connect() as db:
             db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
-            total = db.execute('SELECT count(*) n'+tail, params).fetchone()['n']
-            rows = db.execute(query+order+' LIMIT %s OFFSET %s', (*params, limit, offset)).fetchall()
-        return dict(rows=rows, total=total, limit=limit, offset=offset)
+            total = db.execute('SELECT count(*) n'+tail, params).fetchone()['n'] if count_total else None
+            if mode == 'results' and not count_total and not f.get('q') and f.get('new_only') != 'true':
+                # Read only the latest requests needed for this page. Expanding and
+                # counting every saved JSON response made a small page take seconds.
+                clauses, request_params = self.filters(f)
+                where = ' WHERE '+' AND '.join(clauses) if clauses else ''
+                rows, seen = [], 0
+                with db.cursor(name='serp_latest_results') as cursor:
+                    cursor.execute('SELECT r.request_id id,r.query,r.source,r.completed_at,r.response FROM serp_requests r'+where+' ORDER BY r.completed_at DESC,r.request_id DESC', request_params)
+                    while requests := cursor.fetchmany(8):
+                        for request in requests:
+                            key = {'google_news': 'news_results', 'google_trends': 'trending_searches'}.get(request['source'], 'organic_results')
+                            for ordinal, item in enumerate(request['response'].get(key) or [], 1):
+                                if seen >= offset:
+                                    rows.append(dict(id=request['id'], query=request['query'], source=request['source'], completed_at=request['completed_at'], data=item, ordinal=ordinal))
+                                seen += 1
+                                if len(rows) > limit:
+                                    break
+                            if len(rows) > limit:
+                                break
+                        if len(rows) > limit:
+                            break
+            else:
+                rows = db.execute(query+order+' LIMIT %s OFFSET %s', (*params, limit+1, offset)).fetchall()
+        return dict(rows=rows[:limit], total=total, limit=limit, offset=offset, has_more=len(rows)>limit)
 
     def export(self, f, mode='results'):
         query, params, order, _ = self.browse_query(f, mode)

@@ -46,12 +46,6 @@ class WorkerManager:
 
     def run_campaign(self, campaign_id: str) -> None:
         config = self.config
-        if hasattr(self, 'console'):
-            if not self.console.runnable(campaign_id):
-                # Keep automatic tasks retryable while their global switch is off.
-                self.queue.schedule(campaign_id, 30)
-                return
-            config = self.console.effective_config(self.config)
         campaign = self.store.campaign(campaign_id)
         if (
             not campaign
@@ -59,6 +53,13 @@ class WorkerManager:
             or not self.store.is_local_campaign(campaign_id)
         ):
             return
+        if hasattr(self, 'console'):
+            if not self.console.runnable(campaign_id):
+                # Only active automatic tasks need to wait for the global switch.
+                # Finished/paused tasks must not live forever in the delayed queue.
+                self.queue.schedule(campaign_id, 30)
+                return
+            config = self.console.effective_config(self.config)
         profile = str(campaign["proxy_profile"])
         if profile != "direct":
             try:
