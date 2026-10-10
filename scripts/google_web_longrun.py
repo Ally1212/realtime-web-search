@@ -30,7 +30,7 @@ PLANS = [
  dict(key='queue-rate-fix-s6-p1',slots=6,pages=1,interval=90,initial_rps=1,max_rps=2,revision='optimized'),
  dict(key='s12-p1',slots=12,pages=1,interval=90,initial_rps=1,max_rps=2,revision='optimized'),
  dict(key='s18-p1',slots=18,pages=1,interval=90,initial_rps=1,max_rps=2,revision='optimized'),
- dict(key='s12-p2',slots=12,pages=2,interval=90,initial_rps=1,max_rps=2,revision='optimized'),
+ dict(key='s12-p2-b2',slots=12,pages=2,pages_per_batch=2,interval=90,initial_rps=1,max_rps=2,revision='optimized'),
  dict(key='s18-p1-i60-r4',slots=18,pages=1,interval=60,initial_rps=2,max_rps=4,revision='optimized'),
  dict(key='s24-p1-i45-r4',slots=24,pages=1,interval=45,initial_rps=2,max_rps=4,revision='optimized'),
  dict(key='baseline-repeat-s6-p1',slots=6,pages=1,interval=90,initial_rps=1,max_rps=2,revision='optimized'),
@@ -110,6 +110,7 @@ with s.store.connect() as db:
  if len(sys.argv)>2:
   end=min(end,datetime.fromisoformat(sys.argv[2].replace('Z','+00:00')))
  requests=db.execute("SELECT source,count(*) attempts,count(*) FILTER(WHERE classification IN ('results','empty')) successful,count(*) FILTER(WHERE classification='captcha') captcha,count(*) FILTER(WHERE http_status=429) limited,sum(coalesce((response->>'new_unique_links')::int,0)) reported_new FROM serp_requests WHERE completed_at>=%s AND completed_at<%s GROUP BY source",(start,end)).fetchall()
+ request_pages=db.execute("SELECT page,count(*) attempts,count(*) FILTER(WHERE classification IN ('results','empty')) successful FROM serp_requests WHERE source='google_web' AND completed_at>=%s AND completed_at<%s GROUP BY page ORDER BY page",(start,end)).fetchall()
  links=db.execute("SELECT count(*) n FROM serp_urls u JOIN serp_requests r ON r.request_id=u.first_request_id WHERE NOT u.historical AND u.canonical_url_hash IS NULL AND u.first_seen>=%s AND u.first_seen<%s AND r.source='google_web'",(start,end)).fetchone()['n']
  hourly=db.execute("WITH counts AS (SELECT date_trunc('hour',u.first_seen) AS hour_bucket,count(*) n FROM serp_urls u JOIN serp_requests r ON r.request_id=u.first_request_id WHERE NOT u.historical AND u.canonical_url_hash IS NULL AND u.first_seen>=%s AND u.first_seen<%s AND r.source='google_web' GROUP BY 1), buckets AS (SELECT generate_series(date_trunc('hour',%s::timestamptz),date_trunc('hour',%s::timestamptz),interval '1 hour') AS hour_bucket) SELECT b.hour_bucket,coalesce(c.n,0) n,extract(epoch FROM least(%s::timestamptz,b.hour_bucket+interval '1 hour')-greatest(%s::timestamptz,b.hour_bucket)) elapsed_seconds FROM buckets b LEFT JOIN counts c USING(hour_bucket) WHERE b.hour_bucket<%s ORDER BY b.hour_bucket",(start,end,start,end,end,start,end)).fetchall()
  pages=db.execute('SELECT count(*) n,max(id) max_id,max(fetched_at) latest FROM pages').fetchone()
@@ -123,7 +124,7 @@ try:
  queue=dict(ready=q.redis.llen(q.READY),delayed=q.redis.zcard(q.DELAYED),available=True)
 except Exception:
  queue=dict(ready=None,delayed=None,available=False)
-print(json.dumps(dict(at=end,started_at=start,requests=requests,new_links=links,hourly=hourly,pages=pages,source_runtime=source,active_manual_tasks=manual,active_supply=active,supply=supply,inflight=inflight,settings=s.settings(c),queue=queue,effective=dict(slots=effective.crawler_slots,query_concurrency=effective.discovery_query_concurrency,pages=effective.google_web_max_pages,interval=effective.google_web_proxy_min_interval_seconds,initial_rps=effective.google_web_initial_rps,max_rps=effective.google_web_max_rps,providers=effective.google_free_providers)),default=str))
+print(json.dumps(dict(at=end,started_at=start,requests=requests,request_pages=request_pages,new_links=links,hourly=hourly,pages=pages,source_runtime=source,active_manual_tasks=manual,active_supply=active,supply=supply,inflight=inflight,settings=s.settings(c),queue=queue,effective=dict(slots=effective.crawler_slots,query_concurrency=effective.discovery_query_concurrency,pages=effective.google_web_max_pages,pages_per_batch=effective.google_web_pages_per_batch,interval=effective.google_web_proxy_min_interval_seconds,initial_rps=effective.google_web_initial_rps,max_rps=effective.google_web_max_rps,providers=effective.google_free_providers)),default=str))
 '''
 
 
@@ -141,12 +142,15 @@ def result(data, plan, baseline_pages):
     web=next((r for r in data['requests'] if r['source']=='google_web'),dict(attempts=0,successful=0,captcha=0,limited=0))
     other=sum(r['attempts'] for r in data['requests'] if r['source']!='google_web')
     actual=data['effective']
-    configuration_matches=all(actual[k]==plan[k] for k in ('slots','pages','interval','initial_rps','max_rps')) and list(actual['providers'])==['openserp']
+    configuration_matches=all(actual[k]==plan[k] for k in ('slots','pages','interval','initial_rps','max_rps')) and list(actual['providers'])==['openserp'] and actual.get('pages_per_batch',1)==plan.get('pages_per_batch',1)
+    page_coverage=data.get('request_pages',[])
+    observed={r['page'] for r in page_coverage if r['successful']>0}
+    depth_observed=all(page in observed for page in range(1,plan['pages']+1))
     pure=other==0 and data['pages']==baseline_pages and not data['settings']['content_fetch_enabled'] and data['settings']['continuous_sources']==['google_web'] and data['active_manual_tasks']==0 and all(r['sources']==['google_web'] for r in data['active_supply'])
     success=web['successful']/web['attempts'] if web['attempts'] else 0
     queue_safe=plan.get('revision')=='optimized'
-    valid=seconds>=3600 and pure and configuration_matches and queue_safe and data['worker']['running'] and not data['worker']['oom'] and data['worker']['restarts']==0 and success>=.85 and web['attempts']>=100
-    return dict(key=plan['key'],plan=plan,url_normalization='google-tracking-v2',started_at=data['started_at'],measured_until=data['at'],elapsed_seconds=seconds,new_links=data['new_links'],new_links_per_hour=data['new_links']*3600/seconds if seconds>0 else 0,requests=web,success_rate=success,pure_google_web=pure,configuration_matches=configuration_matches,queue_safe=queue_safe,eligibility_notes=[] if queue_safe else ['legacy worker reschedules stopped tasks indefinitely; control baseline only'],eligible=valid,hourly=data['hourly'],worker=data['worker'],source_runtime=data['source_runtime'],queue=data['queue'],host=data['host'])
+    valid=seconds>=3600 and pure and configuration_matches and queue_safe and depth_observed and data['worker']['running'] and not data['worker']['oom'] and data['worker']['restarts']==0 and success>=.85 and web['attempts']>=100
+    return dict(key=plan['key'],plan=plan,url_normalization='google-tracking-v2',started_at=data['started_at'],measured_until=data['at'],elapsed_seconds=seconds,new_links=data['new_links'],new_links_per_hour=data['new_links']*3600/seconds if seconds>0 else 0,requests=web,page_coverage=page_coverage,page_depth_observed=depth_observed,success_rate=success,pure_google_web=pure,configuration_matches=configuration_matches,queue_safe=queue_safe,eligibility_notes=[] if queue_safe else ['legacy worker reschedules stopped tasks indefinitely; control baseline only'],eligible=valid,hourly=data['hourly'],worker=data['worker'],source_runtime=data['source_runtime'],queue=data['queue'],host=data['host'])
 
 
 def best(results):
@@ -165,11 +169,19 @@ def best(results):
         attempts=sum(r['requests']['attempts'] for r in rows)
         successes=sum(r['requests']['successful'] for r in rows)
         stable=all(r['worker']['running'] and not r['worker']['oom'] and r['worker']['restarts']==0 for r in rows)
+        depth_seen=any(r.get('page_depth_observed',r['plan']['pages']==1) for r in rows)
         success=successes/attempts if attempts else 0
-        if not stable or not any(r['elapsed_seconds']>=3600 for r in rows) or attempts<100 or success<.85:
+        if not stable or not depth_seen or not any(r['elapsed_seconds']>=3600 for r in rows) or attempts<100 or success<.85:
             continue
-        winner=dict(rows[-1],elapsed_seconds=seconds,new_links=links,new_links_per_hour=links*3600/seconds,success_rate=success,eligible=True,segments=[dict(key=r['key'],started_at=r['started_at'],measured_until=r['measured_until']) for r in rows],weighted_all_measured_segments=True)
+        winner=dict(rows[-1],elapsed_seconds=seconds,new_links=links,new_links_per_hour=links*3600/seconds,success_rate=success,page_depth_observed=depth_seen,eligible=True,segments=[dict(key=r['key'],started_at=r['started_at'],measured_until=r['measured_until']) for r in rows],weighted_all_measured_segments=True)
         winner['requests']={k:sum(r['requests'].get(k,0) or 0 for r in rows) for k in ('attempts','successful','captcha','limited')}
+        coverage={}
+        for row in rows:
+            for page in row.get('page_coverage',[]):
+                total=coverage.setdefault(page['page'],dict(page=page['page'],attempts=0,successful=0))
+                total['attempts']+=page['attempts'];total['successful']+=page['successful']
+        winner['page_coverage']=[coverage[p] for p in sorted(coverage)]
+        winner['page_coverage_unavailable_segments']=[r['key'] for r in rows if not r.get('page_coverage')]
         candidates.append(winner)
     return max(candidates,key=lambda r:(r['new_links_per_hour'],r['success_rate'])) if candidates else None
 
@@ -178,7 +190,7 @@ def compose_for(plan):
     old=ROOT/'state/serp-website-20261010/revisions/r3'
     value=json.loads((old/'compose.website.json').read_text())
     worker=value['services']['local-worker']
-    worker['environment'].update(CONTENT_FETCH_ENABLED='false',SERP_CONTINUOUS_ENABLED='true',SERP_CONTINUOUS_SOURCES='google_web',GOOGLE_FREE_PROVIDERS='openserp',CRAWLER_SLOTS=str(plan['slots']),DISCOVERY_GLOBAL_CONCURRENCY=str(plan['slots']),DISCOVERY_QUERY_CONCURRENCY='1',GOOGLE_WEB_MAX_PAGES=str(plan['pages']),GOOGLE_WEB_PAGES_PER_BATCH='1',GOOGLE_WEB_INITIAL_RPS=str(plan['initial_rps']),GOOGLE_WEB_MAX_RPS=str(plan['max_rps']),GOOGLE_WEB_PROXY_MIN_INTERVAL_SECONDS=str(plan['interval']))
+    worker['environment'].update(CONTENT_FETCH_ENABLED='false',SERP_CONTINUOUS_ENABLED='true',SERP_CONTINUOUS_SOURCES='google_web',GOOGLE_FREE_PROVIDERS='openserp',CRAWLER_SLOTS=str(plan['slots']),DISCOVERY_GLOBAL_CONCURRENCY=str(plan['slots']),DISCOVERY_QUERY_CONCURRENCY='1',GOOGLE_WEB_MAX_PAGES=str(plan['pages']),GOOGLE_WEB_PAGES_PER_BATCH=str(plan.get('pages_per_batch',1)),GOOGLE_WEB_INITIAL_RPS=str(plan['initial_rps']),GOOGLE_WEB_MAX_RPS=str(plan['max_rps']),GOOGLE_WEB_PROXY_MIN_INTERVAL_SECONDS=str(plan['interval']))
     worker['volumes']=[str(STATE/'code/realtime')+':/app/realtime:ro'] if plan['revision']=='optimized' else [str(old/'code/realtime')+':/app/realtime:ro']
     normalized=STATE/'normalization-v2'
     if (normalized/'ready.json').exists():
