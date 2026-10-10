@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import errno
 import json
 import os
 import signal
@@ -156,6 +157,47 @@ async def _health(
     await writer.wait_closed()
 
 
+async def _reconcile_relays(
+    args: argparse.Namespace, cache: ProxyCache,
+    servers: dict[str, tuple[asyncio.Server, int]],
+    username: str, password: str,
+) -> int:
+    _, records = cache.load("private")
+    records_by_key = {record.key: record for record in records if record.protocol in {"http", "socks5"}}
+    ports = proxy_relay_ports(
+        list(records_by_key.values()), port_start=args.port_start, port_count=args.port_count,
+    )
+    obsolete = [
+        key for key, (_, current_port) in servers.items()
+        if key not in ports or ports[key] != current_port
+    ]
+    for key in obsolete:
+        server, _ = servers.pop(key)
+        server.close()
+        await server.wait_closed()
+    pending = 0
+    for key, port in ports.items():
+        if key in servers:
+            continue
+        record = records_by_key[key]
+        try:
+            server = await asyncio.start_server(
+                lambda reader, writer, row=record: relay_connection(
+                    reader, writer, row, username, password,
+                ),
+                args.bind, port,
+            )
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            # Listener ports can overlap outbound ephemeral sockets. Preserve
+            # the shared mapping and healthy listeners; retry next refresh.
+            pending += 1
+            continue
+        servers[key] = (server, port)
+    return pending
+
+
 async def run(args: argparse.Namespace) -> None:
     username = os.getenv("SHARED_PROXY_USERNAME", "")
     password = os.getenv("SHARED_PROXY_PASSWORD", "")
@@ -170,30 +212,9 @@ async def run(args: argparse.Namespace) -> None:
             loop.add_signal_handler(getattr(signal, name), stop.set)
 
     async def reconcile() -> None:
-        _, records = cache.load("private")
-        records_by_key = {record.key: record for record in records if record.protocol in {"http", "socks5"}}
-        ports = proxy_relay_ports(
-            list(records_by_key.values()), port_start=args.port_start, port_count=args.port_count,
-        )
-        obsolete = [
-            key for key, (_, current_port) in servers.items()
-            if key not in ports or ports[key] != current_port
-        ]
-        for key in obsolete:
-            server, _ = servers.pop(key)
-            server.close()
-            await server.wait_closed()
-        for key, port in ports.items():
-            if key in servers:
-                continue
-            record = records_by_key[key]
-            server = await asyncio.start_server(
-                lambda reader, writer, row=record: relay_connection(
-                    reader, writer, row, username, password,
-                ),
-                args.bind, port,
-            )
-            servers[key] = (server, port)
+        pending = await _reconcile_relays(args, cache, servers, username, password)
+        if pending:
+            print(f"relay listener ports busy={pending}; retry on next refresh", flush=True)
 
     await reconcile()
     health = await asyncio.start_server(

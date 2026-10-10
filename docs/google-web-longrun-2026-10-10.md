@@ -25,7 +25,7 @@
 
 代码修复：已停止/暂停任务从延迟队列出队后不再无限重排；仍处于 active 但全局自动开关关闭的任务保留可恢复调度。SERP 创建调度回调时传入配置的 maximum_rps，消除调度器默认 2 RPS 导致配置上限不完整生效的问题。保留全部验证码、限速、代理隔离和自适应状态。
 
-监督器以 systemd 独立运行，控制范围为当前 compose 项目的 local-worker；web、postgres、valkey、OpenSERP、proxy-relay 以及服务器其他项目不切换、不重启。重启用既有镜像和冻结 Python 代码，沿用 worker 的 SERP/工作台幂等初始化，不执行旧正文/hash 迁移。配置变更通过 updated_at 比对及行锁，用户在切换期间操作开关时不会被恢复逻辑覆盖。
+监督器以 systemd 独立运行，正常阶段切换范围为当前 compose 项目的 local-worker；web、postgres、valkey、OpenSERP、proxy-relay 不随实验切换。已发现故障的单独维护另行记录，服务器其他项目不切换、不重启。重启用既有镜像和冻结 Python 代码，沿用 worker 的 SERP/工作台幂等初始化，不执行旧正文/hash 迁移。配置变更通过 updated_at 比对及行锁，用户在切换期间操作开关时不会被恢复逻辑覆盖。
 
 记录目录：state/google-web-longrun-20261010。manifest.json 保存范围与配置；heartbeat.json / state.json 为当前状态；observations.jsonl 为连续观测；result-*.json、ranking.json、final.json 为阶段、加权排名和截止报告。源码 scripts/google_web_longrun.py；冻结优化代码在该目录 code/realtime；原 compose/systemd 文件保留。初期基线 worker 使用 r3，后续监督器才部署已验证的优化包。
 
@@ -64,3 +64,15 @@ Google 自然结果中的 srsltid 仅为跟踪参数，旧规范化没有移除�
 优化 6 槽组结束于 UTC 13:01:09.813356，完整 6,384.679106 秒新增 7,321，平均 4,127.94 / 小时，1,277 / 1,301 请求成功（98.16%）。维护暂停完整计入该组墙钟时长；这个平均不能用于单独推断 worker 修复的效果。证据 result-03-queue-rate-fix-s6-p1.json。随后进入 12 槽、1 页、90 秒间隔、1 / 2 RPS 阶段，等待完整长时结果。
 
 UTC 13:06 独立复核：最近 25 次请求全部纯 Web 且标记 google-tracking-v2，规范代表 URL 中带 srsltid 参数的数量为零；正文基线完全不变。网站结果 API 可返回最新 5 条真实 Web 数据。证据 normalized-runtime-verification.json。监督服务 MainPID 3117864 持续运行，采集服务和监督服务均设置开机启动。
+
+## 代理中转端口冲突修复（UTC 13:31–13:42）
+
+UTC 13:26 起出现代理连接失败高峰；13:26–13:32:34 的窗口记录 60 次 openserp_proxy_connect / HTTP 502。容器日志确认 proxy-relay 在 reconcile 的 asyncio.start_server 处发生 EADDRINUSE（errno 98），UTC 13:31:38 自动重启。OpenSERP 没有重启。中转监听范围 20000–49999 与容器临时端口范围 32768–60999 重叠，具体占用者未确认。
+
+修复保持端口映射、认证和转发行为：遇到 EADDRINUSE 时保留其余可用监听，冲突端口在下一次刷新重试；权限等其他绑定错误仍明确抛出，不当作正常冲突吞掉。真实占用端口、释放后恢复、其他监听不中断、认证与 HTTP/SOCKS 转发测试，本地 20 passed、5 subtests；相同测试在生产中转容器内运行，4 项通过，无真实 Google 请求或数据写入。
+
+UTC 13:41:42.270882 关闭自动采集并排空请求，备份原文件后只替换生产根目录 realtime/proxy_relay.py，重启该项目 proxy-relay；UTC 13:42:30.060280 通过 settings updated_at CAS 恢复自动采集，暂停 47.789398 秒。worker ID 未变化、无重启或 OOM；正文基线完全不变，纯 Web 来源和实际 12 槽配置保持不变。共享冻结包哈希校验通过。监督服务恢复为 MainPID 3238639。
+
+中转文件新 SHA256 为 71ecabfb671def44daefdcda87b29042a2f5837cf8041ed66d3fe848732ec733；原文件保存在 relay-bind-fix/original-proxy_relay.py，维护与恢复证据为 relay-bind-maintenance-before.json、relay-bind-maintenance-paused.json、relay-bind-resume-confirmed.json。此次修复在 12 槽阶段中途发生，该组保留原起止边界，所有失败、冷却和维护暂停计入墙钟时长，不能仅将该组表现归因于并发差异。
+
+恢复后独立快照（UTC 13:45:20）：35 次新搜索全部为 results，新增 186 个历史去重链接，无错误组；首条完成于 UTC 13:43:20。证据 relay-fix-post-resume-diagnostics.json。这是恢复确认，不作为独立选优窗口。

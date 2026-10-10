@@ -63,3 +63,4 @@
 - 网站关闭自动采集优先于监督器：监督器退出且不重启自动采集；配置切换采用 updated_at 比对与数据库行锁，操作员期间修改设置时不得自动覆盖。异常资源、来源/正文变更、人工任务混入会停止实验并保留记录。
 - 需求、配置、度量方法及进展见 docs/google-web-longrun-2026-10-10.md。URL 规范化已于 UTC 12:29–13:01 维护期间修正为 google-tracking-v2，Google srsltid 跟踪变体不再重复计新增；旧 URL 主键、原请求和正文保留。首个合格基线完整 5,443.44 秒新增 9,913 个唯一 URL，平均 6,555.93 / 小时，成功率 97.14%（原 10,024 / 6,629.34 是修正前口径，作废但留档）。优化 6 槽组包括维护暂停，完整 6,384.68 秒新增 7,321，平均 4,127.94 / 小时；UTC 13:01:09 已进入 12 槽、1 页组。后续对照及长时复验未完成，不能称为最优或理论上限。
 - 当前 baseline / optimized / web 冻结包位于 state/google-web-longrun-20261010/normalization-v2/code；只替换 SERP 规范化与存储文件，baseline 保留旧 worker 行为，optimized 保留队列/速率修复。源码哈希校验通过；历史统计按原起止时间重算，旧结果保存在 normalization-v2/original-metrics。
+- UTC 13:31 代理中转因刷新监听端口遇到 EADDRINUSE 退出并自动重启。UTC 13:41:42–13:42:30 排空后单独部署 proxy_relay.py 修复：端口占用时保留其他监听，下次刷新重试；未修改共享端口映射或重建 worker。相关本地测试 20 passed、5 subtests；生产中转容器 4 项测试通过。原文件及维护证据在本轮 relay-bind-fix 与 relay-bind-*.json；维护完整计入 12 槽组时长。监督服务恢复后 MainPID 3238639。

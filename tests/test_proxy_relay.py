@@ -1,12 +1,58 @@
 import asyncio
 import base64
+import errno
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch, AsyncMock
 
 from realtime.proxy_pool import ProxyRecord
-from realtime.proxy_relay import relay_connection
+from realtime.proxy_relay import relay_connection, _reconcile_relays
 
 
 class ProxyRelayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_busy_port_preserves_other_listeners_and_retries_when_free(self):
+        occupied = await asyncio.start_server(lambda r, w: w.close(), '127.0.0.1', 0)
+        busy_port = occupied.sockets[0].getsockname()[1]
+        temporary = await asyncio.start_server(lambda r, w: w.close(), '127.0.0.1', 0)
+        free_port = temporary.sockets[0].getsockname()[1]
+        temporary.close()
+        await temporary.wait_closed()
+        records = [ProxyRecord('127.0.0.1', 41001, 'http'), ProxyRecord('127.0.0.1', 41002, 'http')]
+        cache = Mock()
+        cache.load.return_value = (None, records)
+        args = SimpleNamespace(bind='127.0.0.1', port_start=20000, port_count=30000)
+        servers = {}
+        mapping = {records[0].key: busy_port, records[1].key: free_port}
+        try:
+            with patch('realtime.proxy_relay.proxy_relay_ports', return_value=mapping):
+                self.assertEqual(await _reconcile_relays(args, cache, servers, 'user', 'pass'), 1)
+                healthy = servers[records[1].key][0]
+                self.assertTrue(healthy.is_serving())
+                self.assertNotIn(records[0].key, servers)
+                self.assertEqual(await _reconcile_relays(args, cache, servers, 'user', 'pass'), 1)
+                self.assertIs(servers[records[1].key][0], healthy)
+                occupied.close()
+                await occupied.wait_closed()
+                self.assertEqual(await _reconcile_relays(args, cache, servers, 'user', 'pass'), 0)
+                self.assertIs(servers[records[1].key][0], healthy)
+                self.assertTrue(servers[records[0].key][0].is_serving())
+        finally:
+            occupied.close()
+            await occupied.wait_closed()
+            for server, _ in servers.values():
+                server.close()
+                await server.wait_closed()
+
+    async def test_non_collision_bind_failure_remains_visible(self):
+        record = ProxyRecord('127.0.0.1', 41001, 'http')
+        cache = Mock()
+        cache.load.return_value = (None, [record])
+        args = SimpleNamespace(bind='127.0.0.1', port_start=20000, port_count=30000)
+        with patch('realtime.proxy_relay.asyncio.start_server', AsyncMock(side_effect=OSError(errno.EACCES, 'denied'))):
+            with self.assertRaises(OSError) as caught:
+                await _reconcile_relays(args, cache, {}, 'user', 'pass')
+        self.assertEqual(caught.exception.errno, errno.EACCES)
+
     async def test_connect_injects_auth_and_tunnels_bytes(self):
         seen = asyncio.get_running_loop().create_future()
 
