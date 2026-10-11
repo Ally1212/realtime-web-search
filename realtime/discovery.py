@@ -106,6 +106,7 @@ class SearchDiscovery:
         novelty_counter: Callable[[list[str]], int] | None = None,
         page_batch_acquirer: Callable[..., dict[str, Any] | None] | None = None,
         page_result_recorder: Callable[..., bool] | None = None,
+        page_batch_releaser: Callable[[dict], bool] | None = None,
         providers: tuple[str, ...] = ("openserp",),
         openserp_url: str = "http://127.0.0.1:7000",
         openserp_request_timeout_seconds: int = 25,
@@ -168,6 +169,7 @@ class SearchDiscovery:
         self.novelty_counter = novelty_counter
         self.page_batch_acquirer = page_batch_acquirer
         self.page_result_recorder = page_result_recorder
+        self.page_batch_releaser = page_batch_releaser
         self._proxy_usage: dict[tuple[str, str], int] = {}
         self._proxy_usage_lock = threading.Lock()
         allowed = {
@@ -678,6 +680,8 @@ class SearchDiscovery:
                     page_start, page_end = 1, 0
             for page in range(page_start, page_end + 1):
                 if self.should_continue and not self.should_continue():
+                    if batch and self.page_batch_releaser:
+                        self.page_batch_releaser(batch)
                     break
                 try:
                     page_results = self._discover_google_page(query, page)

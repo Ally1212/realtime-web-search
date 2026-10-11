@@ -48,6 +48,7 @@ def make_discovery(config: Config, store: CampaignStore, serp: SerpStore,
         proxy_usage_recorder=store.record_proxy_usage,
         page_batch_acquirer=lambda query, locale, max_page, batch_size: store.acquire_google_page_batch(cid, query, locale, max_page, batch_size, config.google_web_query_cache_seconds),
         page_result_recorder=store.record_google_page_result,
+        page_batch_releaser=store.release_google_page_batch,
         singleflight_acquirer=store.acquire_query_lease, singleflight_releaser=store.release_query_lease,
         serp_response_recorder=lambda **event: serp.record(cid, **event),
     )

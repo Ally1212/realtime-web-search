@@ -73,6 +73,20 @@ class GoogleFrontierIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(resumed["start_page"], 1)
 
+    def test_release_mid_batch_preserves_successful_page_and_rejects_old_owner(self):
+        b=self.store.acquire_google_page_batch(self.campaign_id,'pause batch','en-SG',2,2,21600)
+        self.assertTrue(self.store.record_google_page_result(b,1,success=True,result_count=8))
+        self.assertTrue(self.store.release_google_page_batch(b))
+        with self.store.connect() as db:
+            row=db.execute('SELECT * FROM google_page_frontier WHERE campaign_id=%s',(self.campaign_id,)).fetchone()
+        self.assertEqual((row['state'],row['next_page'],row['attempts']),('pending',2,0))
+        self.assertEqual(list(row['page_stats']),['1'])
+        self.assertIsNone(row['lease_token']);self.assertIsNone(row['lease_expires_at'])
+        new=self.store.acquire_google_page_batch(self.campaign_id,'pause batch','en-SG',2,2,21600)
+        self.assertEqual(new['start_page'],2)
+        self.assertFalse(self.store.release_google_page_batch(b))
+        self.assertTrue(self.store.record_google_page_result(new,2,success=True,result_count=8))
+
 
 if __name__ == "__main__":
     unittest.main()

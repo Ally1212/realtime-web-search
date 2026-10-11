@@ -326,6 +326,20 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse(recorder.call_args.kwargs["success"])
         self.assertTrue(recorder.call_args.kwargs["captcha"])
 
+    def test_pause_between_pages_releases_owned_batch_without_fake_page_failure(self):
+        batch=dict(start_page=1,end_page=2,lease_token='owned')
+        release,record=Mock(return_value=True),Mock(return_value=True)
+        d=SearchDiscovery(google_web_max_pages=2,google_web_pages_per_batch=2,
+                          page_batch_acquirer=Mock(return_value=batch),
+                          page_result_recorder=record,page_batch_releaser=release)
+        d.should_continue=Mock(side_effect=[True,True,False])
+        d._discover_google_page=Mock(return_value=[SearchResult('https://example.com/a','A',('google_web',))])
+        found,errors=d.discover('AI',2)
+        self.assertEqual(len(found),1);self.assertEqual(errors,[])
+        d._discover_google_page.assert_called_once_with('AI',1)
+        record.assert_called_once();self.assertTrue(record.call_args.kwargs['success'])
+        release.assert_called_once_with(batch)
+
 
     def test_fallback_records_each_attempt_and_caches_only_success(self):
         recorder, cache = Mock(), Mock()

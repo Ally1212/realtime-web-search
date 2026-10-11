@@ -1020,6 +1020,18 @@ class CampaignStore:
             "max_page": maximum, "repeat_seconds": max(1, repeat_seconds),
         }
 
+    def release_google_page_batch(self, batch: dict[str, Any]) -> bool:
+        """Release an idle owned batch without changing page progress or failures."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "UPDATE google_page_frontier SET state='pending',lease_token=NULL,"
+                "lease_expires_at=NULL,next_run_at=now(),updated_at=now() "
+                "WHERE campaign_id=%s AND query_hash=%s AND locale=%s "
+                "AND lease_token=%s AND state='running' RETURNING campaign_id",
+                (batch['campaign_id'],batch['query_hash'],batch['locale'],batch['lease_token']),
+            ).fetchone()
+        return row is not None
+
     def reconcile_google_queries(self, campaign_id: str, queries: tuple[str, ...], locale: str) -> None:
         """Retain old cursors for audit, but schedule only this campaign's current queries."""
         hashes = [hashlib.sha256(query.encode()).hexdigest() for query in queries]
