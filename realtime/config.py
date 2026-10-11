@@ -197,6 +197,7 @@ class Config:
         if value.strip()
     )
     crawler_obey_robots: bool = _enabled("CRAWLER_OBEY_ROBOTS", True)
+    whale_serp_enabled: bool = _enabled("WHALE_SERP_ENABLED", False)
     whale_enabled: bool = _enabled("WHALE_ENABLED", False)
     whale_base_url: str = os.getenv("WHALE_BASE_URL", "http://20.169.21.11")
     whale_collector_api_key: str = os.getenv("WHALE_COLLECTOR_API_KEY", "")

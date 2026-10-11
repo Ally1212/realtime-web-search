@@ -20,6 +20,15 @@
 - 基础字段已映射保存；高级模块只有上游 `serp_features` 透传，独立商业模块尚未实现，缺失字段 null。正文开关可经页面/API 修改；默认关闭，生产验证期间不得为了测试打开正文。
 - 最新需求和项目检查见 `docs/google-sources-requirements-2026-10-10.md`；第一阶段 Web 需求见 `docs/google-serp-requirements-2026-10-10.md`，前期研究见 `docs/serp-link-priority-2026-10-10.md`。以下正文产量目标和实验方法保留为历史背景，选优时以本节最新目标为准。
 
+## Whale 上传平台适配（2026-10-11）
+
+- 已部署链接专用 Whale/Marsyoo 对接：采集器注册/心跳/领取/进度/完成/失败、平台控制、本地上传队列和暂停/继续/停止/重试；网站新增“平台上传”和创建任务“同时加入 Whale 上传队列”，实际消息、回执、失败原因可查看。
+- 当前 worker 冻结 `state/whale-serp-20261011/code/worker/realtime`；网页冻结 `state/whale-serp-20261011/revisions/r2/code/web/realtime`。仅叠加 SERP 功能与已提交分页 lease 释放修复，未上线历史正文/hash 迁移。开机仍读取原 `state/google-web-longrun-20261010/current-compose.json`，根 override 一致，旧包保留。
+- 生产验收结束：自动采集、正文、Whale 上传和平台任务领取均 false，未恢复采集。请求/正文/供给游标等与部署前完全一致；其他四个服务容器未改，r2 只重建 web。
+- 完整回归 423 passed、44 subtests，无跳过；生产冻结相关测试 65 passed、10 subtests。Web/News/Trends 各一条真实已存链接上传均取得 queued 回执，桌面/手机及网站任务保存/控制自测通过。
+- 平台 Key 当前仅允许 keyword_search；backfill/content_detail 注册真实 HTTP 403。两类实现和隔离联调已通过，但不能称线上验收完成。Collector Key 查询 document 返回 401，最终业务入库/索引未知；queued 不冒充最终入库。需要平台管理员补齐任务权限与读取凭据，不能为验收开启正文或自动采集。
+- 功能矩阵、字段语义、接口、部署与限制见 `docs/whale-serp-adaptation-2026-10-11.md`。
+
 ## 历史总目标（正文采集）
 
 **在服务器上持续运行采集系统，通过实验找到并固定"单日入库正文量最大"的采集配置，使系统长期以最大产能稳定运行。**

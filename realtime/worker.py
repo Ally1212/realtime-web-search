@@ -143,6 +143,11 @@ class WorkerManager:
         threading.Thread(target=self.proxy_sync_loop, daemon=True).start()
         # The website can enable supply even when the startup environment was off.
         threading.Thread(target=self.supply_loop, daemon=True).start()
+        if self.config.whale_serp_enabled:
+            from .whale_serp import WhaleSerpStore, WhaleSerpRuntime
+            whale = WhaleSerpStore(self.config.database_url)
+            whale.initialize()
+            threading.Thread(target=WhaleSerpRuntime(self.config, whale).run, args=(self.stop,), daemon=True).start()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.config.crawler_slots) as pool:
             futures = [pool.submit(self.worker_loop) for _ in range(self.config.crawler_slots)]
             try:

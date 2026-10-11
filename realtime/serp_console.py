@@ -113,8 +113,11 @@ class ConsoleStore(SerpStore):
         return bool(row and row['status'] == 'active' and (not row['automatic'] or row['cfg'].get('continuous_enabled', True)))
 
     def create_task(self, payload, config):
-        if not isinstance(payload, dict) or set(payload) - {'query', 'keywords', 'sources', 'options', 'start'}:
+        if not isinstance(payload, dict) or set(payload) - {'query', 'keywords', 'sources', 'options', 'start', 'upload_to_whale'}:
             raise ValueError('无效任务字段')
+        upload = payload.get('upload_to_whale',False)
+        if type(upload) is not bool: raise ValueError('upload_to_whale 必须为布尔值')
+        if upload and not getattr(config,'whale_serp_enabled',False): raise ValueError('Whale 链接对接尚未启用')
         selected = sources(payload.get('sources', ['google_web']))
         words = payload.get('keywords', [payload.get('query', '')])
         if not isinstance(words, list) or len(words) > 50 or any(not isinstance(x, str) or len(x) > 300 for x in words):
@@ -133,6 +136,7 @@ class ConsoleStore(SerpStore):
             db.execute('INSERT INTO campaigns(id,query,aliases,daily_target,proxy_profile,sources,status) VALUES(%s,%s,%s,1000000,%s,%s,%s)',
                        (cid, words[0], Jsonb(words[1:]), config.default_proxy_profile, Jsonb(selected), 'active' if start else 'paused'))
             db.execute('INSERT INTO serp_task_options(campaign_id,options,started) VALUES(%s,%s,%s)', (cid, Jsonb(opts), start))
+            if upload: db.execute('INSERT INTO whale_serp_task_uploads(campaign_id) VALUES(%s)',(cid,))
         return dict(campaign_id=cid, status='active' if start else 'paused', sources=selected, options=opts)
 
     def tasks(self, *, kind='manual', status=None, q='', limit=20, offset=0):

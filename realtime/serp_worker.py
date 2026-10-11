@@ -105,6 +105,9 @@ def run_serp_campaign(campaign_id: str, config: Config | None = None,
             store.record_event(campaign_id, '', 'discovery_failed', error_code='serp_batch_incomplete')
     finally:
         discovery.close()
+    if getattr(config,'whale_serp_enabled',False):
+        from .whale_serp import WhaleSerpStore
+        WhaleSerpStore(config.database_url).stage_subscription(campaign_id,config)
 
 
 class SerpSupply:

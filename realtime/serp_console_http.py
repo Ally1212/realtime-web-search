@@ -17,6 +17,9 @@ def settings_payload(store, config):
 
 
 def post(handler):
+    from .whale_serp_http import handle
+    if handle(handler, 'POST'):
+        return True
     path = urlparse(handler.path).path
     match = re.fullmatch(r'/api/serp/tasks/([0-9a-f-]+)/(start|pause|resume|stop)', path)
     if path not in ('/api/collector-settings', '/api/serp/tasks') and not match:
@@ -53,6 +56,9 @@ def post(handler):
 
 
 def get(handler):
+    from .whale_serp_http import handle
+    if handle(handler, 'GET'):
+        return True
     parsed = urlparse(handler.path)
     routes = ('/api/collector-settings', '/api/serp/tasks', '/api/serp/results', '/api/serp/browse-requests', '/api/serp/stats', '/api/serp/export')
     if parsed.path not in routes:
