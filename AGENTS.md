@@ -56,6 +56,7 @@
 
 ## 最新授权：纯 Google Web 长时选优（2026-10-10 UTC 09:30 起）
 
+- 最新用户指令（2026-10-11 新加坡时间 15:01）：暂停采集。已于 UTC 07:01:42.539261 保存 `continuous_enabled=false`；此前持续运行授权已被此次暂停覆盖。UTC 07:02:24 与 07:02:37 两次快照均在途 0，正式纯 Web 请求固定 24,153、全历史去重新增 URL 固定 114,478、cursor 固定 4083，已验证停止新增。保留全部数据和当前最佳参数，未获用户恢复指令不得重新开启。证据 `state/google-web-longrun-20261010/operator-paused-20261011.json`、`operator-pause-verification-20261011.json`。
 - 最终状态（2026-10-11）：新加坡时间 09:01:10 自动结束参数试验并继续采集，固定 `s18-p1-i60-r4`：18 槽 / 1 页 / 每代理最小间隔 60 秒 / 初始 2、最大 4 RPS，仅 OpenSERP。两个实测段累计 4,054.787327 秒新增 8,412 个历史去重 URL，加权平均 **7,468.505142 / 小时**，1,669 / 1,684 请求成功（99.1093%）；不能称为理论上限或已完成 24 小时验证。
 - UTC 01:45:31 独立只读数据库复算全部 12 个正式纯 Web 窗口通过，连续 55,027.644762 秒共新增 74,670，完整包含失败、等待、维护和两页排空故障停机；这是全实验平均，不能与选中配置平均混淆。原混合来源窗口和旧 r3 不参与选优，同配置短复测全部加权。
 - UTC 01:46:02 已确认选优后实际新增 5,418 个 URL，worker 无重启/OOM、正文基线不变、News/Trends/RSS 关闭。监督服务正常结束；`realtime-google-serp.service` active/enabled，开机读取 current-compose.json，compose.override.yaml 一致。证据 `final.json`、`final-runtime-verification.json`、`measurement-audit-phase10-20261011T014531.json`。网站关闭仍优先，不自动覆盖用户设置。
