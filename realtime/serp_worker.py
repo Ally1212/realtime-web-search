@@ -11,6 +11,7 @@ from .config import Config
 from .discovery import SearchDiscovery
 from .proxy_pool import ProxyPool
 from .serp_store import SerpStore
+from .serp_console import ConsoleStore
 from .serp_fields import GOOGLE_SOURCES
 
 
@@ -30,7 +31,7 @@ def make_discovery(config: Config, store: CampaignStore, serp: SerpStore,
         openserp_request_timeout_seconds=config.openserp_request_timeout_seconds,
         serp_features_enabled=config.serp_features_enabled,
         validate_target_dns=False,
-        google_web_max_pages=config.google_web_max_pages,
+        google_web_max_pages=max(int(opts.get('web_pages') or config.google_web_max_pages), 1),
         google_web_pages_per_batch=config.google_web_pages_per_batch,
         google_web_initial_rps=config.google_web_initial_rps,
         google_web_max_rps=config.google_web_max_rps,
@@ -67,6 +68,15 @@ def make_discovery(config: Config, store: CampaignStore, serp: SerpStore,
     return discovery
 
 
+def complete_once_task(console: ConsoleStore, campaign_id: str, reason: str) -> None:
+    with console.store.connect() as db:
+        row = db.execute("SELECT o.mode FROM serp_task_options o JOIN campaigns c ON c.id=o.campaign_id WHERE o.campaign_id=%s AND c.status='active' FOR UPDATE OF c", (campaign_id,)).fetchone()
+        if not row or row['mode'] != 'once':
+            return
+        db.execute("UPDATE campaigns SET status='completed',updated_at=now() WHERE id=%s", (campaign_id,))
+        db.execute("UPDATE serp_task_options SET stop_reason=%s WHERE campaign_id=%s", (reason, campaign_id))
+
+
 def run_serp_campaign(campaign_id: str, config: Config | None = None,
                       store: CampaignStore | None = None, serp: SerpStore | None = None) -> None:
     config = config or Config()
@@ -76,8 +86,8 @@ def run_serp_campaign(campaign_id: str, config: Config | None = None,
     if not campaign or campaign['status'] != 'active':
         return
     # Optional parameters live outside the legacy article schema.
+    console = None
     if isinstance(serp, SerpStore):
-        from .serp_console import ConsoleStore
         console = ConsoleStore(config.database_url)
         if not console.runnable(campaign_id):
             return
@@ -90,12 +100,13 @@ def run_serp_campaign(campaign_id: str, config: Config | None = None,
         return
     queries = tuple(dict.fromkeys((campaign['query'], *(campaign.get('aliases') or []))))
     sources = campaign.get('sources') or ['google_web']
+    opts = campaign.get('serp_options') or {}
     discovery = make_discovery(config, store, serp, campaign)
     try:
         results,errors = [],[]
         if 'google_web' in sources:
             store.reconcile_google_queries(campaign_id, queries, discovery.locale)
-            results, errors = discovery.discover_many(queries, config.google_web_max_pages)
+            results, errors = discovery.discover_many(queries, int(opts.get('web_pages') or config.google_web_max_pages))
         if any(s in sources for s in ('google_news','google_trends')):
             from .google_feeds import collect_sources
             extra,failures = collect_sources(discovery,store,serp,campaign_id,queries,sources,config)
@@ -103,6 +114,12 @@ def run_serp_campaign(campaign_id: str, config: Config | None = None,
         store.increment(campaign_id, discovered=len({r.url for r in results}))
         if errors:
             store.record_event(campaign_id, '', 'discovery_failed', error_code='serp_batch_incomplete')
+        if opts.get('mode') == 'once' and console is not None:
+            counts = console.task_usage(campaign_id)
+            if opts.get('max_successful_searches') and counts['successful'] >= opts['max_successful_searches']:
+                complete_once_task(console, campaign_id, 'max_successful_searches')
+            elif not errors:
+                complete_once_task(console, campaign_id, 'scope_completed')
     finally:
         discovery.close()
     if getattr(config,'whale_serp_enabled',False):

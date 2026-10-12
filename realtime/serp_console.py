@@ -15,8 +15,14 @@ CONSOLE_SCHEMA = """
 ALTER TABLE serp_collector_settings ADD COLUMN IF NOT EXISTS runtime_config jsonb NOT NULL DEFAULT '{}'::jsonb;
 CREATE TABLE IF NOT EXISTS serp_task_options (
  campaign_id uuid PRIMARY KEY REFERENCES campaigns(id), options jsonb NOT NULL DEFAULT '{}'::jsonb,
- started boolean NOT NULL DEFAULT true
+ started boolean NOT NULL DEFAULT true,
+ mode text NOT NULL DEFAULT 'scheduled' CHECK (mode IN ('once','scheduled')),
+ max_successful_searches integer CHECK (max_successful_searches IS NULL OR max_successful_searches > 0),
+ stop_reason text
 );
+ALTER TABLE serp_task_options ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'scheduled';
+ALTER TABLE serp_task_options ADD COLUMN IF NOT EXISTS max_successful_searches integer CHECK (max_successful_searches IS NULL OR max_successful_searches > 0);
+ALTER TABLE serp_task_options ADD COLUMN IF NOT EXISTS stop_reason text;
 ALTER TABLE serp_task_options ADD COLUMN IF NOT EXISTS started boolean NOT NULL DEFAULT true;
 """
 
@@ -28,8 +34,8 @@ def sources(value):
 
 
 def options(value):
-    if not isinstance(value, dict) or set(value) - {'web_region', 'web_language', 'news_locale', 'trends_geo'}:
-        raise ValueError('无效地区参数')
+    if not isinstance(value, dict) or set(value) - {'web_region', 'web_language', 'news_locale', 'trends_geo', 'web_pages'}:
+        raise ValueError('无效任务参数')
     out = dict(value)
     for key in ('web_region', 'trends_geo'):
         if key in out and out[key] not in REGIONS:
@@ -38,6 +44,8 @@ def options(value):
         raise ValueError('Web 语言仅支持 auto/en/zh')
     if 'news_locale' in out and out['news_locale'] not in NEWS_LOCALES:
         raise ValueError('News edition 不支持')
+    if 'web_pages' in out and (type(out['web_pages']) is not int or not 1 <= out['web_pages'] <= 11):
+        raise ValueError('web_pages 必须为 1–11 的整数')
     return out
 
 
@@ -104,8 +112,15 @@ class ConsoleStore(SerpStore):
 
     def task_options(self, cid):
         with self.store.connect() as db:
-            row = db.execute('SELECT options FROM serp_task_options WHERE campaign_id=%s', (str(UUID(cid)),)).fetchone()
-        return row['options'] if row else {}
+            row = db.execute('SELECT options,mode,max_successful_searches FROM serp_task_options WHERE campaign_id=%s', (str(UUID(cid)),)).fetchone()
+        if not row:
+            return {}
+        return dict(row['options'], mode=row['mode'], max_successful_searches=row['max_successful_searches'])
+
+    def task_usage(self, cid):
+        with self.store.connect() as db:
+            row = db.execute("SELECT count(*) requests,count(*) FILTER(WHERE s.classification IN ('results','empty')) successful,count(*) FILTER(WHERE cr.reused) cached FROM serp_campaign_requests cr JOIN serp_requests s USING(request_id) WHERE cr.campaign_id=%s", (str(UUID(cid)),)).fetchone()
+        return dict(row)
 
     def runnable(self, cid):
         with self.store.connect() as db:
@@ -113,7 +128,7 @@ class ConsoleStore(SerpStore):
         return bool(row and row['status'] == 'active' and (not row['automatic'] or row['cfg'].get('continuous_enabled', True)))
 
     def create_task(self, payload, config):
-        if not isinstance(payload, dict) or set(payload) - {'query', 'keywords', 'sources', 'options', 'start', 'upload_to_whale'}:
+        if not isinstance(payload, dict) or set(payload) - {'query', 'keywords', 'sources', 'options', 'start', 'upload_to_whale', 'mode', 'max_successful_searches'}:
             raise ValueError('无效任务字段')
         upload = payload.get('upload_to_whale',False)
         if type(upload) is not bool: raise ValueError('upload_to_whale 必须为布尔值')
@@ -130,17 +145,25 @@ class ConsoleStore(SerpStore):
         start = payload.get('start', True)
         if type(start) is not bool:
             raise ValueError('start 必须是布尔值')
+        mode = payload.get('mode', 'once')
+        if mode not in ('once', 'scheduled'):
+            raise ValueError('任务模式仅支持 once/scheduled')
+        budget = payload.get('max_successful_searches')
+        if budget is not None and (type(budget) is not int or budget < 1):
+            raise ValueError('最大成功搜索次数必须是正整数')
         opts = options(payload.get('options', {}))
+        if mode == 'once' and 'google_web' in selected and 'web_pages' not in opts:
+            opts['web_pages'] = config.google_web_max_pages
         cid = str(uuid4())
         with self.store.connect() as db:
             db.execute('INSERT INTO campaigns(id,query,aliases,daily_target,proxy_profile,sources,status) VALUES(%s,%s,%s,1000000,%s,%s,%s)',
                        (cid, words[0], Jsonb(words[1:]), config.default_proxy_profile, Jsonb(selected), 'active' if start else 'paused'))
-            db.execute('INSERT INTO serp_task_options(campaign_id,options,started) VALUES(%s,%s,%s)', (cid, Jsonb(opts), start))
+            db.execute('INSERT INTO serp_task_options(campaign_id,options,started,mode,max_successful_searches) VALUES(%s,%s,%s,%s,%s)', (cid, Jsonb(opts), start, mode, budget))
             if upload: db.execute('INSERT INTO whale_serp_task_uploads(campaign_id) VALUES(%s)',(cid,))
-        return dict(campaign_id=cid, status='active' if start else 'paused', sources=selected, options=opts)
+        return dict(campaign_id=cid, status='active' if start else 'paused', sources=selected, options=opts, mode=mode, max_successful_searches=budget)
 
     def tasks(self, *, kind='manual', status=None, q='', limit=20, offset=0):
-        if kind not in ('manual', 'automatic', 'all') or (status and status not in ('active', 'paused', 'stopped', 'failed')):
+        if kind not in ('manual', 'automatic', 'all') or (status and status not in ('active', 'paused', 'stopped', 'failed', 'completed')):
             raise ValueError('无效任务筛选')
         limit, offset = min(max(int(limit), 1), 100), max(int(offset), 0)
         clauses = ["NOT EXISTS(SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id)",
@@ -157,7 +180,7 @@ class ConsoleStore(SerpStore):
         with self.store.connect() as db:
             db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
             total = db.execute('SELECT count(*) n FROM campaigns c WHERE '+where, params).fetchone()['n']
-            rows = db.execute("SELECT c.id,c.query,c.aliases,c.sources,c.status,c.last_error,c.created_at,c.updated_at,coalesce(o.options,'{}'::jsonb) options,coalesce(o.started,true) started,EXISTS(SELECT 1 FROM serp_supply_campaigns s WHERE s.campaign_id=c.id) automatic FROM campaigns c LEFT JOIN serp_task_options o ON o.campaign_id=c.id WHERE "+where+' ORDER BY c.created_at DESC,c.id DESC LIMIT %s OFFSET %s', (*params, limit, offset)).fetchall()
+            rows = db.execute("SELECT c.id,c.query,c.aliases,c.sources,c.status,c.last_error,c.created_at,c.updated_at,coalesce(o.options,'{}'::jsonb) options,coalesce(o.started,true) started,coalesce(o.mode,'scheduled') mode,o.max_successful_searches,o.stop_reason,EXISTS(SELECT 1 FROM serp_supply_campaigns s WHERE s.campaign_id=c.id) automatic FROM campaigns c LEFT JOIN serp_task_options o ON o.campaign_id=c.id WHERE "+where+' ORDER BY c.created_at DESC,c.id DESC LIMIT %s OFFSET %s', (*params, limit, offset)).fetchall()
             for r in rows:
                 counts = db.execute("SELECT count(*) requests,count(*) FILTER(WHERE s.classification IN ('results','empty')) successful,count(*) FILTER(WHERE cr.reused) cached,coalesce(sum(CASE WHEN NOT cr.reused THEN (s.response->>'new_unique_links')::int ELSE 0 END),0) new_links,max(s.completed_at) last_request_at FROM serp_campaign_requests cr JOIN serp_requests s USING(request_id) WHERE cr.campaign_id=%s", (r['id'],)).fetchone()
                 r.update(counts)
@@ -172,7 +195,7 @@ class ConsoleStore(SerpStore):
             if not row:
                 return None
             state = row['status']
-            valid = {'start': ('paused', 'stopped', 'failed'), 'resume': ('paused',), 'pause': ('active',), 'stop': ('active', 'paused', 'failed')}
+            valid = {'start': ('paused', 'stopped', 'failed'), 'resume': ('paused',), 'pause': ('active',), 'stop': ('active', 'paused', 'failed', 'completed')}
             if state not in valid[operation]:
                 raise ValueError('当前状态不能执行此操作')
             status = {'start': 'active', 'resume': 'active', 'pause': 'paused', 'stop': 'stopped'}[operation]

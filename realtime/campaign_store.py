@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   aliases jsonb NOT NULL DEFAULT '[]'::jsonb,
   daily_target integer NOT NULL CHECK (daily_target BETWEEN 1 AND 1000000),
   proxy_profile text NOT NULL CHECK (proxy_profile IN ('private','public','direct')),
-  status text NOT NULL CHECK (status IN ('active','paused','stopped','failed')),
+  status text NOT NULL CHECK (status IN ('active','paused','stopped','failed','completed')),
   discovered bigint NOT NULL DEFAULT 0,
   fetched bigint NOT NULL DEFAULT 0,
   failed bigint NOT NULL DEFAULT 0,
@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS campaign_schema_migrations (
   applied_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sources jsonb NOT NULL DEFAULT '["google_web"]'::jsonb;
+ALTER TABLE campaigns DROP CONSTRAINT IF EXISTS campaigns_status_check;
+ALTER TABLE campaigns ADD CONSTRAINT campaigns_status_check CHECK (status IN ('active','paused','stopped','failed','completed'));
 CREATE TABLE IF NOT EXISTS campaign_pages (
   campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   page_id bigint NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
@@ -1447,7 +1449,7 @@ class CampaignStore:
         return min(delays)
 
     def set_status(self, campaign_id: str, status: str, error: str | None = None) -> bool:
-        if status not in {"active", "paused", "stopped", "failed"}:
+        if status not in {"active", "paused", "stopped", "failed", "completed"}:
             raise ValueError("invalid campaign status")
         with self.connect() as connection:
             cursor = connection.execute(

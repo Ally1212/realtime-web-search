@@ -20,6 +20,7 @@ from psycopg.conninfo import make_conninfo
 from realtime.campaign_store import CampaignStore
 from realtime.config import Config
 from realtime.serp_console import ConsoleStore, options, sources
+from realtime.serp_page import PAGE
 from realtime.serp_worker import make_discovery, run_serp_campaign, SerpSupply
 from realtime.serp_fields import result_items
 from realtime.discovery import SearchResult
@@ -29,11 +30,18 @@ from http.server import BaseHTTPRequestHandler
 
 
 class ConsoleValidationTests(unittest.TestCase):
+    def test_workbench_keeps_guided_form_and_advanced_capabilities(self):
+        for text in ('新建采集任务', '选择数据源', '采集一次', '持续采集',
+                     '高级参数：页数、地区、语言、预算', '平台集成', '数据结果', '系统设置',
+                     '导出 JSONL', '导出 CSV', '平台回执'):
+            self.assertIn(text, PAGE)
+        self.assertNotIn('id="taskMode"', PAGE)
+
     def test_source_and_region_validation(self):
         for value in ([], ['rss'], ['google_web', {}], 'google_web'):
             with self.assertRaises(ValueError):
                 sources(value)
-        for value in ({'web_region': 'XX'}, {'web_language': 'ja'}, {'news_locale': 'US:xx'}, {'unknown': 'x'}):
+        for value in ({'web_region': 'XX'}, {'web_language': 'ja'}, {'news_locale': 'US:xx'}, {'unknown': 'x'}, {'web_pages': 12}):
             with self.assertRaises(ValueError):
                 options(value)
 
@@ -102,6 +110,29 @@ class ConsoleIntegrationTests(unittest.TestCase):
         self.news = self.record('google_news', {'news_results':[dict(title='Energy news',link='https://example.org/a',publisher='Daily',feed_position=1)]})
         self.trends = self.record('google_trends', {'trending_searches':[dict(keyword='Energy topic',approx_traffic='20,000+',articles=[dict(title='New report',link='https://example.org/b')]),dict(keyword='No articles',articles=[])]})
         self.error = self.record('google_web', {}, 'captcha')
+
+    def test_once_task_scope_budget_and_completion(self):
+        cid = self.store.create_task({'keywords':['a','b'], 'sources':['google_web','google_news','google_trends'], 'options':{'web_pages':3,'news_locale':'US:en','trends_geo':'US'}, 'mode':'once', 'max_successful_searches':2, 'start':False}, self.config)['campaign_id']
+        row = next(x for x in self.store.tasks()['tasks'] if str(x['id'])==cid)
+        self.assertEqual((row['mode'],row['options']['web_pages'],row['max_successful_searches']),('once',3,2))
+        self.store.action(cid,'start')
+        self.seed_results()
+        # Two successful persisted requests reach the task budget; reused cache is excluded.
+        other = self.store.cache_feed('b'*64,self.news,600); self.store.cached_feed('b'*64,cid)
+        from realtime.serp_worker import complete_once_task
+        complete_once_task(self.store,cid,'max_successful_searches')
+        row = next(x for x in self.store.tasks(status='completed')['tasks'] if str(x['id'])==cid)
+        self.assertEqual((row['status'],row['stop_reason'],row['cached']),('completed','max_successful_searches',1))
+        self.assertGreaterEqual(row['successful'],1)
+        with self.assertRaises(ValueError): self.store.action(cid,'start')
+
+    def test_once_task_scope_without_budget_completes_after_clean_run(self):
+        cid = self.store.create_task({'query':'a','sources':['google_trends'], 'mode':'once'}, self.config)['campaign_id']
+        self.store.record(cid, source='google_trends', provider='google_rss', query='a', page=1, language='en', response={'trending_searches':[]}, elapsed_seconds=.1, classification='empty', http_status=200)
+        from realtime.serp_worker import complete_once_task
+        complete_once_task(self.store,cid,'scope_completed')
+        row = next(x for x in self.store.tasks()['tasks'] if str(x['id'])==cid)
+        self.assertEqual((row['status'],row['stop_reason']),('completed','scope_completed'))
 
     def test_draft_start_pause_resume_stop_and_invalid_transition(self):
         self.assertFalse(self.store.runnable(self.cid))

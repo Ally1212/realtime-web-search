@@ -76,6 +76,18 @@ class SerpCollectionTests(unittest.TestCase):
         self.assertTrue(errors)
         cache.assert_not_called()
 
+    def test_once_task_uses_task_page_count_and_completes_clean_run(self):
+        store = Mock()
+        cid = str(uuid4())
+        task_options = {'mode':'once','web_pages':3}
+        store.campaign.return_value = {'id': cid, 'query': 'solar research', 'aliases': [], 'status': 'active', 'proxy_profile': 'direct', 'sources': ['google_web'], 'serp_options': task_options}
+        store.whale_task_for_campaign.return_value = None
+        discovery = Mock()
+        discovery.discover_many.return_value = ([], [])
+        with patch('realtime.serp_worker.make_discovery', return_value=discovery), patch('subprocess.Popen', side_effect=AssertionError('no body subprocess')):
+            run_serp_campaign(cid, Config(), store, Mock())
+        discovery.discover_many.assert_called_once_with(('solar research',), 3)
+
     def test_serp_campaign_never_starts_article_download_or_auxiliary_sources(self):
         store = Mock()
         cid = str(uuid4())
