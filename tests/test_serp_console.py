@@ -32,10 +32,12 @@ from http.server import BaseHTTPRequestHandler
 class ConsoleValidationTests(unittest.TestCase):
     def test_workbench_keeps_guided_form_and_advanced_capabilities(self):
         for text in ('新建采集任务', '选择数据源', '采集一次', '持续采集',
-                     '高级参数：页数、地区、语言、预算', '平台集成', '数据结果', '系统设置',
+                     '高级参数：页数、地区、语言、预算', '平台同步', '数据集', '数据偏好',
                      '导出 JSONL', '导出 CSV', '平台回执'):
             self.assertIn(text, PAGE)
         self.assertNotIn('id="taskMode"', PAGE)
+        for internal in ('autoToggle', 'continuousSwitch', 'continuousSource', '自动采集'):
+            self.assertNotIn(internal, PAGE)
 
     def test_source_and_region_validation(self):
         for value in ([], ['rss'], ['google_web', {}], 'google_web'):
