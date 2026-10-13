@@ -54,3 +54,11 @@
 本轮后端验证使用临时独立 PostgreSQL（127.0.0.1:55438）：test_serp_presentation、test_serp_console、test_serp_collection、test_whale_serp 共 57 项通过，无跳过。生产数据库未用于这些测试。
 
 本轮最终浏览器验收共 44 项通过：主流程 24 项、真实中文保存字段及下载 9 项、平台/偏好/采集记录流程 11 项。News 与 Trends 使用真实历史数据读取；上传、任务控制和偏好写操作采用浏览器隔离模拟。中文结果单条 CSV 与批量 CSV（8 条）逐项核验地区、语言、链接网站及列结构；JSONL 核验为最终结果数据而非请求响应。六个页面及保存数据详情在手机宽度无页面横向溢出。主流程无 JavaScript 异常。证据：smoke-saved-results.txt、saved-cn-saved-results.txt、sync-saved-results.txt、saved-data-cn-us-desktop.png、saved-data-cn-us-mobile.png。
+
+## 正式部署（2026-10-13）
+
+用户随后授权更新服务器供实际测试。新版已部署在原六服务 Compose 中，冻结包为 state/user-workbench-20261013/code/{web,local-worker}/realtime。基于原生产包复制，仅替换网页 serp_page/serp_console/serp_console_http、新增 serp_presentation，并为 worker 更新 serp_worker 与 serp_console，使已保存的单次模式实际生效。没有复制工作树 campaign_store/web 等历史正文迁移文件。原冻结包保留；previous-compose.json 与 previous-override.json 可回退，当前 override 与开机 current-compose.json 一致。仅重建 web 和 local-worker，其他四服务保持原容器。部署前后设置、供给游标、历史正文计数及最大 ID 一致。
+
+服务器网页通过本机 SSH 转发访问 http://127.0.0.1:8093；无预览提示条，用户创建任务、控制任务等操作实际生效。8094 仍是只读本地预览。
+
+正式新版浏览器验收 6 项通过：真实创建“中美关系科技合作”，美国地区、中文语言、一页、单次成功预算 1，保存 8 条结果及 8 个历史新增链接；实际 gl=us、hl=zh；任务自动转 completed，stop_reason=max_successful_searches，只有 1 次成功搜索且非缓存。已核对最终数据详情、正式用户 CSV 导出和提示条移除。前述生产单次任务未自动结束的限制已在此次更新中解决。内部自动采集和正文仍关闭，未开启平台上传或任务领取。证据：output/playwright/production-new-create.txt、production-new-verify.txt、production-new-results.csv；服务器 baseline.json、verification.json。
