@@ -6,12 +6,18 @@ Writes are rejected; this process never starts a collector or initializes a data
 import argparse
 import importlib.util
 import json
+import csv
+import io
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
+from urllib.parse import urlparse, parse_qs, urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from realtime.serp_presentation import USER_COLUMNS, user_result_rows, csv_value
 
 
 def page():
@@ -39,6 +45,10 @@ def main():
         def do_GET(self):
             if self.path.split('?')[0] == '/':
                 return self.send(200, page().encode(), 'text/html; charset=utf-8')
+            parsed = urlparse(self.path)
+            filters = {k: v[-1] for k, v in parse_qs(parsed.query).items()}
+            if parsed.path == '/api/serp/export' and filters.get('view') == 'user':
+                return self.user_export(filters)
             if not (self.path.startswith('/api/') or self.path in ('/articles', '/stats')):
                 return self.send(404, b'{}')
             try:
@@ -48,6 +58,31 @@ def main():
                 self.send(error.code, error.read())
             except (URLError, TimeoutError):
                 self.send(502, json.dumps({'error': '无法读取服务器数据，请检查 SSH 转发 8093。'}, ensure_ascii=False).encode())
+
+        def user_export(self, filters):
+            filters.update(mode='results', format='jsonl')
+            filters.pop('view', None)
+            try:
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(USER_COLUMNS)
+                contexts = {}
+                with urlopen(args.upstream.rstrip('/') + '/api/serp/export?' + urlencode(filters), timeout=30) as response:
+                    for line in response:
+                        if not line.strip():
+                            continue
+                        row = json.loads(line)
+                        if not row.get('search_parameters'):
+                            rid = str(row['id'])
+                            if rid not in contexts:
+                                with urlopen(args.upstream.rstrip('/')+'/api/serp/requests/'+rid, timeout=30) as detail:
+                                    contexts[rid] = json.load(detail).get('search_parameters') or {}
+                            row['search_parameters'] = contexts[rid]
+                        for record in user_result_rows(row):
+                            writer.writerow([csv_value(record[k]) for k in USER_COLUMNS])
+                self.send(200, ('\ufeff'+output.getvalue()).encode(), 'text/csv; charset=utf-8')
+            except (HTTPError, URLError, TimeoutError, ValueError):
+                self.send(502, json.dumps({'error':'导出数据暂不可用，请缩小筛选范围后重试。'}, ensure_ascii=False).encode())
 
         def do_POST(self):
             self.send(403, json.dumps({'error': '本地预览只读。此操作未发送到服务器。'}, ensure_ascii=False).encode())

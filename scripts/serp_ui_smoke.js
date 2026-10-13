@@ -1,4 +1,5 @@
 async (page) => {
+await page.setViewportSize({width:1440,height:1000});
 const checks=[];
 const assert=(condition,label)=>{if(!condition)throw Error(label);checks.push(label);};
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
@@ -20,13 +21,13 @@ await page.locator('#resultFilters button[type=submit]').click();
 await page.waitForResponse(r=>r.url().includes('/api/serp/results?')&&r.url().includes('source=google_trends'));
 await page.locator('#resultRows article.trends').first().waitFor();
 assert((await page.locator('#resultRows').innerText()).includes('搜索量标记'),'Trends 数据展示');
-const downloadWait=page.waitForEvent('download');await page.locator('#exportCsv').click();const download=await downloadWait;
+await page.locator('#resultQ').fill(await page.locator('#resultRows article.trends h3').first().innerText());const narrowed=page.waitForResponse(r=>r.url().includes('/api/serp/results?')&&r.url().includes('q='));await page.locator('#resultFilters button[type=submit]').click();await narrowed;const downloadWait=page.waitForEvent('download');await page.locator('#exportCsv').click();const download=await downloadWait;
 assert(download.suggestedFilename().endsWith('.csv'),'真实筛选 CSV 导出');
 await download.saveAs('output/playwright/export-trends.csv');
 await page.locator('#resetFilters').click();await page.locator('#resultRows article.web').first().waitFor();
-await page.locator('#resultRows [data-json]').first().click();await page.locator('#jsonDialog').waitFor({state:'visible'});
-assert((await page.locator('#jsonSummary').innerText()).includes('采集来源'),'采集详情可读摘要');
-await page.locator('#closeJson').click();
+await page.locator('#resultRows [data-saved]').first().click();await page.locator('#savedDialog').waitFor({state:'visible'});
+assert((await page.locator('#savedFields').innerText()).includes('这个字段是什么'),'最终保存数据与字段解释');
+await page.locator('#closeSaved').click();
 await page.locator('[data-view="whale"]').click();await page.waitForFunction(()=>!document.querySelector('#whaleConnection').textContent.includes('读取'));
 assert(await page.locator('#whaleUploadForm').isVisible(),'平台同步与已有链接上传入口');
 await page.locator('[data-view="settings"]').click();await page.locator('#settingsView').waitFor({state:'visible'});assert(await page.locator('#settingsForm').isVisible(),'采集设置入口');

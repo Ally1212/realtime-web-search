@@ -33,9 +33,12 @@ class ConsoleValidationTests(unittest.TestCase):
     def test_workbench_keeps_guided_form_and_advanced_capabilities(self):
         for text in ('新建采集任务', '选择数据源', '采集一次', '持续采集',
                      '高级参数：页数、地区、语言、预算', '平台同步', '数据集', '数据偏好',
-                     '导出 JSONL', '导出 CSV', '平台回执'):
+                     '导出数据文件（JSONL）', '导出 CSV', '平台回执'):
             self.assertIn(text, PAGE)
         self.assertNotIn('id="taskMode"', PAGE)
+        for raw_request_ui in ('查看原始请求 JSON', '下载此请求 JSON', '查看全部字段', 'id="jsonText"'):
+            self.assertNotIn(raw_request_ui, PAGE)
+        self.assertIn('查看已保存数据', PAGE)
         for internal in ('autoToggle', 'continuousSwitch', 'continuousSource', '自动采集'):
             self.assertNotIn(internal, PAGE)
 
@@ -381,6 +384,11 @@ class ConsoleIntegrationTests(unittest.TestCase):
             fast=json.loads(body);self.assertIsNone(fast['total']);self.assertTrue(fast['has_more']);self.assertEqual(len(fast['rows']),1)
             _, body=call('/api/serp/export?mode=requests&format=jsonl');self.assertEqual(len(body.splitlines()),4)
             _, body=call('/api/serp/export?source=google_trends&format=csv');self.assertIn(b'json',body);self.assertIn(b'20,000+',body)
+            _, body=call('/api/serp/export?source=google_web&format=csv&view=user')
+            self.assertIn('链接网站'.encode(),body)
+            self.assertIn('搜索地区'.encode(),body)
+            self.assertNotIn(b'json',body)
+            self.assertIn(b'https://example.org/a',body)
             with self.assertRaises(HTTPError) as e: call('/api/collector-settings',{'web_max_pages':99})
             self.assertEqual(e.exception.code,400)
         finally:

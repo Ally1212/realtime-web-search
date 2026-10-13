@@ -237,7 +237,7 @@ class ConsoleStore(SerpStore):
         else:
             # Trends are topics, including topics without any article link.
             tail = " FROM serp_requests r CROSS JOIN LATERAL jsonb_array_elements(CASE r.source WHEN 'google_news' THEN coalesce(r.response->'news_results','[]'::jsonb) WHEN 'google_trends' THEN coalesce(r.response->'trending_searches','[]'::jsonb) ELSE coalesce(r.response->'organic_results','[]'::jsonb) END) WITH ORDINALITY AS x(item,ordinal)"
-            projection = 'r.request_id id,r.query,r.source,r.completed_at,x.item data,x.ordinal'
+            projection = "r.request_id id,r.query,r.source,r.completed_at,x.item data,x.ordinal,r.response->'search_parameters' search_parameters"
             if f.get('q'):
                 clauses.append("(r.query ILIKE %s OR x.item->>'title' ILIKE %s OR x.item->>'keyword' ILIKE %s OR x.item->>'snippet' ILIKE %s OR x.item->>'link' ILIKE %s)")
                 params.extend(['%'+f['q']+'%']*5)
@@ -267,7 +267,7 @@ class ConsoleStore(SerpStore):
                             key = {'google_news': 'news_results', 'google_trends': 'trending_searches'}.get(request['source'], 'organic_results')
                             for ordinal, item in enumerate(request['response'].get(key) or [], 1):
                                 if seen >= offset:
-                                    rows.append(dict(id=request['id'], query=request['query'], source=request['source'], completed_at=request['completed_at'], data=item, ordinal=ordinal))
+                                    rows.append(dict(id=request['id'], query=request['query'], source=request['source'], completed_at=request['completed_at'], data=item, ordinal=ordinal, search_parameters=request['response'].get('search_parameters') or {}))
                                 seen += 1
                                 if len(rows) > limit:
                                     break

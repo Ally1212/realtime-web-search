@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .serp_console import ConsoleStore, NEWS_LOCALES, REGIONS
 from .serp_fields import GOOGLE_SOURCES
+from .serp_presentation import USER_COLUMNS, user_result_rows, csv_value
 
 
 def settings_payload(store, config):
@@ -92,6 +93,9 @@ def export(handler, store, f):
     fmt, mode = f.get('format', 'jsonl'), f.get('mode', 'results')
     if fmt not in ('csv', 'jsonl') or mode not in ('results', 'requests'):
         raise ValueError('导出仅支持 results/requests 和 csv/jsonl')
+    user_view = f.get('view') == 'user'
+    if user_view and (mode != 'results' or fmt != 'csv'):
+        raise ValueError('用户数据导出仅支持结果 CSV')
     rows = store.export(f, mode)
     # Start the query before sending headers so validation/database errors remain JSON errors.
     first = next(rows, None)
@@ -107,12 +111,17 @@ def export(handler, store, f):
             output = io.StringIO()
             writer = csv.writer(output)
             header = ['request_id', 'source', 'query', 'collected_at', 'title_or_keyword', 'link', 'snippet', 'publisher', 'position', 'feed_position', 'is_new_url', 'status', 'json']
-            writer.writerow(header)
+            writer.writerow(USER_COLUMNS if user_view else header)
             handler.wfile.write(output.getvalue().encode()); output.seek(0); output.truncate(0)
         def write(row):
             if fmt == 'jsonl':
                 handler.wfile.write((json.dumps(row, ensure_ascii=False, default=str)+'\n').encode())
             else:
+                if user_view:
+                    for record in user_result_rows(row):
+                        writer.writerow([csv_value(record[k]) for k in USER_COLUMNS])
+                    handler.wfile.write(output.getvalue().encode()); output.seek(0); output.truncate(0)
+                    return
                 item = row.get('data', {})
                 vals = [str(row['id']), row['source'], row['query'], str(row['completed_at']), item.get('title') or item.get('keyword'), item.get('link'), item.get('snippet'), item.get('publisher'), item.get('position'), item.get('feed_position'), item.get('is_new_url'), row.get('status'), json.dumps(row.get('response', item), ensure_ascii=False, default=str)]
                 # CSV is commonly opened in a spreadsheet; preserve values as text.
