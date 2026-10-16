@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import re
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 from xml.etree import ElementTree
@@ -9,7 +10,7 @@ from xml.etree import ElementTree
 from bs4 import BeautifulSoup
 
 from .discovery import SearchDiscovery, SearchResult
-from .serp_fields import SCHEMA_VERSION, public_serp_url, result_items
+from .serp_fields import SCHEMA_VERSION, public_serp_url, result_items, link_fields, field_status
 
 
 def text(node, name: str) -> str | None:
@@ -37,14 +38,32 @@ def article(link: str | None, title: str | None, *, snippet=None, publisher=None
     if not target or not public_serp_url(target):
         target = link
     wrapper = (urlsplit(target).hostname or '').lower() == 'news.google.com'
-    return dict(type='news', title=title, link=target, snippet=snippet,
+    row = dict(type='news', title=title, link=target, snippet=snippet,
                 source=publisher, publisher=publisher, publisher_url=publisher_url,
-                domain=urlsplit(target).hostname, date=published_at, date_raw=date_raw,
+                **link_fields(target), date=published_at, date_raw=date_raw,
                 thumbnail=thumbnail, position=None, rank_absolute=None,
                 feed_position=feed_position, redirect_link=link if target != link else None,
                 google_news_link=link if (urlsplit(link).hostname or '').lower() == 'news.google.com' else None,
                 publisher_link=None if wrapper else target,
-                link_status='google_news_redirect' if wrapper else 'publisher_url')
+                publisher_host=urlsplit(publisher_url).hostname if publisher_url else None,
+                original_link=link,
+                resolution_method='unresolved' if wrapper else 'offline_decode' if target != link else 'direct',
+                is_resolved=not wrapper)
+    row['link_status'] = 'google_news_redirect' if wrapper else 'publisher_url'
+    row['field_status'] = field_status(row, ('target_host','domain','url_scheme','url_path','publisher_host','resolution_method','is_resolved'))
+    if wrapper:
+        row['field_status']['publisher_link'] = 'unresolved_google_redirect'
+    return row
+
+
+def traffic_fields(value):
+    """A lower-bound marker is not an exact count or a Trends interest score."""
+    match = re.fullmatch(r'\s*([\d,]+(?:\.\d+)?)\s*([KMB]?)\s*(\+?)\s*', value or '', re.I)
+    if not match:
+        return dict(traffic_value=None, traffic_is_lower_bound=None, traffic_unit=None)
+    amount = float(match[1].replace(',', '')) * {'':1,'K':1000,'M':1000000,'B':1000000000}[match[2].upper()]
+    return dict(traffic_value=int(amount), traffic_is_lower_bound=bool(match[3]),
+                traffic_unit='upstream_approximate_search_volume')
 
 
 def parse_feed(content: bytes, source: str, query: str, locale: str) -> dict:
@@ -68,6 +87,11 @@ def parse_feed(content: bytes, source: str, query: str, locale: str) -> dict:
                           publisher_url=publisher.get('url') if publisher is not None else None,
                           published_at=date(raw_date),date_raw=raw_date,feed_position=position)
             if row:
+                row.update(guid=text(entry,'guid'), categories=[text(n,'label') or ''.join(n.itertext()).strip()
+                           for n in entry if n.tag.rsplit('}',1)[-1].lower()=='category'],
+                           requested_language=locale.split(':',1)[1] if ':' in locale else None,
+                           collection_method='google_news_rss')
+                row['field_status'].update(field_status({k:row[k] for k in ('guid','categories','requested_language','collection_method')}))
                 news.append(row)
         else:
             articles = []
@@ -76,19 +100,29 @@ def parse_feed(content: bytes, source: str, query: str, locale: str) -> dict:
                     continue
                 row = article(text(child,'news_item_url'),text(child,'news_item_title'),
                               snippet=text(child,'news_item_snippet'),publisher=text(child,'news_item_source'),
-                              thumbnail=text(child,'news_item_picture'))
+                              thumbnail=text(child,'news_item_picture'),
+                              published_at=date(text(child,'news_item_pubdate')),
+                              date_raw=text(child,'news_item_pubdate'))
                 if row:
                     articles.append(row)
-            topics.append(dict(keyword=title,feed_position=position,
+            topic = dict(keyword=title,feed_position=position,
                                approx_traffic=text(entry,'approx_traffic'),
                                published_at=date(raw_date),date_raw=raw_date,
                                picture=text(entry,'picture'),picture_source=text(entry,'picture_source'),
-                               articles=articles))
+                               articles=articles, geo=locale.split(':',1)[0].upper(),
+                               collection_method='google_trending_now_rss',
+                               started_at=text(entry,'started'),ended_at=text(entry,'ended'),
+                               **traffic_fields(text(entry,'approx_traffic')))
+            topic['field_status'] = field_status(topic, ('traffic_value','traffic_is_lower_bound','traffic_unit'))
+            topics.append(topic)
     return dict(schema_version=SCHEMA_VERSION,source=source,
+                field_schema_version='google-fields-v2',
                 search_parameters=dict(engine=source,q=query if source=='google_news' else None,
                                        locale=locale,gl=locale.split(':',1)[0].lower(),
                                        hl=locale.split(':',1)[1] if ':' in locale else None),
-                feed_metadata=dict(title=text(channel,'title'),last_build_date=text(channel,'lastbuilddate')),
+                feed_metadata=dict(title=text(channel,'title'),last_build_date=text(channel,'lastbuilddate'),
+                                   language=text(channel,'language'),description=text(channel,'description'),
+                                   link=text(channel,'link'),copyright=text(channel,'copyright')),
                 news_results=news,trending_searches=topics,
                 capabilities=dict(news_results='supported' if source=='google_news' else 'not_applicable',
                                   trending_searches='supported' if source=='google_trends' else 'not_applicable',
@@ -99,7 +133,7 @@ def parse_feed(content: bytes, source: str, query: str, locale: str) -> dict:
 def collect(discovery, store, serp, campaign_id: str, source: str, query: str,
             locale: str, ttl: int) -> tuple[list[SearchResult], list[str]]:
     """Persist before caching; shared leases/cache prevent per-campaign Trends storms."""
-    key = discovery._cache_key(source,query,locale+':google-feeds-v1')
+    key = discovery._cache_key(source,query,locale+':google-feeds-v2')
     cached = serp.cached_feed(key,campaign_id)
     if cached is not None:
         return rows(cached,source), []

@@ -1,5 +1,7 @@
 # Realtime Web Search
 
+2026-10-16：采集字段与导出已扩展，用户 CSV 为 44 列，支持保存上游实际返回的 AI 摘要等搜索模块；字段、部署和真实验证见 [字段扩展说明](docs/field-expansion-2026-10-16.md)。
+
 持续 Google 搜索与热点采集系统。Web 使用 OpenSERP，News 使用 Google News 搜索 RSS，Trends 使用 Google Trending Now RSS。默认保存结果及结构化元数据，统计跨来源历史去重后的新 URL；正文默认关闭，保留持久化开关。最新范围见 [三来源需求与项目检查](docs/google-sources-requirements-2026-10-10.md)。
 
 ## 当前 SERP 模式（2026-10-10）

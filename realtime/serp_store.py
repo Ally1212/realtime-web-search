@@ -313,4 +313,4 @@ class SerpStore:
         return {'schema_version': SCHEMA_VERSION, 'scope': 'google_web_news_trends', 'window': 'last_24_hours',
                 'requests': dict(requests), 'links': dict(urls), 'content_fetch_enabled': self.content_fetch_enabled(),
                 'sources': by_source,
-                'advanced_modules': {name: 'not_implemented' for name in MODULES}}
+                'advanced_modules': {name: 'upstream_passthrough' for name in MODULES}}
