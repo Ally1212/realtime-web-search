@@ -96,7 +96,7 @@ services:
       WEB_HOST: 0.0.0.0
       WEB_PORT: "8091"
       WHALE_ENABLED: ${WHALE_ENABLED:-false}
-      WHALE_BASE_URL: ${WHALE_BASE_URL:-http://20.169.21.11}
+      WHALE_BASE_URL: ${WHALE_BASE_URL:-https://www.marsyoo.com}
       WHALE_COLLECTOR_API_KEY: ${WHALE_COLLECTOR_API_KEY:-}
       WHALE_AGENT_ID: ${WHALE_AGENT_ID:-realtime-web-search-01}
       WHALE_DATASET_ID: ${WHALE_DATASET_ID:-web_raw}
@@ -226,7 +226,7 @@ services:
       DATABASE_URL: postgresql://realtime:${POSTGRES_PASSWORD:-realtime-local}@postgres:5432/realtime
       VALKEY_URL: redis://valkey:6379/0
       WHALE_ENABLED: ${WHALE_ENABLED:-false}
-      WHALE_BASE_URL: ${WHALE_BASE_URL:-http://20.169.21.11}
+      WHALE_BASE_URL: ${WHALE_BASE_URL:-https://www.marsyoo.com}
       WHALE_COLLECTOR_API_KEY: ${WHALE_COLLECTOR_API_KEY:-}
       WHALE_AGENT_ID: ${WHALE_AGENT_ID:-realtime-web-search-01}
       WHALE_DATASET_ID: ${WHALE_DATASET_ID:-web_raw}

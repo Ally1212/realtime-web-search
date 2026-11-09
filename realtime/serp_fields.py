@@ -8,12 +8,14 @@ import re
 
 SCHEMA_VERSION = "google-serp-v1"
 URL_NORMALIZATION_VERSION = "google-tracking-v2"
-GOOGLE_SOURCES = ("google_web", "google_news", "google_trends")
+GOOGLE_SOURCES = ("google_web", "google_news", "google_trends", "google_images")
 
 
 def result_items(response: dict) -> list[dict]:
     """Link-bearing entries, retaining references into the response for annotation."""
-    rows = list(response.get('organic_results') or []) + list(response.get('news_results') or [])
+    rows = (list(response.get('organic_results') or [])
+            + list(response.get('news_results') or [])
+            + list(response.get('image_results') or []))
     for topic in response.get('trending_searches') or []:
         rows.extend(topic.get('articles') or [])
     return [row for row in rows if isinstance(row, dict)]
@@ -39,17 +41,21 @@ def public_fields(value):
     """Exclude transport/credential material from nested upstream public fields."""
     if isinstance(value, dict):
         return {k: public_fields(v) for k, v in value.items()
-                if not re.search(r'token|password|cookie|authorization|secret|proxy|headers|raw_html', k, re.I)}
+                if not re.search(r'token|password|cookie|authorization|secret|proxy|headers|raw_html|api[_-]?key|credential', k, re.I)}
     if isinstance(value, list):
         return [public_fields(v) for v in value]
-    if isinstance(value, str) and value.startswith(('http://', 'https://')):
+    if isinstance(value, str) and value.lower().startswith(('http://', 'https://')):
         try:
             p = urlsplit(value)
             if p.username or p.password:
                 return None
-            query = urlencode([(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
-                               if not re.search(r'token|password|secret|api_key|authorization', k, re.I)])
-            return urlunsplit((p.scheme, p.netloc, p.path, query, p.fragment))
+            pairs = parse_qsl(p.query, keep_blank_values=True)
+            safe_pairs = [(k,v) for k,v in pairs if not re.search(r'token|password|secret|api[_-]?key|authorization|credential', k, re.I)]
+            fragment = '' if re.search(r'(?:^|[&?])(?:access[_-]?token|token|api[_-]?key|password|secret|authorization|credential)=', p.fragment, re.I) else p.fragment
+            # Redaction must not rewrite benign CDN signatures or URL encodings.
+            if len(safe_pairs) == len(pairs) and fragment == p.fragment:
+                return value
+            return urlunsplit((p.scheme, p.netloc, p.path, urlencode(safe_pairs), fragment))
         except ValueError:
             return None
     return value
@@ -139,6 +145,11 @@ def organic_result(item: dict, *, url: str, page: int) -> dict[str, Any]:
     return public_fields(row)
 
 
+def image_result(item: dict, *, page: int, rank: int) -> dict[str, Any]:
+    from .google_images import image_result as normalize_image
+    return normalize_image(item,page=page,rank=rank)
+
+
 def response_envelope(payload: dict, params: dict, results: list) -> dict[str, Any]:
     # Only public SERP fields cross this boundary: no headers, proxy config or bodies.
     features = payload.get("serp_features")
@@ -174,6 +185,15 @@ def response_envelope(payload: dict, params: dict, results: list) -> dict[str, A
         "module_status": statuses,
         "upstream_query": public_fields(payload.get('query')),
         "upstream_metadata": public_fields(payload.get('meta')),
+        # This is a filtered JSON projection, not the original HTTP bytes.
+        # Keep unrecognized public fields/result order without leaking transport
+        # credentials; filtering is explicit rather than claiming raw equality.
+        "upstream_response": public_fields(payload),
+        "upstream_response_capture": {
+            "representation": "filtered_parsed_json",
+            "verbatim_http_body_retained": False,
+            "field_filter": "public_fields",
+        },
         "capabilities": {"organic_results": "supported",
                          "serp_features": "upstream_passthrough" if observed else "disabled",
                          "article_content": "optional"},

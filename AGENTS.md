@@ -1,11 +1,19 @@
 # AGENTS.md
 
+## 工作台迁移完成（2026-10-22）
+
+- 新网页已部署至 `azureuser@20.150.145.162`（dev-server），目录 `/home/azureuser/projects/google-workbench`；目标公网入口 `http://20.150.145.162:8093`，用户明确不加登录保护。
+- 网页通过专用受限 SSH 隧道连接原 `20.106.103.139` 的 PostgreSQL/Valkey；worker、OpenSERP、代理和历史数据不迁移。原服务器仅新增回环数据 relay，未改五个原服务容器。
+- 公网 8093 已实测 HTTP 200，Playwright 从公网创建一次性 Google Web 任务 `86784589-c680-48ce-ac38-6fa857d332fd`，原 worker 完成 1 次真实非缓存搜索、9 条结果、8 个历史去重新 URL；浏览器显示结果并下载 CSV（44 列、9 行）。
+- 原 web 容器已移除，旧 8093 已无监听；原 base Compose、override、current-compose 和 systemd 已移除 web 启动项。原五个服务容器 ID 未变。回退文件在原项目 `state/workbench-old-web-backup-20261022`，不要使用旧冻结 Compose 恢复网页。
+- 自动采集、正文、Whale 领取和上传保持关闭。新工作台和隧道 systemd 均 enabled；迁移记录 `docs/workbench-migration-2026-10-22.md`。
+
 ## 生产服务器
 
 - 地址：`azureuser@20.106.103.139`（Azure 美国 VPS，主机名 `vm-ubuntu-4c8g-us`）
 - 登录：`ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes azureuser@20.106.103.139`
-- 唯一保留的部署：`/home/azureuser/projects/realtime-web-search-openserp`（compose 项目名 `realtime-web-search-openserp`；服务 openserp / proxy-relay / local-worker / web / postgres / valkey）
-- 网页入口：当前服务器 `.env` 指定 `WEB_PORT=8093`，Compose 绑定在服务器 `127.0.0.1:8093`；本机使用 `ssh -L 8093:127.0.0.1:8093 azureuser@20.106.103.139` 后访问 `http://127.0.0.1:8093`。
+- 采集与数据部署：`/home/azureuser/projects/realtime-web-search-openserp`（compose 项目名 `realtime-web-search-openserp`；服务 openserp / proxy-relay / local-worker / postgres / valkey）；另有仅回环监听的数据 relay。
+- 网页已迁移：直接访问 `http://20.150.145.162:8093`，旧服务器不再运行 web。
 - 私有代理白名单登记的是这台服务器的出口 IP（`20.106.103.139`）；不要从本机直连私有代理，必被防火墙拒绝。
 - 已清理：`/opt/projects/realtime-web-search`（旧版）、`openserp-pipeline`（重复栈）、`/opt/projects/realtime-web-search-main`（代码副本）已于 2026-09-30 删除，删除前备份在服务器 `~/realtime-web-search-OLD-backup-20260930.sql.gz` 和 `~/openserp-pipeline-backup-20260930.sql.gz`。
 
@@ -89,3 +97,148 @@
 - 18 槽完整阶段于 UTC 15:47:42.253803 完成：4,555.888635 秒新增 8,666，平均 6,847.75 / 小时，1,698 / 1,729 请求成功（98.21%），CAPTCHA 3 / HTTP429 21；纯来源、配置、queue_safe、worker 稳定性和正文基线均通过，成为当前已完成候选最高。独立只读数据库审计验证四段请求、新链接、逐小时数和完整时间连续一致，证据 measurement-audit-phase4-20261010T154840.json。两页组从该截止起算，实际 12 槽 / 2 页 / 90 秒 / 1–2 RPS，worker 00524e7f2cb51100217545414110ec76048353ed7f69725489746cc018c3c282；第二页实际请求仍待核验，不因配置正确即宣称已采到第二页。
 - UTC 15:55 队列确认每批一页时，待采第二页任务前有 1,665 个未访问查询。旧 s12-p2 段于 UTC 15:59:55.657586 关闭并完整保留：733.403783 秒、1,103 新链接、216/221 成功，只有第一页、不到一小时，不参与长时选优。新 s12-p2-b2 从该截止起算，每批连续两页，仍 12 槽 / 2 页 / 90 秒 / 1–2 RPS、计划 75 分钟；后续全部候选和截止不变。实际页数成功覆盖和批次参数纳入资格核验，历史仅补页数元数据、不改计数/边界；25 项相关测试及 6 项选优断言通过，五段独立数据库复算通过。证据 depth-batch-guard-applied.json、result-06-s12-p2.json、measurement-audit-phase4-20261010T160040.json；原档 depth-batch-guard/。新监督器 SHA256 b239268c8583bd3c805407ba119bbdbd216fe421f0d4569ac03e73f02ba01f01，MainPID 3648303；worker 852f9bf985f66e7e2fd4ea3cfb6f552ac640cf246758b00caccc3f13f25adf4b。
 - UTC 16:01:22 已确认新批次实际第二页：19 次成功、172 个自然结果项、83 个全历史去重新 URL；第一页 7 次成功、37 新 URL，另 6 次 CAPTCHA/429。只是启动快照，不加入排名或代替完整阶段；证据 phase4-batch2-startup-diagnostics-1601.json。正文及其他来源保持关闭。
+
+## 商业化验证版工作台（2026-10-27）
+
+- 正式地址 `https://searchflow.20-150-145-162.sslip.io/`，旧 HTTP 8093 自动跳转。新增搜索分析、默认暂停的关键词/竞品监测、客户 API 中心。查看公开历史数据无需登录；现有管理写操作改用管理密钥，避免绕过客户额度。
+- 新模块 `realtime/product.py`、`product_http.py`、`product_ui.py`；`SEARCHFLOW_PRODUCT_ENABLED=true` 时启动协调器。只初始化独立 `sf_*` 表；禁止借此运行历史正文/hash 迁移。
+- API 异步返回 202，要求 Bearer 客户密钥、Idempotency-Key；租户隔离、UTC 月额度、原子预留/成功结算、失败取消退款、60 次/分钟限流、平台每月 100,000 个 API 新任务上限。管理员手动采集与旧 worker 内部重试不在这个新任务上限内。
+- 客户私有 campaign 用 `serp_task_options.options.customer_private=true` 标记，公开任务、数据、导出、详情不可泄露；旧 `/api/local-campaigns`、`/api/campaigns`、`/api/stats`、`/metrics`、`/api/search`、免费 benchmark 已停用。不要直接恢复没有这些保护的旧公开路由。
+- 原站 `web.py` 与本地有既有差异，本次线上只加 serve 的 `start_service` 钩子，禁止以后直接用本地整文件覆盖。
+- 管理密钥在服务器 `state/private/searchflow-admin-key`；操作人本机 `~/.config/searchflow/` 有凭据与接入说明，禁止输出/提交完整密钥。验证空间月额度 10,000、并发 3；生产验收留下一个暂停监测。全站持续供给、正文、Whale领取与上传仍关闭，不得自行恢复。
+- 正式 API 一次非缓存搜索返回 5 条、成功扣 1 次；另一次原代理连接失败未扣次，预留均已释放。代理存在偶发故障，未验证长期成功率或 SLA。未配置 Serper，不得宣称完整商业后端已可用。
+- 需求、边界、部署备份与验收见 `docs/searchflow-product-upgrade-2026-10-27.md`。旧 worker 与采集机五服务未重建；共享 Nginx 仅新增本站虚拟主机，本网站 gateway 通过 Docker bridge 私有监听接入 HTTPS。
+
+## 深度搜索分析（2026-10-27）
+
+- 搜索分析改为“数据总览 / 排名与竞品”：全筛选窗口汇总、每日趋势、来源/字段质量、域名/高频 URL、可搜索分页关键词；同条件最多 1,000 快照的多域名、排名波动、Top 3/10、页面留存/重返、标题摘要与相邻变化，以及 JSON/CSV。
+- 新 `analytics.py` / `analytics_ui.py`。仅维护可重建 `sf_analytics_requests`、`sf_analytics_items`、`sf_analytics_reports`；原始大响应不适合每次页面读取时全量解压。协调器每轮增量 100 条；只读已有数据，不发起采集。汇总按分析数据版本和 UTC 边界复用，关键词翻页不重新扫描所有链接。冷筛选约 5–18 秒，已预计算的正式总览约 1–2 秒。
+- 已投影 39,830 个公开请求、810,068 条分析明细；2 个客户私有请求未投影。窗口链接 809,788 条、去重 522,676；News 包装链接未解析，不当成媒体域名。29,601 个网页查询词仅 1,247 个有重复成功请求，不能将全部词宣称为排名趋势。
+- 452 测试，446 通过、6 跳过；正式 HTTPS、分页、报告/每日 CSV、深度竞品与手机布局验收。未覆盖 `web.py`，只重启 Web；原始请求 39,832、正文 332,768 以及采集/正文/Whale/监测关闭状态均未改变。详见 `docs/searchflow-analytics-expansion-2026-10-27.md`。
+
+## 非商业化工具 UI 优化（2026-10-27）
+
+- 最新用户要求：不增加商业化；Google 来源用官方标识，品牌、UI 与交互更专业。已上线非商业化研究工具界面；隐藏账户分配入口，保留原 API 接入和权限能力，不新增付费/套餐/销售流程。
+- 新 `workbench_ui.py`、`ui_icons.py`，在 `product_ui.extend()` 中组合。Google 产品标识仅用于来源；通用操作/导航使用 Google Material 官方 SVG，本地内嵌且附许可与素材清单。新增全局搜索、来源入口、结果密度、复制、详情侧栏、手机抽屉导航和键盘支持；分析增加请求取消、已应用/待应用条件、错误重试和报告目录。
+- 发布备份 `state/ui-refinement-20261027-064850`；仅部署四个 UI 模块与许可，只重启 Web。生产 `web.py` / `serp_page.py` 哈希不变。452 项测试（446 通过、6 跳过），正式桌面/320px/390px、图标、分析/排名、无脚本错误验收通过。
+- 原始请求 39,832、正文 332,768 及全部采集/正文/Whale/监测关闭状态不变；没有新搜索与旧库迁移，未启动本机 Docker。详见 `docs/searchflow-ui-refinement-2026-10-27.md`。
+
+## 全功能测试（2026-10-27）
+
+- 本轮独立 PostgreSQL / Redis 下完整 452 项通过、0 跳过；本地浏览器 44 组、正式浏览器 9 组通过，正式 API/数据审核 62 项。详细证据 `docs/searchflow-full-test-2026-10-27.md`。
+- 正式新增 Web/News/Trends 各 1 次非缓存私有 API 搜索：9 条 / 47 条 / 10 话题（28 报道），用量最终 4、reserved=0；公开历史及分析明细未改变。原始请求现 39,835，pages 332,768。
+- 三来源各 1 条已有公开链接真实上传，均一次 queued；Whale queued 总计 9。Collector Key 读取这三条文档仍 401，不能把回执称作最终入库。持续采集/正文/上传/领取/监测最终均关闭。
+- 仅更新 `workbench_ui.py` 并重启 Web，修复图表切指标后键盘焦点丢失和 API 结果数量说明；`web.py` / `serp_page.py` 哈希不变，备份 `state/fullqa-ui-fix-20261027/workbench_ui.py.before`。
+- 已知数据出口限制：API 七列 Trends CSV 只含话题，不展开相关报道，真实样本 10 行 / 0 链接；JSONL 保留 28 报道，网页 44 列 CSV 可展开。此项未修复，后续勿宣称所有导出等价完整。
+- 本轮本机独立 HTTP / PostgreSQL / Redis 均已停止，未启动本机 Docker；未运行旧迁移、未重启 worker、未提交 Git。
+
+## 前置访问 Key（2026-10-27，最新授权）
+
+- 用户明确要求网站先输入随机 Key，最新要求覆盖历史“公开无登录”。整个 HTTPS 工作台及 API 已通过专属 Nginx auth_request 保护；未认证浏览器跳登录页、数据/API 返回 401。不得自行恢复公开访问。
+- 新 `realtime/access_gate.py`，标准库独立服务 `google-workbench-access-1`，loopback 18095；模板 `deploy/access-gateway.nginx.conf`。仅新增此服务、reload 专属 gateway、更新退出入口并重启 Web；共享 HTTPS Nginx与采集 worker 未改。
+- 本机 `~/.config/searchflow/site-access-key` / `网站访问说明.md` 为访问凭据，权限 600，禁止打印/提交。生产 `private/site-access.json` 仅摘要与 Cookie 签名秘密；Key 与 operator/customer Key 分开。
+- Cookie 12 小时、Secure / HttpOnly / SameSite=Strict；左侧退出清 Cookie。API 需额外 `X-SearchFlow-Access-Key` 请求头，原 Authorization Bearer 保留；只有旧客户 Key 仍被前置层拒绝。
+- 本轮鉴权 4 单测通过、32 项线上验证、5 项浏览器验证；公网 18093/18094/18095 不可直连。持续采集/正文/上传/领取仍关闭。备份 `state/site-access-20261027`，详细 `docs/searchflow-site-access-2026-10-27.md`。
+
+## 网站可靠性优化（2026-11-02）
+
+- 已上线首页轻量汇总 `/api/product/analytics/summary`：只计算四个首页指标，保留私有隔离、UTC 边界、投影状态、生成时间和最多 60 秒缓存；不再用完整 overview 冷计算承担首页数字。
+- 任务/结果/首页汇总增加读取状态、旧数据标识、手动重试和 20/30 秒等待上限；写请求超时不自动重放。结果导出锁定已成功应用的筛选，Trends API 七列 CSV 补齐话题下全部报道行。
+- 生产仅发布 `analytics.py`、`product_http.py`、`workbench_ui.py`、`reliability_ui.py` 并重启 Web；`web.py`、`serp_page.py` 未覆盖且哈希不变。回滚备份在 Web 服务器 `state/reliability-20261102/backup/`，证据和测试记录在本地 `state/reliability-20261102/`。
+- 隔离回归 463 通过 / 6 跳过 / 0 失败；生产轻量汇总冷测量 all 5.175s、Web 1.509s、News 2.290s、Trends 0.042s；线上首页、任务、结果、分页、未登录 401、390px、既有 Trends API 导出 10 话题 + 28 报道均验证。
+- 发布前后原始请求 39,835、pages 332,768、持续采集/正文/Whale 上传/领取 false、启用监测 0、投影 39,830 均不变；未创建新搜索、未运行迁移、未重启采集机容器。详见 `docs/searchflow-reliability-improvement-2026-11-02.md`。
+
+## 数据层优化（2026-11-06）
+
+- 最新用户方向：先做数据获取、完整保存、去重和交付，暂不新增分析功能。已上线标准旧库接口 `/v1/google/legacy-data` 及 request 详情，沿用访问门、客户 Bearer 和公开/私有 SQL 隔离；明确标记旧库来源，不冒充 Whale 读回。
+- 新 `google_data.py` / `google_data_export.py`：保留独立 occurrence、Trends 话题/报道和源字段；操作员可在单个只读快照导出 JSONL/CSV/occurrence CSV 与校验清单，截断明确标记、失败不发布、复制后可校验。大于 CSV 默认 128 KiB 的真实响应已修复，单请求限制 64 MiB。
+- News 全量 551,494 条 RSS 原日期与保存日期均匹配；旧映射要求历史缺失的 collection_method 导致错误显示未知，现已按实际日期依据修复。RSS 匹配不等于出版者网页独立核验；文章真实链接仍大量未解析，Trends 数值历史曲线仍未覆盖。
+- 采集机实际冻结路径 `state/field-expansion-20261016/code-r2/local-worker/realtime` 仅应用本轮时间记录/重复 URL 首次贡献/字段过滤补丁及 helper；只重启 local-worker，其他四服务未重建。Web 仅更新数据模块及字段过滤，只重启 web/prd，未覆盖 web.py/serp_page.py，未运行任何数据库迁移。两机回退备份 `state/data-optimization-20261106/backup-{web,worker}`。
+- 完整隔离回归最终 822 通过、0 跳过；冻结采集代码 94 项通过；真实三来源样本 API/导出逐 request 一致、JSONL/CSV/hash 校验通过，实际客户 Key 路由三来源 200、无 Key 401。生产原始请求 39,835、pages 332,768、公开投影 39,830、Whale queued 9 均不变，持续采集/正文/上传/领取 false，启用监测 0。
+- 用户已授权在 Marsyoo 网站创建 Consumer 只读 Key；ego lite 空间 25 已 handOff 等待用户登录，尚未创建 Key或真实读回。正式 Whale schema/终态、新采集端到端、七天与百万行验收仍未完成。详见 `docs/google-data-optimization-2026-11-06.md`，证据 `state/google-data-optimization-20261106/`。
+
+## Marsyoo 单次完整快照读回（2026-11-06，覆盖上节等待状态）
+
+- 已创建专用 `SearchFlow Google Readback` Consumer 应用并收窄数据集、平台、字段和速率；关闭额外功能。Key 位于本机 `~/.config/searchflow/whale-consumer-read-key` 与 Web 服务器 `state/private/whale-consumer-read-key`，600，禁止输出或提交。
+- 用户明确授权仅上传一条已有公开 Web 请求（7 条结果）。仅一次真实 bulk，终态 accepted；固定版本完整 platform_payload、原响应、摘要与 7/7 结果均一致。平台质量标记 low，必须保留此限制。未开启自动上传或新搜索。
+- 旧 9 条版本均可读，但摘要仅 8 条匹配、1 条待对账，旧版本均无完整 platform_payload，旧回执均 unknown，不自动改写旧本地 queued。新样本不冒充正式全需求 ReaderAdmission 或全部来源交付验收。
+- 新只读 `/v1/google/legacy-delivery` 与历史页面显示缓存证明，沿用鉴权及私有隔离；默认 24 小时标记过期。采集机仅补 HTTPS 端点与拒绝重定向，配置 `state/private/whale-api-endpoint.json`；Web/prd 与 local-worker 重启，其他四服务未重建，未运行旧迁移。
+- 完整回归 837 通过、0 跳过；浏览器接口 200/匿名 401，完整样本 7/7。原始请求 39,835、正文 332,768、投影 39,830、旧队列 9 queued 口径保留，所有自动开关关闭。两机备份 `state/marsyoo-readback-20261106/backup-{web,worker}`，Web 再次发布 `backup-web-r2`；详见 `docs/marsyoo-google-readback-2026-11-06.md`。
+
+## 同条快照质量修正（2026-11-06，覆盖上节本条 low 状态）
+
+- 用户授权解决质量标记后，平台管理后台明确显示 v3 / 40 分 / `informativeness:low` / 文本 0 字符；未发现受支持的质量 profile 配置入口，未修改共享 Dataset 或全平台规则。
+- 新增显式 `with_search_snapshot_text()`，仅将已有真实标题、链接、摘要、排名等生成标明“搜索结果快照、非出版者正文”的可检索文本；缺失字段不造值，原始 platform_payload 和源摘要不变，事件键使用独立稳定后缀。同条文档仅一次修正提交，accepted，新固定版本 `ver_4a29e4654356820e56abd6407398d5b0` 已为 normal / 100，2,358 字符，7/7 原结果与文本均逐字段/逐字读回一致；原版本仍可读。此结果不等于全平台专用评分规则已实施。
+- Web 仅更新纯 helper 与证明缓存，不重启任何服务；备份 `state/marsyoo-readback-20261106/backup-quality-text`。正式状态已显示 normal；839 项测试全通过，原始请求/正文/投影/旧上传队列与全部暂停状态不变。历史 1 条摘要不一致仍待对账，勿宣称全部需求完成。详见同一读回文档的后续授权章节。
+
+## 工作台访问 Key（用户明确要求本地记录）
+
+- 网站：`https://searchflow.20-150-145-162.sslip.io/`
+- 访问 Key：保存在本机 `~/.config/searchflow/site-access-key`，不得提交凭据。
+- 用户明确授权将此凭据记录于本项目 AGENTS.md；仅用于该工作台访问验证，不在回复、日志、截图中展示，不提交到 Git 或对外分享。
+
+
+## Google Images 数据来源上线（2026-11-06）
+
+- 最新用户授权已实现图片手动采集、保存、任务/数据集入口、分页、CSV/JSONL、客户异步 API 与规范化历史读取。实际入口 `/google/image`，每词首批最多请求 20 条，图片并发 1；不下载原图，不做 Lens/OCR 或新增图片分析。缩略图只在上游提供时按需预览，真实本轮样本均未提供。
+- 生产 worker 图片分支使用新 `google_images.py` helper 与 discovery 调度，保留基础 `free_google.py` 原版本。保存每次出现、图片/来源页双 URL、原始响应与未知字段；图片 URL 精确保留参数/编码，不用网页规则合并 CDN 变体；重复出现只计一次首次贡献。旧分析排除 images，防止当成零条 Web 结果。
+- 网站向导真实首轮三词请求有 2 次成功、1 次 Google 429；仅对失败词做一次手动重试成功，公开保存 60 条（55 条有宽高，缩略图 0）。客户 API 另 1 次私有成功、20 条，用量增量 1、reserved=0；幂等重放不重复扣次，公开列表与历史不泄露私有数据。总新增 5 次请求 / 4 成功 / 1 次 429 / 80 条结果记录，不能冒充 80 个唯一图片或文件，未验证长期成功率。
+- 网页 CSV 50 列含图片原始记录 JSON，60 行与 JSONL 逐条一致；图片客户 CSV 14 列、20 行与 JSONL 一致，旧客户三来源七列不变。实际 25+25+10 分页、桌面/390px 与规范化图片历史已核验；完整回归 846 项全通过，最终冻结 worker 43 项 / Web 42 项通过。
+- 图片不进入旧 Whale 协议：图片任务自动入队明确拒绝，显式图片上传不支持，“上传全部”排除图片。未新增任何平台写入，不得把旧 Web 快照的读回验收算作图片交付。
+- 最终 requests 39,840（旧三来源 39,835 不变、图片 5），pages 332,768、原公开分析投影 39,830、旧 outbox 9 queued；continuous/body/uploads/claims false，活动图片任务与启用监测均 0。未运行历史迁移或重建其他四采集服务，web.py/serp_page.py 哈希未变。
+- 两机备份在各自项目 `state/google-images-implementation-20261106/backup-{worker,web}` 及 `-r2`、`-r3`；不要重跑已执行发布脚本。完整功能、限制和证据见 `docs/google-images-implementation-2026-11-06.md`。浏览器任务完成只保留结果页；本机已有数据库/Redis 属其他任务，未关闭。
+
+## 内网部署架构修正（2026-11-09，覆盖原网页整体位于应用机的部署记录）
+
+- 页面、访问门和反代仍在应用机 20.150.145.162 / 10.0.0.7；原 web/prd 已停并保留回滚。应用机仅发布线上导出的静态页面，后续 UI 更新需同步 `static/`，不能只改后台 Python。旧公网数据隧道 disabled。
+- 网站业务后台已在采集机 20.106.103.139 / 10.0.0.11 的独立 `/home/azureuser/projects/google-workbench-backend`；Compose/systemd 名 google-workbench-backend，内网入口 18097 仅 allow 10.0.0.7，后台 loopback 18093/18096。不要把业务后台迁回应用机。
+- 后台和 worker 将 Whale HTTPS 域名固定解析到 10.0.0.10:443，保留证书校验，无公网备用；worker 仅为固化 HTTPS/hosts 单独重建，未改变冻结代码或重建其他四采集服务。原本机数据卷/队列保留，全部自动开关仍关闭。
+- Writer 身份与 dry-run 通过；本轮查询历史固定版本终态 accepted。独立 Consumer 当前 402 credit_insufficient，未完成本轮读回/新提交，不充值或扩大旧单次上传授权。数据基线仍 39,840 请求、332,768 pages、39,830 公开投影、9 旧 outbox。
+- 两机原项目 `state/architecture-20261109/backup/` 与 `rollback.sh` 可回滚；详见 `docs/deployment-architecture-audit-2026-11-09.md`。禁止直接用历史无鉴权配置或全量本地 web.py 覆盖生产。
+
+
+## 全功能测试与三十分钟采样（2026-11-09）
+
+- 用户本轮授权先小样本、再采集 30 分钟，已完成并停止；此授权不延续为无限持续采集。正式 1800.008 秒，32 个任务、51 次非缓存尝试/40 成功、318 个首次贡献 URL，缓存复用 4 次另计；停止与排空计数一致。
+- 最终隔离 1027 项通过、333 子测试通过、无跳过；新增可复用回归/采样/看护/报告脚本。News 包装链接仍未解析，Web 本轮成功率 75%，Images 80%，不能称长期稳定或最大产能。
+- 私有来源缓存可见性与同条件读取合并已本地修复并回归，尚未部署；两机 SSH 认证前断开。没有覆盖冻结包、重启生产服务或运行旧迁移。
+- Consumer 既有 Web 固定版本本轮经 ego 公网 HTTPS 再读回 200，7/7 原结果及内容/原始哈希一致、normal；覆盖此前额度不足的当前读取状态，但不证明采集机私网复验、新上传或正式 ReaderAdmission。未新增平台写入。
+- 最终持续供给/正文/上传/领取 false，启用监测 0，reserved=0。本轮 QA 监测保留暂停，临时客户 Key 已撤销。证据 state/fullqa-20261109，报告 docs/searchflow-full-test-2026-11-09.md。
+
+
+## 总需求字段适配（2026-11-09，尚未发布）
+
+- 已按总 PRD 5.1～5.6/GO-DAT/GO-ID/GO-ING 整理17域字段矩阵；docs/google-prd-field-adaptation-2026-11-09.md 与对应 field-matrix JSON 为本轮记录，不把273项总需求改判完成。
+- 新 google_field_adaptation.py 只从已存数据生成版本化字段；legacy-data list/detail 与操作员导出显式 field_contract=prd-v1，默认旧合同/旧 Whale 事件不变。新增时间依据、请求/返回/保存量、缓存三态、语言、item/feature/子项和缺失原因；普通链接不自动当引用，PAA错误文本不当答案。
+- 51请求/40成功/399链接出现/10话题的既有样本离线复算：26富结果（23 AI摘要/3 PAA），59普通模块链接、12子项，无明确引用或独立答案字段。设备、源观测时间、缓存年龄等仍未知；News真链接、数值Trends及授权资产域仍未覆盖。
+- 最终隔离1046项、333子测试通过，0跳过；临时PG/Redis清理。旧固定Web observation hash一致；嵌套查询条件补同样脱敏。未发新搜索、未平台写入、未迁移或重启生产；SSH短暂hostname成功后后续仍认证前断开，补丁尚未发布。禁止将本地全文件整包覆盖冻结生产；发布需核对实际差异并保留回退。
+- 本轮证据 state/prd-field-adaptation-20261109/；增强字段当前只在显式JSON/请求CSV的record_json，不改网页50列或客户7/14列，也未新增可索引数据库列。
+
+## 采集可靠性与字段版本上线（2026-11-09）
+
+- 已发布私有来源缓存隔离、结果读取单飞、显式 `field_contract=prd-v1` 及嵌套参数过滤；单次任务不再把未到重试时间的空批次误判完成。新手动单次任务默认从首次执行起最多 3600 秒，超时 `retry_window_exhausted`；图片临时失败可等待重试。旧客户 API 独立 15 分钟期限保留。任务详情和 `/api/serp/tasks/{id}/progress` 显示等待/恢复，私有任务 404。
+- 新手动创建支持可选 `Idempotency-Key`，事务锁避免并发重复，参数冲突拒绝；网页响应未确认时保留请求体摘要与随机标识。真实浏览器在服务端提交后模拟丢失响应，重试复用同一 paused 任务、冲突 400，验证任务已停止且没有新搜索。后台最后三文件在长测结束后发布，仅重启后台 web/prd，worker 未再次重启。
+- 完整本地隔离回归 1058 passed、333 subtests、0 skipped；冻结采集包 24 passed/4 subtests、后台字段包 23 passed。四来源小样本 4/4 成功，Web4/News54/Images20/Trends10话题30报道，PRD 导出 4 请求108 occurrence，API/JSONL一致，跨机复制后校验通过；新增87 URL。
+- 30 分钟正式采样1800.004317秒、34任务：55次真实保存请求52成功（94.55%），另1成功缓存关联；53个查询/来源/页码组合52曾成功，两次超时约73.300/70.198秒恢复，一次403冷却中按测试截止停止，新增141个历史去重URL。不是最大产能或与前测的同条件对照。两次SQL快照无晚到新增，最终请求39960、正文332768、公开分析投影39933、Whale旧outbox9；自动采集/正文/上传/领取false、启用监测0、活动手动任务0。不得据本轮自动恢复持续采集。
+- 仅覆盖实际冻结包的本轮补丁；`web.py/serp_page.py/free_google.py/config.py/campaign_store.py` 哈希保留；原OpenSERP/proxy-relay/PostgreSQL/Valkey未重启。采集机备份 `/home/azureuser/projects/google-workbench-backend/state/reliability-20261109/`，安装/回退脚本 `/home/azureuser/reliability-rollout-20261109/install_patch.py`；应用机静态备份 `state/reliability-20261109/backup/index.html`。回退先恢复静态页再恢复相关后台/worker文件，禁止旧正文/hash迁移。
+- News本轮226/226仍是Google包装链接；数值Trends、其他外部资产和全来源正式ReaderAdmission未完成，源未给的字段继续未知。详见 `docs/searchflow-reliability-optimization-2026-11-09.md`、`state/reliability-rollout-20261109/`。
+
+## 最新执行顺序（2026-11-09，采集与字段适配本轮）
+
+- 用户最新要求：先完成全部功能开发与测试，最后统一更新部署。本轮后续保持本地开发/隔离测试；不再发布、重启服务或追加生产采集测试，不能因为已有 SSH 通道或测试通过就自行继续部署。
+- News 真链接核心适配在此次顺序调整前已发布，真实一条 RSS 请求解析 55/55；暖缓存任务完成且未新增解析 HTTP 请求。后续本地兼容性保护未发布，不能把本地增强和生产版本混为一谈。不自行回滚之前已发布内容。
+- 本地候选及证据在 `state/news-link-adaptation-20261109/`；`predeployment-manifest.json` 明确 deployment_hold=true。完整整理开发、测试、真实验证与外部依赖后，再进入最后统一部署阶段。
+
+## 完整数据 API 候选（2026-11-09，等待最后统一部署）
+
+- 已补现有数据功能的客户接口：本人/公开/可访问历史、请求及结果/话题/富结果详情、本人任务增强字段、74 列完整 CSV/JSONL、带校验清单的只读快照 ZIP、字段目录、抽样质量、公开分析 JSON/CSV、任务分页、进度和暂停/继续、原子批量搜索。原 7/14 列导出保留；客户权限不扩展为管理权限。主 OpenAPI 包含 54 条路径并记录已有管理/Whale 接口；未连接的数据域仍不可用。
+- 完整隔离回归 1087 passed、333 subtests、0 skipped；实际生产冻结组合 53 passed、7 subtests。临时发布期间四来源已有客户任务的完整 JSON/JSONL/CSV 逐字段一致，ZIP 样本校验通过，权限负例和分析/分页/进度接口验证通过。没有新搜索或平台写入；成功批量提交及暂停/继续的写入验收为隔离测试，不冒充生产采集验收。
+- 本轮未先遵守末尾发布 hold，曾提前发布八个 API 文件及三个性能索引；发现后已全部撤回，生产源码哈希恢复本轮前状态，之前 News 真链接发布保留。当前新增 API 不在线，`state/customer-api-20261109/predeployment-manifest.json` 明确 deployment_hold=true；不得自动重放有 marker 的旧安装脚本。
+- 生产最终请求39961、pages332768、公开分析39934、旧 outbox9，与本轮开始一致；continuous/body/uploads/claims false，启用监测、活动客户任务、在途 lease 均0。只曾重启专属后台 web/prd，采集机原五服务容器ID未变；未改应用机静态页面、web.py、serp_page.py、serp_console.py、google_http.py，未运行旧迁移。
+- 接入说明 `docs/customer-data-api-2026-11-09.md`；证据/候选/补丁清单在 `state/customer-api-20261109/`。远端回退备份在采集机独立后台 `state/customer-api-20261109/backup/`，`rolled_back.json` 记录已恢复；完整 CSV 大 JSON 单元格需适当解析上限，机器交付优先 JSONL/ZIP。全库模糊查询长期性能、七天/百万行和未配置来源不因本轮补接口而视为完成。
+
+- 范围随后已由用户明确：本轮先完成 **News 真链接全链路**；不扩展成所有 PRD 数据域同时开发。最新本地全量 1087 passed / 333 subtests / 0 skipped，相关功能 95 passed / 11 subtests。部署冻结继续有效；本地候选与生产较早核心版本分开登记，报告 `docs/google-news-link-adaptation-2026-11-09.md`。
+
+## 最终统一发布授权（2026-11-09）
+
+- 用户现已明确授权提交、推送并统一更新网站，完成后小范围数据自测；覆盖此前 deployment hold。仍保持持续采集、正文、自动上传和领取关闭；仅部署已复核的冻结补丁，不运行旧迁移。

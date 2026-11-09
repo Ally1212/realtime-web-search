@@ -144,11 +144,29 @@ class Handler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8", status,
         )
 
+    def _do_google_mutation(self, method: str) -> None:
+        path = urlparse(self.path).path
+        if path == "/v1/google" or path.startswith("/v1/google/"):
+            from .google_http import handle
+            handle(self, method)
+        else:
+            self.send_json({"code": "unsupported", "error": "Method not supported"}, 405)
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        self._do_google_mutation("PATCH")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._do_google_mutation("DELETE")
+
     def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if path == "/v1/google" or path.startswith("/v1/google/"):
+            from .google_http import handle
+            handle(self, "POST")
+            return
         from .serp_console_http import post
         if post(self):
             return
-        path = urlparse(self.path).path
         if path == '/api/collector-settings':
             try:
                 length = int(self.headers.get('Content-Length', '0'))
@@ -428,6 +446,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve() -> None:
+    from .product import start_service
+    start_service(Handler.config, Handler.queue)
     host = os.getenv("WEB_HOST", "127.0.0.1")
     port = int(os.getenv("WEB_PORT", "8091"))
     print(f"Realtime web search listening on http://{host}:{port}", flush=True)

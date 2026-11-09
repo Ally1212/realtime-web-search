@@ -34,7 +34,7 @@ def sources(value):
 
 
 def options(value):
-    if not isinstance(value, dict) or set(value) - {'web_region', 'web_language', 'news_locale', 'trends_geo', 'web_pages'}:
+    if not isinstance(value, dict) or set(value) - {'web_region', 'web_language', 'news_locale', 'trends_geo', 'web_pages', 'retry_window_seconds'}:
         raise ValueError('无效任务参数')
     out = dict(value)
     for key in ('web_region', 'trends_geo'):
@@ -46,6 +46,8 @@ def options(value):
         raise ValueError('News edition 不支持')
     if 'web_pages' in out and (type(out['web_pages']) is not int or not 1 <= out['web_pages'] <= 11):
         raise ValueError('web_pages 必须为 1–11 的整数')
+    if 'retry_window_seconds' in out and (type(out['retry_window_seconds']) is not int or not 60 <= out['retry_window_seconds'] <= 14400):
+        raise ValueError('retry_window_seconds 必须为 60–14400 的整数')
     return out
 
 
@@ -122,18 +124,52 @@ class ConsoleStore(SerpStore):
             row = db.execute("SELECT count(*) requests,count(*) FILTER(WHERE s.classification IN ('results','empty')) successful,count(*) FILTER(WHERE cr.reused) cached FROM serp_campaign_requests cr JOIN serp_requests s USING(request_id) WHERE cr.campaign_id=%s", (str(UUID(cid)),)).fetchone()
         return dict(row)
 
+    def collection_progress(self, cid, *, public_only=True):
+        """Bounded metadata snapshot; no response decompression or collection."""
+        from .collection_reliability import summarize
+        with self.store.connect() as db:
+            db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+            row = db.execute("SELECT c.id,c.query,c.aliases,c.sources,c.status,o.options,o.stop_reason FROM campaigns c JOIN serp_task_options o ON o.campaign_id=c.id WHERE c.id=%s" + (" AND coalesce(o.options->>'customer_private','false')<>'true'" if public_only else ''), (str(UUID(cid)),)).fetchone()
+            if not row:
+                return None
+            requests = db.execute("SELECT r.request_id,r.source,r.query,r.page,r.classification,r.completed_at,cr.reused FROM serp_campaign_requests cr JOIN serp_requests r USING(request_id) WHERE cr.campaign_id=%s ORDER BY r.completed_at,r.request_id LIMIT 10001", (str(UUID(cid)),)).fetchall()
+            frontier = db.execute("SELECT query,state,next_page,max_page,next_run_at,lease_expires_at,last_error FROM google_page_frontier WHERE campaign_id=%s AND enabled", (str(UUID(cid)),)).fetchall()
+        return summarize(row, requests[:10000], frontier, truncated=len(requests)>10000)
+
+    def once_retry_expired(self, cid):
+        """Start a finite window on first execution, never on draft creation."""
+        with self.store.connect() as db:
+            row = db.execute("SELECT o.options,o.mode,c.status FROM serp_task_options o JOIN campaigns c ON c.id=o.campaign_id WHERE campaign_id=%s FOR UPDATE OF o,c", (str(UUID(cid)),)).fetchone()
+            if not row or row['mode'] != 'once' or row['status'] != 'active':
+                return False
+            window = row['options'].get('retry_window_seconds')
+            if not window:
+                return False  # Existing API jobs keep their own deadline policy.
+            opts = row['options']
+            if not opts.get('_retry_started_at'):
+                opts['_retry_started_at'] = datetime.now(timezone.utc).isoformat()
+                db.execute('UPDATE serp_task_options SET options=%s WHERE campaign_id=%s', (Jsonb(opts),cid))
+                return False
+            if (datetime.now(timezone.utc)-datetime.fromisoformat(opts['_retry_started_at'])).total_seconds() < window:
+                return False
+            db.execute("UPDATE campaigns SET status='failed',last_error='retry_window_exhausted',updated_at=now() WHERE id=%s AND status='active'", (cid,))
+            db.execute("UPDATE serp_task_options SET stop_reason='retry_window_exhausted' WHERE campaign_id=%s", (cid,))
+            return True
+
     def runnable(self, cid):
         with self.store.connect() as db:
             row = db.execute("SELECT c.status,EXISTS(SELECT 1 FROM serp_supply_campaigns s WHERE s.campaign_id=c.id) automatic, (SELECT runtime_config FROM serp_collector_settings WHERE id=true) cfg FROM campaigns c WHERE c.id=%s", (str(UUID(cid)),)).fetchone()
         return bool(row and row['status'] == 'active' and (not row['automatic'] or row['cfg'].get('continuous_enabled', True)))
 
-    def create_task(self, payload, config):
+    def create_task(self, payload, config, *, idempotency_key=None):
         if not isinstance(payload, dict) or set(payload) - {'query', 'keywords', 'sources', 'options', 'start', 'upload_to_whale', 'mode', 'max_successful_searches'}:
             raise ValueError('无效任务字段')
         upload = payload.get('upload_to_whale',False)
         if type(upload) is not bool: raise ValueError('upload_to_whale 必须为布尔值')
         if upload and not getattr(config,'whale_serp_enabled',False): raise ValueError('Whale 链接对接尚未启用')
         selected = sources(payload.get('sources', ['google_web']))
+        if upload and 'google_images' in selected:
+            raise ValueError('图片任务暂不支持自动平台上传；可保存和导出完整数据')
         words = payload.get('keywords', [payload.get('query', '')])
         if not isinstance(words, list) or len(words) > 50 or any(not isinstance(x, str) or len(x) > 300 for x in words):
             raise ValueError('每个任务最多 50 个关键词，每条最多 300 字符')
@@ -154,13 +190,30 @@ class ConsoleStore(SerpStore):
         opts = options(payload.get('options', {}))
         if mode == 'once' and 'google_web' in selected and 'web_pages' not in opts:
             opts['web_pages'] = config.google_web_max_pages
+        if mode == 'once':
+            opts.setdefault('retry_window_seconds', 3600)
+        creation_key = payload_hash = None
+        if idempotency_key is not None:
+            import hashlib, json, re
+            if not isinstance(idempotency_key,str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}',idempotency_key):
+                raise ValueError('无效 Idempotency-Key')
+            creation_key = hashlib.sha256(idempotency_key.encode()).hexdigest()
+            payload_hash = hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            opts.update(_creation_key=creation_key,_creation_payload_hash=payload_hash)
         cid = str(uuid4())
         with self.store.connect() as db:
+            if creation_key:
+                db.execute('SELECT pg_advisory_xact_lock(%s)', (int.from_bytes(bytes.fromhex(creation_key[:16]),'big',signed=True),))
+                previous = db.execute("SELECT c.id,c.status,c.sources,o.options,o.mode,o.max_successful_searches FROM campaigns c JOIN serp_task_options o ON o.campaign_id=c.id WHERE o.options->>'_creation_key'=%s AND coalesce(o.options->>'customer_private','false')<>'true'", (creation_key,)).fetchone()
+                if previous:
+                    if previous['options'].get('_creation_payload_hash') != payload_hash:
+                        raise ValueError('Idempotency-Key 已用于不同任务参数')
+                    return dict(campaign_id=str(previous['id']),status=previous['status'],sources=previous['sources'],options={k:v for k,v in previous['options'].items() if not k.startswith('_')},mode=previous['mode'],max_successful_searches=previous['max_successful_searches'],idempotent_replay=True)
             db.execute('INSERT INTO campaigns(id,query,aliases,daily_target,proxy_profile,sources,status) VALUES(%s,%s,%s,1000000,%s,%s,%s)',
                        (cid, words[0], Jsonb(words[1:]), config.default_proxy_profile, Jsonb(selected), 'active' if start else 'paused'))
             db.execute('INSERT INTO serp_task_options(campaign_id,options,started,mode,max_successful_searches) VALUES(%s,%s,%s,%s,%s)', (cid, Jsonb(opts), start, mode, budget))
             if upload: db.execute('INSERT INTO whale_serp_task_uploads(campaign_id) VALUES(%s)',(cid,))
-        return dict(campaign_id=cid, status='active' if start else 'paused', sources=selected, options=opts, mode=mode, max_successful_searches=budget)
+        return dict(campaign_id=cid, status='active' if start else 'paused', sources=selected, options={k:v for k,v in opts.items() if not k.startswith('_')}, mode=mode, max_successful_searches=budget)
 
     def tasks(self, *, kind='manual', status=None, q='', limit=20, offset=0):
         if kind not in ('manual', 'automatic', 'all') or (status and status not in ('active', 'paused', 'stopped', 'failed', 'completed')):
@@ -169,6 +222,7 @@ class ConsoleStore(SerpStore):
         clauses = ["NOT EXISTS(SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id)",
                    "NOT (c.sources ? 'rss')",
                    "(EXISTS(SELECT 1 FROM serp_task_options o WHERE o.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_supply_campaigns s WHERE s.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_campaign_requests cr WHERE cr.campaign_id=c.id))"]
+        clauses.append("NOT EXISTS(SELECT 1 FROM serp_task_options private WHERE private.campaign_id=c.id AND private.options->>'customer_private'='true')")
         params = []
         if kind != 'all':
             clauses.append(('NOT ' if kind == 'manual' else '') + 'EXISTS(SELECT 1 FROM serp_supply_campaigns s WHERE s.campaign_id=c.id)')
@@ -191,7 +245,7 @@ class ConsoleStore(SerpStore):
         if operation not in ('start', 'pause', 'resume', 'stop'):
             raise ValueError('无效任务操作')
         with self.store.connect() as db:
-            row = db.execute("SELECT status FROM campaigns c WHERE id=%s AND NOT EXISTS(SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id) AND NOT (c.sources ? 'rss') AND (EXISTS(SELECT 1 FROM serp_task_options o WHERE o.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_supply_campaigns s WHERE s.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_campaign_requests cr WHERE cr.campaign_id=c.id)) FOR UPDATE", (cid,)).fetchone()
+            row = db.execute("SELECT status FROM campaigns c WHERE id=%s AND NOT EXISTS(SELECT 1 FROM serp_task_options private WHERE private.campaign_id=c.id AND private.options->>'customer_private'='true') AND NOT EXISTS(SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id) AND NOT (c.sources ? 'rss') AND (EXISTS(SELECT 1 FROM serp_task_options o WHERE o.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_supply_campaigns s WHERE s.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_campaign_requests cr WHERE cr.campaign_id=c.id)) FOR UPDATE", (cid,)).fetchone()
             if not row:
                 return None
             state = row['status']
@@ -202,11 +256,14 @@ class ConsoleStore(SerpStore):
             db.execute('UPDATE campaigns SET status=%s,last_error=NULL,updated_at=now() WHERE id=%s', (status, cid))
             if status == 'active':
                 db.execute('UPDATE serp_task_options SET started=true WHERE campaign_id=%s', (cid,))
+                if operation == 'start':
+                    db.execute("UPDATE serp_task_options SET options=options-'_retry_started_at',stop_reason=NULL WHERE campaign_id=%s", (cid,))
         return dict(campaign_id=cid, status=status)
 
     @staticmethod
     def filters(f):
         clauses, params = [], []
+        clauses.append("NOT EXISTS(SELECT 1 FROM serp_task_options private WHERE private.campaign_id=r.campaign_id AND private.options->>'customer_private'='true')")
         if f.get('source'):
             if f['source'] not in GOOGLE_SOURCES:
                 raise ValueError('无效来源')
@@ -236,7 +293,7 @@ class ConsoleStore(SerpStore):
             tail = ' FROM serp_requests r'
         else:
             # Trends are topics, including topics without any article link.
-            tail = " FROM serp_requests r CROSS JOIN LATERAL jsonb_array_elements(CASE r.source WHEN 'google_news' THEN coalesce(r.response->'news_results','[]'::jsonb) WHEN 'google_trends' THEN coalesce(r.response->'trending_searches','[]'::jsonb) ELSE coalesce(r.response->'organic_results','[]'::jsonb) END) WITH ORDINALITY AS x(item,ordinal)"
+            tail = " FROM serp_requests r CROSS JOIN LATERAL jsonb_array_elements(CASE r.source WHEN 'google_news' THEN coalesce(r.response->'news_results','[]'::jsonb) WHEN 'google_trends' THEN coalesce(r.response->'trending_searches','[]'::jsonb) WHEN 'google_images' THEN coalesce(r.response->'image_results','[]'::jsonb) ELSE coalesce(r.response->'organic_results','[]'::jsonb) END) WITH ORDINALITY AS x(item,ordinal)"
             projection = "r.request_id id,r.query,r.source,r.completed_at,x.item data,x.ordinal,r.response->'search_parameters' search_parameters"
             if f.get('q'):
                 clauses.append("(r.query ILIKE %s OR x.item->>'title' ILIKE %s OR x.item->>'keyword' ILIKE %s OR x.item->>'snippet' ILIKE %s OR x.item->>'link' ILIKE %s)")
@@ -264,7 +321,7 @@ class ConsoleStore(SerpStore):
                     cursor.execute('SELECT r.request_id id,r.query,r.source,r.completed_at,r.response FROM serp_requests r'+where+' ORDER BY r.completed_at DESC,r.request_id DESC', request_params)
                     while requests := cursor.fetchmany(8):
                         for request in requests:
-                            key = {'google_news': 'news_results', 'google_trends': 'trending_searches'}.get(request['source'], 'organic_results')
+                            key = {'google_news': 'news_results', 'google_trends': 'trending_searches', 'google_images':'image_results'}.get(request['source'], 'organic_results')
                             for ordinal, item in enumerate(request['response'].get(key) or [], 1):
                                 if seen >= offset:
                                     rows.append(dict(id=request['id'], query=request['query'], source=request['source'], completed_at=request['completed_at'], data=item, ordinal=ordinal, search_parameters=request['response'].get('search_parameters') or {}))
@@ -294,7 +351,7 @@ class ConsoleStore(SerpStore):
             counts['failed'] = counts['attempts'] - counts['successful']
             counts['success_rate'] = counts['successful'] / counts['attempts'] if counts['attempts'] else None
         with self.store.connect() as db:
-            stats['errors'] = db.execute("SELECT source,classification,error_code,count(*) count FROM serp_requests WHERE completed_at>=now()-interval '24 hours' AND classification NOT IN ('results','empty') GROUP BY source,classification,error_code ORDER BY count(*) DESC").fetchall()
-            stats['recent_errors'] = db.execute("SELECT request_id id,source,query,classification,error_code,http_status,completed_at FROM serp_requests WHERE classification NOT IN ('results','empty') ORDER BY completed_at DESC LIMIT 15").fetchall()
+            stats['errors'] = db.execute("SELECT source,classification,error_code,count(*) count FROM serp_requests r WHERE NOT EXISTS(SELECT 1 FROM serp_task_options o WHERE o.campaign_id=r.campaign_id AND o.options->>'customer_private'='true') AND completed_at>=now()-interval '24 hours' AND classification NOT IN ('results','empty') GROUP BY source,classification,error_code ORDER BY count(*) DESC").fetchall()
+            stats['recent_errors'] = db.execute("SELECT request_id id,source,query,classification,error_code,http_status,completed_at FROM serp_requests r WHERE NOT EXISTS(SELECT 1 FROM serp_task_options o WHERE o.campaign_id=r.campaign_id AND o.options->>'customer_private'='true') AND classification NOT IN ('results','empty') ORDER BY completed_at DESC LIMIT 15").fetchall()
             stats['task_statuses'] = db.execute('SELECT status,count(*) count FROM campaigns GROUP BY status').fetchall()
         return stats

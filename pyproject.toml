@@ -4,6 +4,7 @@ version = "0.2.0"
 description = "Live search discovery and real-time web crawler"
 requires-python = ">=3.11"
 dependencies = [
+  "cryptography>=50,<51",
   "beautifulsoup4>=4.13,<5",
   "psycopg[binary]>=3.3,<4",
   "psycopg-pool>=3.3,<4",
@@ -28,3 +29,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["realtime*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["state", "output", ".venv", ".git"]

@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Jsonb
 
 from .campaign_store import CampaignStore
+from .google_data import DATA_VERSION, timestamp
 from .serp_fields import SCHEMA_VERSION, URL_NORMALIZATION_VERSION, MODULES, GOOGLE_SOURCES, result_items, normalize_serp_url, public_serp_url
 
 SCHEMA = """
@@ -198,6 +199,7 @@ class SerpStore:
         if not successful:
             response['news_results'] = []
             response['trending_searches'] = []
+            response['image_results'] = []
         items = result_items(response)
         response['search_metadata'] = {'id': request_id, 'status': 'Success' if successful else 'Error',
                                        'provider': event['provider'], 'http_status': event.get('http_status'),
@@ -205,9 +207,15 @@ class SerpStore:
                                        'total_time_taken': round(event['elapsed_seconds'], 3),
                                        'cache_status': event.get('upstream_cache_status'),
                                        'upstream_version': event.get('upstream_version')}
+        response['search_metadata']['collection_times'] = {
+            name: timestamp(event.get(name)) for name in
+            ('scheduled_at', 'requested_at', 'received_at', 'source_observed_at')}
+        response['search_metadata']['data_contract_version'] = DATA_VERSION
         response['search_metadata']['source'] = source
         response['search_metadata']['url_normalization'] = URL_NORMALIZATION_VERSION
-        if source != 'google_web':
+        if source == 'google_images':
+            response['search_metadata']['collection_method'] = 'openserp_google_images'
+        elif source != 'google_web':
             response['search_metadata']['collection_method'] = 'google_rss'
         normalized = {}
         for item in items:
@@ -215,7 +223,7 @@ class SerpStore:
                 continue
             if not public_serp_url(item['link']):
                 continue
-            url = normalize_serp_url(item['link'])
+            url = item['link'] if source == 'google_images' else normalize_serp_url(item['link'])
             item['normalized_link'] = url
             normalized[hashlib.sha256(url.encode()).hexdigest()] = url
         with self.store.connect() as db:
@@ -234,6 +242,8 @@ class SerpStore:
                     raise ValueError('conflicting SERP request identity')
                 return request_id
             db.execute('INSERT INTO serp_campaign_requests(campaign_id,request_id) VALUES(%s,%s)', (campaign_id,request_id))
+            from .google_news_links import record_news_aliases
+            record_news_aliases(db,response,normalized)
             new_hashes = set()
             for digest, url in sorted(normalized.items()):
                 row = db.execute("INSERT INTO serp_urls(url_hash,normalized_url,first_request_id) VALUES(%s,%s,%s) "
@@ -243,10 +253,13 @@ class SerpStore:
                 else:
                     db.execute('UPDATE serp_urls SET last_seen=clock_timestamp() WHERE url_hash=%s', (digest,))
                 db.execute('INSERT INTO serp_url_sources(url_hash,source) VALUES(%s,%s) ON CONFLICT DO NOTHING', (digest,source))
+            # One first-discovery contribution per URL; retain all occurrences.
+            contributed = set()
             for item in items:
                 if item.get('normalized_link'):
                     digest = hashlib.sha256(item['normalized_link'].encode()).hexdigest()
-                    item['is_new_url'] = digest in new_hashes
+                    item['is_new_url'] = digest in new_hashes and digest not in contributed
+                    contributed.add(digest)
             response['new_unique_links'] = len(new_hashes)
             response['search_metadata']['created_at'] = db.execute('SELECT completed_at FROM serp_requests WHERE request_id=%s', (request_id,)).fetchone()['completed_at'].isoformat()
             db.execute('UPDATE serp_requests SET response=%s WHERE request_id=%s', (Jsonb(response), request_id))
@@ -263,8 +276,16 @@ class SerpStore:
 
     def cached_feed(self, key: str, campaign_id: str) -> dict | None:
         with self.store.connect() as db:
-            row = db.execute('SELECT r.request_id,r.response FROM serp_feed_cache c JOIN serp_requests r USING(request_id) WHERE c.cache_key=%s AND c.expires_at>now()', (key,)).fetchone()
+            row = db.execute('SELECT r.request_id,r.campaign_id,r.response FROM serp_feed_cache c JOIN serp_requests r USING(request_id) WHERE c.cache_key=%s AND c.expires_at>now()', (key,)).fetchone()
             if row:
+                # Public browsing deliberately hides private-origin requests.
+                # Reusing one for another campaign produces a successful task
+                # whose saved results cannot be read. Keep that cache local to
+                # its owning campaign; callers then fetch a visible snapshot.
+                if str(row['campaign_id']) != str(campaign_id):
+                    has_options = db.execute("SELECT to_regclass('serp_task_options') AS name").fetchone()['name']
+                    if has_options and db.execute("SELECT 1 FROM serp_task_options WHERE campaign_id=%s AND options->>'customer_private'='true'", (row['campaign_id'],)).fetchone():
+                        return None
                 db.execute('INSERT INTO serp_campaign_requests(campaign_id,request_id,reused) VALUES(%s,%s,true) ON CONFLICT DO NOTHING', (campaign_id,row['request_id']))
                 return row['response']
         return None

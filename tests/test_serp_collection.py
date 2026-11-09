@@ -195,6 +195,17 @@ class SerpStoreIntegrationTests(unittest.TestCase):
         with self.base.connect() as db:
             self.assertEqual(db.execute('SELECT count(*) n FROM pages').fetchone()['n'], 0)
 
+    def test_repeated_url_occurrences_have_one_first_discovery_contribution(self):
+        event = self.event()
+        original = event['response']['organic_results'][0]
+        event['response']['organic_results'].append(dict(original, position=2))
+        request_id = self.serp.record(self.cid, **event)
+        saved = self.serp.request(request_id)
+        self.assertEqual(saved['new_unique_links'], 1)
+        self.assertEqual([r['is_new_url'] for r in saved['organic_results']], [True, False])
+        self.assertEqual(len(saved['organic_results']), 2)
+        self.assertEqual(self.serp.record(self.cid, **event), request_id)
+
     def test_google_tracking_tokens_do_not_create_new_links_but_content_parameters_do(self):
         base = 'https://example.com/article?page=3'
         first = self.serp.record(self.cid, **self.event(url=base+'&srsltid=one'))
@@ -253,6 +264,20 @@ class SerpStoreIntegrationTests(unittest.TestCase):
         changed = self.event(url='https://example.com/other', request_id=event['upstream_request_id'])
         with self.assertRaisesRegex(ValueError, 'conflicting'):
             self.serp.record(self.cid, **changed)
+
+    def test_collection_times_preserved_and_retry_keeps_original_event(self):
+        event = self.event()
+        event.update(requested_at='2026-11-05T00:00:00+00:00',
+                     received_at='2026-11-05T00:00:01+00:00')
+        rid = self.serp.record(self.cid, **event)
+        response = self.serp.request(rid)
+        times = response['search_metadata']['collection_times']
+        self.assertEqual(times['requested_at'], '2026-11-05T00:00:00Z')
+        self.assertEqual(times['received_at'], '2026-11-05T00:00:01Z')
+        self.assertIsNone(times['source_observed_at'])
+        event['received_at'] = '2026-11-06T00:00:00Z'
+        self.assertEqual(self.serp.record(self.cid, **event), rid)
+        self.assertEqual(self.serp.request(rid)['search_metadata']['collection_times'], times)
 
     def test_concurrent_workers_count_same_url_once(self):
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:

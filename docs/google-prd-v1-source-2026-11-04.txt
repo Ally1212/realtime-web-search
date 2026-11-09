@@ -1,0 +1,1870 @@
+Google 数据产品需求文档 v1.0
+第一部分：数据API层｜第二部分：分析与数据洞察层
+Search/SERP · Keywords/Trends · News · AI Overviews/AI Mode · Local/Maps · Search Console · GA4 · Ads · Merchant
+0. 文档说明与验收原则
+0.1 状态与依据
+项
+内容
+日期/版本
+2026-11-02 / v1.0
+交付定位
+可交研发评审、技术验证和工作包拆解的详细PRD；新API、数据模型、预算、SLO与验收阈值均为提案，未代表已批准或已实现
+主要依据
+CLAUDE.md、中台优化方案、微信PRD、TikTok PRD、Instagram PRD
+调研依据
+Google竞品与数据可得性深度调研，下称《调研》；来源G-O/G-P/G-C/G-S/G-R/G-W编号沿用该文
+系统
+Whale / Marsyoo为获准保留的原始事实真源；Google域服务提供结构化查询、时序、指标、工作台和报告
+通用要求
+引用中台方案第5节GEN-01～GEN-18，不在本文件重写通用条文
+核查范围
+2026-11-02公开资料；Whale约07:15～07:21 UTC管理员只读接口；未调用Google业务API、未采购、未开启导出或配置凭据
+本次修改
+仅新增本PRD与配套调研；未改既有文档、账号、Key、Dataset、任务、生产或权限
+工程状态
+当前目录无Git、构建或测试工程；技术POC、工程测试、性能与生产验收均未运行
+F1=官方文档；F2=本次中台只读返回；V=厂商自述、待验证；H=产品建议或假设；U=未核实。本文全部新增需求、公式、schema、端点、阶段和数值目标均为H，除非明确标为F1/F2。官网可访问不等于业务API有准入、字段完整或用途已获许可。
+0.2 编号、阶段与批准
+前缀
+含义
+GO-SCP / GO-SRC
+范围、来源、访问与用途
+GO-DAT / GO-ID
+实体、字段、测量性质、身份与修订
+GO-ING / GO-QA / GO-SLO
+采集、入库、对账、质量与时效
+GO-API / GO-MET
+域API和指标中心
+GO-INS / GO-AI
+分析模块、AI报告
+GO-NFR / WHL-GO
+非功能、中台依赖
+GO-AC / GO-POC / GT
+验收、技术验证和测试映射
+D / R / WP-GO
+决策、风险和研发工作包
+必须=对应域或阶段的上线门槛；应当=不做须记录理由；可以=可选。P0=G1核心研究闭环；P1=G2经营和扩展；P2=G3高级分析。授权GSC可纳入G1条件域，是否为G1必达由D-02明确；未批准/无准入域标planned或not_covered，不能算验收通过。
+0.3 独立验收通则
+编号
+必须遵循的验收原则
+GO-AC-001
+固定来源、API/解析/指标版本、授权主体、国家/语言/精确位置、设备、surface、采样深度、时间/时区、缓存年龄和集合版本；不同语义不拼成同一时序
+GO-AC-002
+结构验收≥1,000条真实记录，覆盖≥100关键词、2市场、2设备、主要结果类型；授权域另有≥3真实property/customer；样本不足则限制声明范围
+GO-AC-003
+比例报告分子分母、样本大小和适用的95%区间；相关重复不当独立样本；权限泄露、伪造数值、错来源与错时间等阻断缺陷零检出
+GO-AC-004
+连续7天验证计划执行、真实观测年龄、入库时延与修订；P95至少200有效样本；失败、未覆盖、缓存、截断、缺失和真0单列
+GO-AC-005
+覆盖率仅相对批准的关键词/位置/prompt/账号/任务计划点；无全站分母不声明覆盖全部Google搜索或用户
+GO-AC-006
+人工金标双人独立、仲裁和指南版本化；按关键词/站点/时间隔离训练与验收；品牌同名、引用误配和语言混合必须有反例
+GO-AC-007
+聚合可重放固定manifest：源观测ID、数据版本、过滤、权限、集合、方法与hash；证据到期后明确不可重放，不绕许可暗存副本
+GO-AC-008
+每条启用需求映射AC、GT、真实测试文件与命令；批准oracle后记录RED/GREEN并跑真实full回归；不能用本稿表格代替测试证据
+1. 产品目标、用户与范围
+1.1 定位与待验证问题
+为品牌、内容、增长和市场研究团队提供“在什么查询与市场上被看见、需求如何变化、哪些行动值得验证、授权业务结果如何解释”的证据链。
+当前问题假设：排名工具、Trends、新闻、AI回答和授权后台彼此分散，同名指标分母不同；第三方流量估算容易被当作经营事实。用户需要从结论下钻至查询条件、观测与指标定义。本轮无客户访谈，以上为H，不虚构访谈引语或已验证商业收益。
+产品分三轨：公开搜索/内容观测、需求与趋势测量、授权资产的经营表现；三轨各有来源/用途/权限，不直接归并为“Google流量”。Local为独立条件域；YouTube按项目约定另写PRD，Google Play沿用既有应用，不在本文重建。
+1.2 用户与任务
+用户
+任务与痛点H
+交付/可采取动作
+品牌/市场研究员
+品牌需求、竞品可见性、新闻和AI叙事缺统一范围
+固定集合比较、事件证据、主题与来源机会；保存监测和报告
+SEO/内容团队
+发现排名/feature变化，却不知是否只是切源或地理差异
+关键词→SERP→URL→可比变化；生成内容测试/页面诊断候选
+增长/数据分析员
+GSC、GA4和Ads口径不同，难解释点击到业务结果
+授权数据分层对账、缺口分解、机会排序和实验计划
+本地门店运营
+不同坐标排名不同，公开评论不完整
+获准的网格研究/按需展示；评论分析须独立用途和来源准入
+数据API使用方
+需要结构化、版本化、可复算数据
+稳定API、manifest、变更、质量、费用、下载与授权信息
+1.3 范围要求
+编号
+等级
+需求与边界
+验收
+GO-SCP-001
+必须/P0
+核心为受管词集SERP/feature、趋势、新闻观测、域名/URL比较、品牌基础分析、证据导出
+每个上线域有合格source adapter与真实闭环；未覆盖明示
+GO-SCP-002
+必须/P0
+公开、授权、供应商估算及研究模型分域；授权数据仅在批准用途和租户内使用
+搜索/缓存/报告/导出/归并均通过跨租户与字段负向测试
+GO-SCP-003
+必须/P0
+Organic、paid、local、news、shopping、AIO、AI Mode与生成API分别建surface/channel
+同URL可在多个surface出现，单独计数，不产生一个“Google总排名”
+GO-SCP-004
+必须/P0
+区分SERP摘要/Google News索引与出版者正文；正文另按网站来源准入
+结果页标题摘要不标article full text；不伪造body补质量
+GO-SCP-005
+必须/P0
+所有connector有用途/存储/聚合/embedding/展示/再分发矩阵，逐字段执行
+未批准能力在capabilities与任务准入同时阻断，不能只靠文档提醒
+GO-SCP-006
+必须/P0
+供应商SEO难度/流量/广告花费、Trends指数、官方圆整量和私有实际值分开
+接口、图表、CSV不丢性质/来源；不混筛为精确真值
+GO-SCP-007
+必须/P0
+不含发布网页、自动改站、提交索引、投放/调价、改商家、回复/删评、批量创建账号
+OAuth scopes与代码路径只覆盖批准读取，不把Indexing写操作加入本项目
+GO-SCP-008
+应当/P1
+GA4/Ads/Merchant、URL诊断、AI Mode重复采样、Local按数据域独立扩展
+单域未通过不影响其他已准入能力，也不被总体通过掩盖
+1.4 成功指标与关键假设
+指标H
+建议目标/衡量
+决策依据
+可验证研究任务完成率
+20个预注册问题≥85%能在批准数据内给结论或清晰不可判定原因
+不以“回答有文字”算成功，人工按证据与口径评分
+研究效率
+≥5位使用者、每人≥3个同等任务，相对现有流程中位用时降低≥30%
+前后任务难度配对；访谈和计时未执行
+证据完整性
+上线指标100%包含来源/性质/范围；抽100结论均可追到许可内证据
+对过期不可重放结果标明期限，不假称永久可复算
+数据可用
+7.2中批准域SLO通过，持续7天，计划执行与源有效返回分账
+不拿源失败填0提升达标率
+费用
+在D-03批准的词/位置/prompt规模和日/月双预算内
+以实测账单替换7.4假设，不把订阅展示价当采购结果
+关键假设：目标用户以英语品牌/内容研究为首试、美国与英国为2市场、核心是有限词集而非全网库；公开供应商存在适配且允许目标用途的合同；至少3个自有站点可授权GSC；这些均待D-01～D-05与POC确认。Ads与SERP组合用途在未核准前不合并开放。
+2. 当前中台基线与缺口
+以下为F2，不能外推为全部库存或实时平台能力；完整窗口见《调研》。
+观察
+本次事实
+对开发的含义
+近24h stats
+窗口11-01 07:15～11-02 07:15 UTC；google_search receipts208、documents0、chunks46、embeddings0；rollup仅到06:00且有不完整告警
+receipt与doc/chunk计数不可直接逐项相减判丢；需任务/事件/终态/读回对账
+freshness
+10-27～11-02：google_trends60条，全部missing发布时间；google_search未列；google_play另有约144.7万
+缺发布时间不等于趋势无效，Trends应按观测/指标区间；Play不是搜索覆盖
+quality
+10-27T00～11-03T00：google_trends48条normal48、language_missing11；google_search3条normal2/low1、language_missing1
+normal标签不证明趋势数值、来源/scale和完整历史已成立
+实际列表
+google_search limit5返回0；google_trends返回5条
+列表可能有质量/可见性默认过滤，不用空列表否定其他窗口记录
+趋势样本
+content_type=trend；ID形如trend_related:US:top_query:词；platform_metrics只有entries计数；样本published_at为11-02 06:31:18
+entries不是interest/search_volume；这些样本不能证明有数值趋势时序，也不能确认published_at是平台发布时间
+collector
+collector-google_search-prod-c0fc2624登记active、最后心跳10-27 07:48:26Z；仅keyword_search与identity/title；body=false，sources声明web/news/trends
+active不代表当前存活；来源声明不等于完整SERP、AI、Trends数值或live_query能力
+任务
+返回50条中有1个10-22测试，max_items3、collected3/ingested3、status=succeeded
+历史小样本不是本PRD多形态/权限/新鲜度验收
+specs/schedules
+返回8/7条范围内未见Google
+不能排除自主推送或未返回的配置
+容量
+对象盘86.15%，余304,395,309,056 bytes
+默认不存截图/整页HTML/地图媒体；先完成中台容量与吞吐前置
+3. 标杆对齐与投入产出
+全部产品能力为V，未实测付费工作台；来源和差异详见《调研》。
+场景
+标杆/来源
+必须对齐
+超越要求/阶段
+配置化排名/feature
+Semrush、Ahrefs、AccuRanker，G-C04/34/35/45
+词/地区/位置/设备、竞品、日级快照、feature拥有与变化
+失败/未进深度/缓存分开，固定集合重算；P0
+SEO可见性/基准
+SISTRIX、Ahrefs，G-C07/04
+国家/设备独立比较、历史、URL变化
+公开词集与CTR权重版本；可见性不叫实际流量；P0
+流量/广告机会
+Similarweb，G-C10/11/12/39
+来源/市场/渠道、关键词与落地页比较
+第三方估算与授权实绩并列，缺校准不造区间；P1
+需求/趋势
+Exploding Topics、Glimpse，G-C23/24/36
+趋势、相关词、季节性、告警与主题列表
+窗口/缩放/词主题区分、变更可复算，预测需留出；P0/P1
+AI可见性/引用
+Peec AI，G-C44～49
+固定prompt/市场/渠道、mention、citation、竞品集合和位置
+UI/API分开、重复随机性、失败分母透明；P0基础/P1深化
+本地地理网格
+BrightLocal、Local Falcon，G-C14/18/42
+坐标/间距/范围、同词同期竞品、前后比较与成本
+逐点证据和覆盖，不代表每个个性化用户；P1条件
+研究工作流
+多产品报告/API
+收藏→监测→变化→下钻→报告→导出
+query manifest、权限/期限、反例和来源证据；P0
+不首期自建全网反链索引、clickstream面板、全网历史关键词库、通用竞品花费模型或全网prompt需求库。它们依赖尚不存在的输入与积累。优先受管观测和可授权数据采购，不能用几个供应商黑箱值平均成“真值”。
+第一部分：数据API层
+4. 来源、可得性与职责
+4.1 官方/商业来源矩阵
+数据域
+可用来源/事实
+不能推导的能力
+准入/阶段
+公开SERP
+合格供应商返回的指定查询与上下文观测，G-S01/03/07
+不代表全网、全体用户或官方排名feed；合法存储和再分发不能由HTTP200证明
+source合同/用途/精度POC；P0
+Custom Search
+G-O24：新客户已关闭，存量于2027-01-01停止
+不能作为本项目新建SERP长期依赖，也不把Vertex AI Search当无限全网替代
+不选主链路
+Trends
+G-O22/23：官方Alpha申请制；获准后consistently scaled interest；网页G-P11按请求0～100、采样/归一化
+均非绝对量；官方API不能默认有准入；第三方绝对量另标estimate
+官方/合格供应商/获准导入分别POC；P0条件
+News
+G-P09本次RSS可读；搜索供应商news结构；出版者独立来源
+RSS可用不是稳定官方公共API/SLA；标题摘要不是全文，也不能承诺全部报道
+元数据/URL观察P0；正文条件域
+AIO/AI Mode
+G-S01/02/04/05及合格观察服务返回可见回答/引用
+生成Gemini API不等于消费者Google AI Mode/AIO；可见引用不是隐藏query fan-out全轨迹
+渠道、配置、保存用途逐项POC
+Search Console
+G-O01～06/30/31/43：授权property表现、top rows、bulk；AI并入Web
+不是竞品流量/任意query日志；无已核实独立AI filter；anonymous query无法还原
+OAuth/property/数据用途；P0条件
+GA4
+G-O07～13/32/35/44/45：授权property报告或事件导出
+不是竞品访问量；Data API报告与BigQuery事件不保证完全一致
+property授权与查询scope；P1
+Ads关键词
+G-O15～21/37：Cloud project级别＋OAuth/customer；Basic/Standard才可Keyword Planning；允许范围内本地缓存见G-O17
+Explorer不支持KeywordPlan*；广告competition不是SEO难度；圆整/close variants量非精确逐词量
+用途与访问级别POC；P1条件
+Ads经营
+自有客户账户GAQL/报表、归因窗/币种/网络
+不提供竞品实际花费/订单；Ads policy与采购scraped SERP组合用途存在需核准限制，G-O62
+独立用途与组合产品审查；未通过不启用
+Places公开商家
+G-P01/02/15：field mask、按需详情，最多5条相关排序评论；place_id可长期保存
+不提供全部评论；不能默认长期缓存/建索引/embedding/批量导出；用途按具体条款
+默认仅获准ID/按需归属展示；P1条件
+Business Profile
+G-P03/04/06/16/19：授权地点评论列表、performance、月关键词；存储/用途/转供限制
+OAuth不授予任意长期聚合或对外代理API；有限性能缓存≤30天且有额外限制
+默认不进通用持久化与外发API；POC批准后独立通道
+Local供应商
+合同允许的网格/本地观测与评论数据
+供应商有接口不自动解除原始Google内容条款或授予全量评论权
+来源链与许可逐项核验；P1
+Merchant
+G-P17/18：当前Merchant API；Content API已于2026-08-18 sunset
+授权merchant自身数据不等于所有竞品商品/销量；本文不包含商品发布修改
+正式报表/字段POC后P1；不依赖已终止API
+URL诊断
+G-O27：URL Inspection为授权property索引版本，不支持live test
+不是全网收录检测或保证收录；Indexing API写入不在范围
+抽样读取P1，受站点配额
+4.2 来源要求与用途门禁
+编号
+等级
+需求
+验收
+GO-SRC-001
+必须/P0
+每adapter登记source/version、实际端点、coverage、准入、刷新/缓存、计费单位、允许用途和保留期限
+任一必需字段unknown则对应能力planned；不能凭厂商首页开生产
+GO-SRC-002
+必须/P0
+许可独立覆盖raw/派生/聚合/embedding/model input/内部展示/导出/再分发；Semrush未经书面许可缓存不得超过1个月，G-C31
+过期raw与派生分别按合同处置；不假定删raw后聚合永久可留
+GO-SRC-003
+必须/P0
+Ads Developer Policies G-O62禁止scraping Google Search或购买scraped data等用例；本产品SERP采购＋Ads组合须明确适用范围和获准路径
+平台/产品负责人取得结论前Ads域不与该组合开放；技术分库/分租户不视为自动合规证明
+GO-SRC-004
+必须/P0
+Keyword Planning按2026 Cloud project access/OAuth/customer设计；独立代理商/广告主按适用主体绑定自身Cloud Platform账号/project及Ads access，不借共享平台项目规避准入；禁止只包装/重暴露源能力的二次API代理，G-O62
+Explorer拒绝；Basic/Standard及permissible use通过；主体B借主体A项目/未获准纯代理返回use_not_permitted；合法内部分析与获准报告服务分别确认，不新建或改凭据
+GO-SRC-005
+必须/P0
+公开SERP坐标/语言/设备/登录态/通道及缓存年龄可读；不以IP国家假定精确location
+200条双源/人工比对的条件匹配，差异可解释；失败不得伪装空排名
+GO-SRC-006
+必须/P0
+Trends API Alpha、供应商和网页导入分别命名scale；没有源不伪造时序
+相同term/topic跨窗口/批次可比性验证，不能线性拼接不同0～100尺度
+GO-SRC-007
+必须/P0
+Google News RSS只作为无SLA条件adapter，保留RSS入口/版本/窗口；失败可降级到其他已准入新闻源
+样本去重/源链接与时间验证；入口失效不把“无新闻”发告警
+GO-SRC-008
+必须/P0
+官方隐私匿名、低量、圆整、TopN、抽样、模型估计、cache和截断单独记录
+API/CSV/报告保留状态；空值不补0，不反推被保护query
+GO-SRC-009
+必须/P0
+源限流按服务、Cloud project、property、CID及供应商权利分别排队；GA4 token不是LLM token
+配额/重试负例；共享property其他消费者耗额也会降级；不通过多账号绕限
+GO-SRC-010
+必须/P1条件
+Places/GBP与供应商Local数据逐字段经过存储/用途/对外返回门禁
+未获准只提供capability/ID/源端链接，不进入Whale全文索引、向量、报告或通用API
+4.3 职责分工
+采集器负责源准入、按源分页/限流、真实字段/时间、稳定事件、许可内本地spool与回执。Whale负责批准schema的原始事实、版本/快照、受控加工、搜索、向量与读取。域服务维护可重建的查询、关系、manifest、指标和展示投影，不成为第二原始真源。
+无法持久化的源不强塞Whale：按获准临时通道按需读取/展示，只保留被允许的审计与ID；其分析能力须另行获得来源和用途许可。用户要求与上游限制存在冲突时在G0明确替代来源或减少范围，不靠伪正文、缓存搬家或改source_name解决。
+4.4 上游调用实现清单
+以下为官方/供应商文档对应的候选读取接口，不代表本项目已接通；POST查询仅在获准后调用。API版本须pin到实际POC通过的版本，不使用未验证的latest动态升级。
+域
+端点/方法
+实施必存/配额
+SERP候选
+DataForSEO POST /v3/serp/google/organic/live/advanced；或SerpAPI GET /search且engine=google，G-S01/07
+源/任务ID、location/language/device/depth/参数、真实source time、cache、cost；depth与高级操作符另计
+AI Mode候选
+DataForSEO POST /v3/serp/google/ai_mode/live/advanced；SerpAPI对应google_ai_mode引擎，G-S02/05
+consumer channel、prompt/turn/location、可见回答/引用、模型未知状态、成功/展开/失败
+AIO候选
+SERP初次返回＋SerpAPI google_ai_overview二次读取，G-S04
+短效page_token只在受控内存/秘密通道，约1min为该供应商自述；不写日志/持久化事实
+Trends
+官方Alpha实际获准文档或合格供应商端点；本轮无可验证的公共GA端点
+不编造官方通用REST路径；按series/scale/period/准入定义adapter
+News
+RSS候选 /rss/search，hl/gl/ceid/q；或获准供应商news搜索
+RSS无正式SLA，元数据/解析/正文权限分开；本轮未验业务search API
+GSC Search Analytics
+POST https://www.googleapis.com/webmasters/v3/sites/{siteUrl}/searchAnalytics/query，G-O01
+type/dimensions/filters/aggregation/dataState/rowLimit/startRow；≤25k/页，top rows与load quota另核
+GSC Bulk
+客户批准的BigQuery searchdata_site_impression、searchdata_url_impression、ExportLog，G-O03/04
+分表/分区/revision与成功日志；源0基position；查询存储费用单列
+URL Inspection
+POST https://searchconsole.googleapis.com/v1/urlInspection/index:inspect，G-O27
+inspectionUrl/siteUrl、索引状态/时间；站点2,000/day、600/min，project另有限额，G-O02
+GA4 Data API
+POST https://analyticsdata.googleapis.com/v1beta/properties/{property}:runReport，G-O44
+report模板、rowCount/metadata、returnPropertyQuota；Standard Core200k tokens/property/day、40k/hour、14k/project/property/hour、并发10，G-O07
+GA4 BigQuery
+客户明确批准的数据集events_YYYYMMDD/events_intraday_YYYYMMDD等实际schema，G-O12/13
+daily/intraday、迟到/归因/删除；Standard daily≤1M events/day，streaming best-effort；S1未包含完整事件导出
+Ads关键词
+pin版本的KeywordPlanIdeaService.GenerateKeywordIdeas/GenerateKeywordHistoricalMetrics与forecast方法，G-O18～20/40
+Cloud project级别/OAuth/customer、geo/language/network/close variants/currency；相关方法1req/s/CID及60秒窗口
+Ads经营
+pin版本GoogleAdsService.Search或SearchStream，G-O52/63
+GAQL模板/segments/日期/归因/币种/修订；operation、页数与返回行计量不同；先过组合用途门禁
+Places按需
+GET https://places.googleapis.com/v1/places/{place_id}，G-P01/12/15
+显式X-Goog-FieldMask，字段触发相应计费；不使用全字段通配默认；缓存/作者/Google归属按条款
+GBP条件通道
+GET /v4/accounts/{accountId}/locations/{locationId}/reviews；performance fetchMultiDailyMetricsTimeSeries与月keyword方法，G-P03/04/16/19
+仅获准用途与项目，非默认中台长期存储/对外代理；官方字段/threshold/时间维度保留
+Merchant
+Merchant API获准的报告方法与资源名；以G-P17及真实POC字段为准
+本轮仅核overview，未证明具体报表契约；不臆造字段或继续依赖Content API
+GSC API还有site/user各1,200QPM及project40,000QPM/30M QPD和独立load quota，G-O02；不是满足QPS就不会触发load限制。Google Places/GBP展示遵循Google及作者/第三方归属与地图使用限制，不把受限内容无归属混在其他来源地图上。
+5. 实体、字段与指标语义
+5.1 所有可持久化记录的公共字段
+字段组
+必须字段/语义
+身份
+entity_id、entity_kind、provider_namespace、native_id或identity_method；URL、域名、query_hash、place_id不能混为同一个ID
+来源/版本
+source_adapter/version、source_api_version、parser_version、source_ref/hash、Whale doc/version/observation引用
+时间
+observed_at、source_observed_at、received_at、ingested_at；source_published_at仅真实已知时填写；report_period、source_timezone、provisional与revision
+范围
+market/country、language、location及精度、device、search_engine、surface、channel、login_state、depth、filters、collection_version
+质量
+availability、partial/truncated、cache_age、coverage、source_quality、missing_reason、freshness_basis
+权限/用途
+tenant/org、asset/grant、data_scope、license_id/version、allowed_uses、retention_deadline、redistribution_scope；敏感凭据不入记录
+复算
+query_template/version、metric/method version、input_manifest、cohort_version、rights_at_query、expires_at或non_reproducible原因
+5.2 MetricValue
+字段
+枚举/要求
+value/unit
+decimal/int/string/null；units如searches、clicks、index_points、rank、micros；不靠数值大小猜单位
+provenance_kind
+public_observed、authorized_reported、provider_estimated、research_derived、provider_unknown
+measurement_nature
+exact_in_scope、rounded、relative_index、sampled、thresholded、approximate_distinct、modeled、unknown；一值可附多个quality flags
+availability
+available、true_zero、not_observed、outside_observed_depth、not_authorized、not_covered、privacy_suppressed、below_threshold、unsupported、source_error、expired、unknown
+metric_scope
+object/grain、platform/network/surface、country/location/device、traffic/channel、entitlement、date range/timezone、dimension/filter/aggregation、attribution/currency
+interval
+若有则含level/lower/upper/method/calibration population；源无误差且未校准时null并标uncertainty_not_provided，不能伪造“±5%”
+comparison
+scale_id、cohort_version、definition_version、additivity、compatible_with；不可比则分栏或拒绝
+来自官方也可能是圆整/抽样/估计；来自授权后台也不等于逐事件精确测量。用provenance_kind和measurement_nature两个维度分别表达。
+5.3 核心实体字典
+5.3.1 Query / Topic / QueryVariant / Monitor
+实体
+核心字段与规则
+Query
+query_id、original_text、normalized_text、normalization_version、language_hint、intent_tags与来源；保留原文，不把C/C++、大小写品牌、带引号与普通词静默合并
+Topic
+内部topic_id、provider_topic_id、label、aliases、relation/method；Trends topic ID与普通search term分列，不因同名等价
+QueryVariant
+query＋market/language/location/device/engine/surface/channel/login state/safe_search/深度/参数版本的hash；请求条件变更生成新variant
+Monitor
+monitor_id/version、query/prompt/brand/domain集合、计划时区、frequency、source policy、budget、rights、owner、alert rules；集合变更有生效时间
+5.3.2 ObservationRun / SERPItem / SERPFeature
+实体
+核心字段与规则
+ObservationRun
+run_id、variant_id、scheduled_at、requested_at、source_observed_at、completed_at、status、requested/returned depth、source_task_id、cache/no_cache、cost/credit、quality、rights
+SERPItem
+run_id＋item_id、result_type、provider_rank_group/rank_absolute、organic_position、page/offset、parent_block_id、title/snippet、display_url/target_url、domain、sitelinks、sponsored label、publication字段及其来源
+SERPFeature
+run_id、feature_type、presence/unknown、block_order、expanded_state、target/citation URLs、owned_by tracked entities；AIO出现与品牌被提及/域被引用分别记录
+URL/Domain
+原始URL、规范化URL与版本、registrable_domain、subdomain/path、redirect/canonical证据；public suffix/IDN/query保留策略明确；不把m.example.com与example.com所有路径都归并成同页
+Provider的rank_absolute不保证是像素y坐标，organic_position只对自然结果；缺坐标时不输出“首屏占比”或虚构pixel rank。相同URL的organic、sitelink、广告、citation可以多个occurrence，但聚合须声明去重。
+5.3.3 KeywordMetric / TrendsSeries / RelatedQuery
+实体
+核心字段与规则
+KeywordMetric
+requested_query、returned_text、close_variant_group、geo/language/network、year/month、metric_value、source、updated_at；Ads competition/index、CPC/bid分位及currency/micros独立
+TrendsSeries
+series_id、term_or_topic、geo/category/property、requested/effective window、granularity/timezone、scale_id、sample/version、is_partial；点含period_start/end、value、low_volume/missing、revision
+RelatedQuery
+source_series/query、top/rising、label、rank、provider_score、breakout原始标志、window；breakout不擅自换固定倍数；entries仅列表长度
+网页0～100值只能在相应请求归一化语境解释。若做锚词/重叠窗校准，保存锚点、重叠、公式和误差，输出research_derived而不是官方原值。官方Alpha consistently scaled与第三方绝对估算使用不同scale_id。
+5.3.4 NewsObservation / Article / EventCluster
+实体
+核心字段与规则
+NewsObservation
+query_variant/run、rank、Google/RSS item ID/URL、publisher name/URL、source time与可信度、title/snippet、redirect状态；新闻出现时间与文章发布时间分开
+Article
+出版者URL/native ID、canonical证据、title/body/author、source_published_at/modified_at、language、license；正文仅在单独获准的publisher抓取链路
+EventCluster
+cluster_id/version、article links、事件标签、近重复与转载关系、method/confidence、时间窗；同一报道多次SERP出现不算多篇原创
+RSS wrapper无法解析出版者URL时保留未解析状态，不伪造canonical；正文与索引摘要的来源/质量分别追踪。事件簇不是Google官方“事件真值”。
+5.3.5 AIAnswer / Mention / Citation
+实体
+核心字段与规则
+AIAnswer
+answer_id、prompt原文/版本/intent、variant/run、consumer_ui或generation_api、AIO/AI Mode、login/location/device、requested_model/observed_model或unknown、turn、重试/重复组、answer text/hash（许可内）、render/expand状态
+BrandMention
+brand_id/alias_version、原文span、disambiguation/confidence、sentiment_target、first_position、计数去重方式；隐含推测不当显式mention
+Citation
+answer/span、raw/source/canonical URL、domain、citation_order、visible/expanded、fetchability、matched_content_id/confidence；引用某页不等于支持所有陈述
+AIO未触发、需要展开但未展开、provider字段未提供、抓取失败、成功回答未提及品牌要有不同状态。供应商如需二次AIO请求或短效token，立即按该源窗口调度；例如G-S04自述page_token约1分钟，不能套成Google所有渠道统一限制。
+5.3.6 AuthorizedReport / SearchPerformance / Analytics / Ads
+实体
+核心字段与规则
+AuthorizedAsset
+service、Cloud project reference、property/site/customer/merchant ID、owner role、grant/scope、有效期/用途；不包含access/refresh token
+ReportDefinition
+report_id/version、source/API、dimensions/metrics、filters、aggregation、type、dataState、timezone、identity/attribution/currency、grain和兼容性
+SearchPerformanceRow
+site/property、day/hour、query/page/country/device/searchAppearance组合、clicks/impressions/CTR/position；匿名flag、top_rows/bulk、revision与完整性
+GA4ReportRow
+property、dimension tuple、metric values、rowCount、samplingMetadatas、subjectToThresholding、dataLossFromOtherRow、schema restriction、quota、report timezone
+GA4EventBatch
+独立获准导出时使用property/export table/date/type/daily revision、event IDs和允许字段；不默认存user_pseudo_id、精确位置或用户级跨平台关系
+AdsReportRow
+customer/campaign/ad group/criterion等获准维度、date/segments、network、clicks/impressions/cost_micros/conversions/value、currency、attribution/window与revision
+MerchantReport
+merchant/report/version、query模板、product/日期/指标/范围/质量；端点和字段在POC批准后冻结，不用过时Content API字段补齐
+GOOGLE总表不允许混放不同grain。GSC按property与page聚合不可直接求和；GA4不同scope和日期的unique users不可简单加总；Ads conversions可能是小数，不强转int。
+5.3.7 Local / Place / Review（受条件准入）
+实体
+字段与用途边界
+PlaceReference
+provider/place_id、必要源端链接、授权与许可；Google place_id例外可存，不推导所有商家属性可长期存
+GridDefinition
+center/bounds、point coordinates、spacing、excluded points、query/variant、grid_version、schedule/budget；point ID和位置精度明确
+LocalObservation
+point/run、source、result list/rank、depth、未返回/失败、supplier许可；仅对已获准可持久化的数据保存历史
+Review
+仅在独立批准来源下：review_id、place、rating/text、created/updated、reply与时间、语言、排序/样本/缺口、retention/用途；不默认完整或允许embedding
+BusinessPerformance
+源定义的daily metrics和月keyword impressions/threshold；不混成自有站点clicks，且默认不由通用API转供
+5.4 数据规则
+编号
+等级
+必须要求
+验收
+GO-DAT-001
+必须/P0
+MetricValue的来源/性质/范围/状态与数值一起无损存取
+写入→快照→批读→JSONL往返，0/null/rounded/estimate正确
+GO-DAT-002
+必须/P0
+排名、item、feature、citation按run完整保留关联/顺序，源rank与派生organic rank分列
+200套多block/重复URL/AIO样本逐项对照
+GO-DAT-003
+必须/P0
+Trend scale/窗口/term-topic/partial/breakout、Ads close variants与圆整明确
+切窗/改geo/换源不可无提示拼接；同合并量不复制累加
+GO-DAT-004
+必须/P0
+时间保留source timezone和period；GSC日期通常America/Los_Angeles，GA4为property、Ads为customer配置
+DST、23/25h日、周/月边界、Trends粒度时区有金标；无真实发布时间不造值
+GO-DAT-005
+必须/P0
+源语言、查询语言、结果语言、检测语言分列；中台统一检测/翻译/NER/主题与情感
+语言能力只对真实字段声明；检测失败unknown，不按市场猜
+GO-DAT-006
+必须/P0
+SERP摘要、AI回答、文章正文、评论与数值报表采用不同质量profile
+GEN-14例外需平台批准；不复制title伪正文，不给表格填假语言
+GO-DAT-007
+必须/P0
+GSC top rows/anonymous/provisional、GA4抽样/threshold/(other)/approx distinct均保留元数据
+分页完成不宣称统计完整；subjectToThresholding不直接推导已删行
+GO-DAT-008
+必须/P0
+金额保存micros/原币种，汇率/日期/来源另列；币种/归因窗不兼容禁止加总
+分币种准确往返，转换不覆盖原值，负修订不丢
+GO-DAT-009
+必须/P1
+许可内视觉/OCR/AI文本加工由中台统一执行，cache hash包含method与license version
+相同素材同方法只一次加工；不具权利时不生成向量或模型输入
+GO-DAT-010
+必须/P0
+来源hash、解析/品牌/指标版本与expiry随报告传递；不可重放有原因
+过期/撤权后旧manifest不能继续返回受限内容/数字
+5.5 身份、归并与生命周期
+编号
+等级
+需求
+验收
+GO-ID-001
+必须/P0
+query、topic、variant、run、URL、domain、report-grain、place/review独立namespace；无原生ID时用可公开复算的版本化hash算法
+空格/Unicode/IDN/query string/跨源原生ID碰撞测试；品牌别名不覆盖query原文
+GO-ID-002
+必须/P0
+网站内容对象与搜索occurrence分离；URL跨query/location/rank出现不覆盖上下文
+同URL在10query×2位置×多surface保留全部run/item；对象可去重，观察不丢
+GO-ID-003
+必须/P0
+同query variant重复运行用新观测；稳定重试复用原事件键/时间/payload；source缓存返回不是独立新鲜观测
+100次相同重试不重复业务事实；真新观察同数值也可读回
+GO-ID-004
+必须/P0
+report ID含asset、report template、grain、period及scope；源修订新revision，原期间保留
+同日fresh→final/迟到回补不重复加总，不原位覆盖历史审计
+GO-ID-005
+必须/P0
+public与私有同URL/实体归并须保留私有事实权限；source_name/Dataset名字不视为隔离保证
+同对象公开和两个组织GSC/GA4/Ads值的读取/搜索/缓存/导出均负向通过
+GO-ID-006
+必须/P0
+从榜消失、未进深度、deleted、暂时无权、源失败、保留到期区分
+不把未出现URL当网页已删除；不把新闻列表消失当撤稿
+GO-ID-007
+必须/P0
+删除/撤回/到期传播至源缓存、Whale、域投影、索引、向量、报告、导出与备份恢复流程
+tombstone重放/灾备后不复活受限数据，必要审计只留获准元信息
+5.6 最小类型、必填与取值约束
+以下为域schema提案，不是向Whale擅自新增顶层字段；正式承载位置由WHL-GO-02批准。M=对应实体必填，C=在该域/来源提供且获准时条件必填，O=可选；缺失值附availability/missing_reason。
+字段
+类型
+必填
+约束
+entity_id / run_id / item_id / answer_id
+string
+M（对应实体）
+字符串不转浮点；全局ID含namespace，原生ID另存；run/item/answer不可混用
+query.original_text / prompt.text
+string
+M（查询/回答实体）
+UTF-8原文，建议≤4,096字符；超上游限制在执行前拒绝，不静默截断
+variant_id / cohort_version / definition_version
+string
+M（相应观测/聚合）
+绑定归一化/配置/集合/公式版本，scope变更不能沿用原ID制造可比性
+observed_at / received_at
+string(date-time)
+M（观测）
+RFC3339可含小数秒，UTC存储；source_observed_at未知为null并区分本地观察时间
+source_published_at
+string(date-time)或null
+O
+只在确证平台/出版者发布时间时填；不拿run/接收时间冒充
+period_start / period_end
+string(date或date-time)
+M（时间序列/报表）
+需granularity/timezone；左闭右开为域输出，源闭区间参数转换有版本和测试
+rank / organic_position
+integer或null
+C
+≥1；缺失/超深度为null；源0基值单独保留再转换，不用0表示没排名
+latitude / longitude
+decimal或null
+C（地理观测）
+分别[-90,90]/[-180,180]；precision/source明确，不从国家码伪造坐标
+depth / returned_count / row_count
+integer
+M（相关结果）
+≥0；requested depth与returned count不同，不用returned_count替代全宇宙大小
+metric.value
+decimal/integer/string或null
+M（指标对象）
+原数值精度与unit匹配；必须附scope/nature/status；禁止NaN/Infinity进入JSON
+clicks / impressions / count
+integer或decimal
+C
+原始计数通常非负；Ads归因conversions允许小数；负修订为revision delta，不改原历史
+money_micros / currency
+integer或decimal＋string
+C（金钱）
+/1e6转换，原币种ISO4217与源精度保留；不混币种汇总
+rate / share
+decimal或null
+C
+明确0～1或0～100单位；计数/触达等可能>100%的特殊比例单独定义，不强行裁剪
+provenance_kind / measurement_nature / availability
+enum string
+M（指标）
+采用5.2枚举；多重性质用quality flags，未知必须显式，不默认exact
+source_ref / parser_version / source_api_version
+string或null
+M/C
+source_ref与adapter/parser必填；非版本化源API写not_versioned，不能捏造版本号
+tenant_id / asset_id / grant_id
+string或null
+C（授权/受限）
+私有事实必须绑定实际授权；public不随意使用某租户grant充数
+license_id / allowed_uses
+string＋array(enum)
+M（准入记录）
+无明确存储/加工/分发权不创建相应任务；空数组表示无许可，不能解释为无限制
+retention_deadline / evidence_expires_at
+string(date-time)或null
+C
+限期内容必填；null仅在已明确无固定期限/对应权利时允许，不代表自动永久
+revision / is_partial / cache_hit
+integer＋boolean
+M（对应观测）
+revision≥1；布尔未知用独立unknown状态，不能把未知压成false
+source_payload / errors
+object＋array
+C
+大payload按源许可保存，业务字段须可查询；错误不含秘密、短效token或不获准全文
+6. 采集、Whale映射与API
+6.1 已知映射与待确认边界
+Whale当前文档G-W03/04明确支持google_search/search_result、google_news/article、google_trends/trend及通用other映射；platform_payload保留源语义、metrics.platform_metrics承载历史指标，facts为当前版本投影，不能假设所有字段都已可筛选。
+事实
+建议映射H
+必须先验证
+可持久化SERP对象/观察
+URL对象＋query variant/run/item关系；rank放discovery.rank同时保存完整时点观测
+完整SERP列表/关系如何无损进正式schema；仅discovery.rank不等于历史排名API
+SERP快照上下文
+external_content_id建议serp:{variant_hash}，事件键含run/UTC；publisher URL放item引用
+不能将快照canonical_url设成某publisher页而被跨query错误归并；正式类型/身份由WHL-GO-02冻结
+Trends
+稳定series key，period/scale点放批准payload/metrics，snapshot_at为观测时间
+多时间点、同值新观测、非社媒数值指标是否无损；不把entries当热度
+News
+google_news保存索引/文章标识和许可内元数据；出版者正文来源另标
+去重/URL解析/时间与正文来源；summary不冒充全文
+AI answers/citations
+已批准的独立answer/run关系和文本类型
+不能借article/news错误语义入库；完整顺序/许可/来源可读回
+GSC/GA4/Ads/Merchant
+独立受限观测引用资产/URL，report grain和revision明确
+新source_platform/content_type/schema、Dataset、权限及canonical隔离需平台批准，不冒用google_search
+Local/GBP
+默认不进通用持久化；获准ID/审计或独立许可通道
+存储/用途/转供与schema均通过后才扩展，不强行迁移现有数据
+6.2 入库与任务闭环
+编号
+等级
+需求
+验收
+GO-ING-001
+必须/P0
+source请求→解析→稳定事件→bulk受理→终态receipt→独立读回；queued不等于完成
+30任务/≥1,000事件含失败与0结果，可按事件逐级对账
+GO-ING-002
+必须/P0
+validation_raw、agent、平台/任务/能力与Key准入一致；生产登记另批
+dry-run/错Dataset/错platform/能力空占位被拒；不新建生产Key
+GO-ING-003
+必须/P0
+POST /v1/documents/bulk可能部分入队；400不是整批事务回滚，failed_item不是全坏项清单
+混好坏批次重试无丢失/重复；保留原received_at/record key/payload
+GO-ING-004
+必须/P0
+mode=scheduled observation/backfill/snapshot/live；X-Ingest-Class显式normal/realtime/backfill分批；acquisition_type不替代header/任务授权
+三类准入独立、历史任务不走实时额度；自主推送不伪造task ID
+GO-ING-005
+必须/P0
+429/503按Retry-After+抖动退避；许可内spool≤2GB/24h建议，超过优先停历史/低优先任务
+重启可恢复，过期内容不继续重放；源额度不足不切成未批准通道
+GO-ING-006
+必须/P0
+每消息provided_capabilities与字段一致；parser保留unknown类型，不能把缺字段当feature不存在
+空HTML、改DOM、结果type新增触发质量告警；低置信不进正式排名
+GO-ING-007
+必须/P0
+小时账区分source attempts、billable units、parsed、sent、accepted、terminal、readable、rights-expired；计数单位明确
+不把1任务的10结果与10receipt直接判重复；失败真实费用仍入账
+GO-ING-008
+必须/P0
+run记scheduled/requested/source observed/received times，缓存与重试分离；漏点不补造历史
+相同缓存不得被报告成独立2次新鲜rank/AI样本；晚运行记late/missed
+GO-ING-009
+必须/P0
+GSC fresh/final按日或小时回补；bulk按site/url表分别核导出/日志，最终按分区/版本替换
+ExportLog只成功、部分表完成/漏日重试放弃能被检测；不重复累计修订
+GO-ING-010
+必须/P1
+GA4 intraday/final、Ads conversion lag、Merchant report按真实可得窗口重读
+preliminary/final分开；重读条件/修订费和查询扫描量可见
+GO-ING-011
+必须/P0
+AIO二次展开/短效token任务优先，未展开不当无AIO；token不写普通日志
+源特定超时/过期状态正确，失败不入品牌visibility分母
+GO-ING-012
+必须/P0
+不下载原视频/全网图片；默认外链，许可内截图/必要HTML≤0.25GB/日建议，加工≤60min/日
+全页截图/HTML单独批准与expiry，预算100%停止新资产，不影响事实文本入库
+6.3 采集节律（S1假设，均需POC）
+域
+节律/回补H
+分账与限制
+核心100词SERP
+2市场×2设备、每日4轮；默认top10 organic及可见feature
+是1,600个variant-run/day，不默认一次请求能拿top100
+普通900词SERP
+同2市场×2设备、每日1轮
+3,600 runs/day；相同market/location配置固定
+AI Mode独立prompt
+200 prompt×2市场×每日1次
+400回答尝试/day；重复实验从该预算中预留，不无偿再加3倍
+AIO
+上述5,200 SERP运行随返回提取，二次展开另计
+假设20%需追加请求仅为费用场景，不是平台发生率事实
+Trends
+200 term/topic×2市场，每日1轮；每批5项仅是待验证假设
+400 series/day；重读近7d、周/月更长窗按许可/实际源支持
+News
+100主题×2市场×每日4轮，单页/每轮最多20条
+800列表/day，最多16,000 occurrences；URL/文章去重另计
+GSC
+10properties×4模板×每日3个日期分区
+120报告请求组/day；D-1/D-3/D-7仅回补建议，按数据状态调整
+GA4
+10properties×4模板×每日3分区
+120请求组/day；token/数据量非固定；BigQuery事件全导出不含于S1
+Ads
+1,000词按获准合批每日1次＋授权经营报表
+假设10关键词请求组＋20报表；实际close variants/上限另验
+Local
+10门店×5词×5×5点，每周1轮
+1,250 pin observations/周，集中当天峰值全计；未准入前不运行
+不是所有源都有平台发布时间。SERP/AI用观测计划与源观测年龄衡量新鲜度；Trends/报表用period＋source availability/最后修订，不套“发布→入库”时延。News只有确证publisher时间的记录才统计该时延。
+6.4 GEN映射
+条款
+Google特定落实
+验收
+GEN-01
+6.3分域mode与三类header
+GO-ING-004、GT-05
+GEN-02
+URL/query/topic/variant/run/asset/report身份分离
+GO-ID-001～005、GT-01
+GEN-03
+观测年龄/计划点/报表可得与发布时间分开
+7.2、GT-07
+GEN-04
+日内SERP、Trends/报表回补、事件键含UTC
+GO-ING-008～010、GT-03
+GEN-05
+源时区/报表期间；无真发布时间不造值
+GO-DAT-004、GT-02
+GEN-06
+查询/源/检测语言独立，平台检测
+GO-DAT-005、GT-08
+GEN-07
+链接标题不宣称body/rank/AI/趋势数值能力
+GO-ING-006、GT-05
+GEN-08
+Local review及商家reply仅条件域；父对象/评论/回复分列，样本上限明确
+5.3.7、GO-SRC-010、GT-13
+GEN-09
+默认外链、许可内副本0.25GB/day
+GO-ING-012、GT-12
+GEN-10
+中台统一OCR/翻译/NER/情感；不具用途不得embedding
+GO-DAT-005/009、GT-08
+GEN-11
+source project/property/CID限流、Whale背压与spool
+GO-SRC-009、GO-ING-005、GT-06
+GEN-12
+不依赖未登记Google登录池；OAuth/账号/project额度与停止/冷却登记
+GO-SRC-004/009、GT-06/14
+GEN-13
+小时数据面账，静默超过计划3倍
+GO-ING-007、GO-QA-006、GT-07
+GEN-14
+1,000样本和字段门槛；结构化/摘要质量profile先批准
+GO-DAT-006、GO-QA-001～005、GT-07
+GEN-15
+请求/积分/token/字节/扫描量及日月双预算
+7.4、GT-12
+GEN-16
+逐源用途/保留/聚合/再分发矩阵，Ads组合与Maps特殊限制
+GO-SRC-001～004/010、GT-14
+GEN-17
+validation_raw与生产登记，私有独立观测隔离先验证
+GO-ING-002、WHL-GO-01、GT-05
+GEN-18
+停任务/在途对账/定向撤权/expiry与退役
+GO-NFR-008、GT-14
+6.5 复用Whale现有契约
+能力
+已有接口/契约F1
+本项目限制
+写入
+POST /v1/documents/bulk、whale.ingest.v1
+当前仅需求研究，未发送业务写入
+状态
+POST /v1/ingest/receipts、Agent自身回执/背压接口
+queued与终态、当前Key范围、同Agent所有权均需真实验收
+读取
+/v1/search、/v1/documents/batch、/v1/snapshots等以G-W01/02为准
+不擅自扩为任意scope/历史/字段皆支持；源rank历史另有依赖
+导出/变化
+Whale已有export/change契约
+域报告的冻结manifest、rights与数据到期仍须额外实现
+任务
+register/claim/heartbeat/complete与自主推送两模式
+collector需按实际能力验收，不复活旧暂停/历史测试任务
+6.6 拟建Google域API
+下表全部是未上线的需求接口，前缀/v1/google。端点的返回字段受capabilities、source许可、asset grant与字段scope联合控制；正式OpenAPI在WP-GO-01冻结。
+编号
+方法/路径
+输入与输出要点
+阶段
+GO-API-001
+GET /capabilities
+source/service/entity/field/use/tenant→可得范围、准入、保存/分发/期限、原因
+P0
+GO-API-002
+GET /markets；GET /locations
+source、country、language→支持项/坐标精度，不假设源间location code通用
+P0
+GO-API-003
+GET /keywords；GET /keywords/{id}
+text/topic/intent/collection_version→原词、归一化、alias与指标引用
+P0
+GO-API-004
+GET /topics；GET /topics/{id}/relations
+source/topic/brand→关系、方法、confidence与证据
+P0
+GO-API-005
+GET /query-variants
+query/market/location/device/surface→配置与hash版本
+P0
+GO-API-006
+GET /observations；GET /observations/{id}
+variant、scheduled/observed windows、status→run、缓存/质量/费用
+P0
+GO-API-007
+GET /observations/{id}/items
+result_type/depth→顺序item、父block、URL与源rank
+P0
+GO-API-008
+GET /serp-history
+query/variant/target/source/window→rank变化、未入深度/失败/切源断点
+P0
+GO-API-009
+GET /serp-features
+feature/target/variant/window→出现、拥有、未知和证据
+P0
+GO-API-010
+GET /domains；GET /domains/{id}
+domain、cohort/scope→实体及可比聚合，不默认真实流量
+P0
+GO-API-011
+GET /domains/{id}/pages
+path/query/cohort→页面/URL份额、排名、feature与来源
+P0
+GO-API-012
+GET /rankings
+universe/version、metric/surface/window→排名、覆盖与权重定义
+P0
+GO-API-013
+GET /comparisons
+domains/brands、cohort、method→固定集合差异/中位/份额
+P0
+GO-API-014
+GET /keyword-metrics
+terms/close_variant_group/geo/network/source/date→圆整/估算量和广告竞争
+P0供应商/P1官方
+GO-API-015
+GET /trends/series
+term/topic、geo、window/granularity/scale_policy→时序、修订、低量状态
+P0条件
+GO-API-016
+GET /trends/related
+series/query、top/rising/window→列表、breakout、分母/来源
+P0
+GO-API-017
+GET /news/observations
+topic/query/market/window→列表occurrences、publisher/URL/时间
+P0
+GO-API-018
+GET /news/events
+topic/cluster_version/window→事件簇、独立文章、转载与方法
+P0基础
+GO-API-019
+GET /articles/{id}
+fields/version→许可内正文或摘要、来源、rights、Whale引用
+P0条件
+GO-API-020
+GET /ai/answers；GET /ai/answers/{id}
+prompt/variant/channel/window→回答/可见性状态、配置、许可内证据
+P0 AIO/P1 Mode
+GO-API-021
+GET /ai/citations
+answer/domain/brand/surface→可见引用、URL关系与证据
+P0基础
+GO-API-022
+GET /ai/visibility
+prompt cohort、brand set、channel/window→mention/citation/SoV/位置与有效分母
+P0描述/P1重复
+GO-API-023
+GET /local/capabilities
+source/use/asset→地图网格、评论和展示能力准入，不返回受限内容
+P0信息/P1扩展
+GO-API-024
+GET /local/grids；GET /local/grids/{id}/observations
+grid/version/window→获准供应商逐点结果、缺测与成本
+P1条件
+GO-API-025
+GET /places/{id}/reference
+获准place ID/必要链接/来源与用途状态
+P1条件
+GO-API-026
+GET /local/review-insights
+独立获准source/rights/place/sample→主题/比例/证据；默认disabled
+P1条件
+GO-API-027
+GET /search-console/reports
+asset/template/date/dataState/aggregation→top_rows或bulk同grain数据、隐私/完整性
+P0条件
+GO-API-028
+GET /search-console/diagnostics
+authorized property/sample URL→索引版本、时间、问题与读取配额
+P1
+GO-API-029
+GET /analytics/reports
+property/template/date/scope→GA4报告、metadata和token
+P1
+GO-API-030
+GET /analytics/reconciliations
+property/report/BQ compatible scope→差异分解，不强制零差
+P1
+GO-API-031
+GET /ads/keyword-plans
+仅获准内部分析/报告模式，approved plan/geo/network/window→许可内规划结果；主体项目准入绑定，不做任意源方法代理
+P1条件
+GO-API-032
+GET /ads/reports
+仅获准主体/报告服务，customer/template/window/attribution/currency→许可内实绩/修订；跨主体共享准入与纯代理负例拒绝
+P1条件
+GO-API-033
+GET /merchant/reports
+authorized merchant/template/version/window→批准报表与字段
+P1条件
+GO-API-034
+GET /insights/brands
+brand/version/cohort/window→需求、搜索/新闻/AI分轨与证据
+P0
+GO-API-035
+GET /insights/opportunities
+keyword/topic/target/cohort/method→解释性机会评分、成本与不可判定项
+P0基础/P1深化
+GO-API-036
+GET /insights/anomalies
+monitor/window/rule/model→变化、基线、数据/业务类别与证据
+P0
+GO-API-037
+GET /metric-definitions；GET /evidence/{id}
+metric/version、evidence/manifest→公式、分母、可加性、许可内原证据
+P0
+GO-API-038
+POST/GET/PATCH /monitors及/{id}
+词/prompt/域/池、source、频率/预算/规则；If-Match版本变更
+P0
+GO-API-039
+POST/GET /watchlists；DELETE /watchlists/{id}/items/{entity_id}
+收藏/移出，不删除源事实
+P0
+GO-API-040
+POST /analysis-jobs；GET /analysis-jobs/{id}
+manifest、query/method versions→异步分析/部分失败/取消
+P0
+GO-API-041
+POST /exports；GET /exports/{id}
+fields/format/manifest→许可内冻结结果，生成/下载复核
+P0
+GO-API-042
+POST /live-queries；GET /live-queries/{id}
+approved source/variant/max units→按需观察、预算/配额/结果状态
+P1条件
+GO-API-043
+POST /reports；GET /reports/{id}
+approved query/manifest→确定性/AI报告、证据、反例与限制
+P0确定性/P2 AI
+GO-API-044
+GET /changes；POST/GET/DELETE /subscriptions及/{id}
+域观察/告警至少一次投递，原始内容仍走Whale变更
+P1
+GO-API-045
+GET /quality；GET /usage
+管理角色读计划覆盖/缓存/错误/资源/费用/源额度
+P0
+GO-API-046
+GET /connections
+获准资产、service/project reference、role/scope、expiry/status；不返回token
+P0条件
+没有默认的GBP通用评论转供API。获准的官方按需界面通过独立项目/账号与展示路径实现；不把产品API包装成绕过GBP第三方programmatic access限制的代理。连接创建与秘密更新属于另行批准的OAuth/秘密管理流程。
+Ads两个域端点也不默认授权第三方programmatic proxy：只返回已批准内部分析或报告服务的受管结果，不接收任意GAQL/源方法替用户自动转发。caller主体、实际Cloud project准入、OAuth/customer与用途须匹配，不能仅验证有customer权限就放行。自有内部自动分析、独立代理商的合法代管及对外报告各自判定；未获准的共享项目代理即使有OAuth也拒绝。
+6.7 API通用契约
+编号
+等级
+需求
+验收
+GO-API-100
+必须/P0
+data/meta/errors；meta含request/query_id、data_as_of、source_observed_at、generated_at、quality/coverage、版本、manifest/不可复算原因、rights expiry
+正常/部分/失败契约；元数据不掩盖字段stale/unknown/expired
+GO-API-101
+必须/P0
+Bearer绑定租户、组织、资产、字段/用途/expiry；公开和私有独立授权；报告与缓存继承限制
+同URL两个租户、越grant、游标/报告/导出/过期下载全部负向通过
+GO-API-102
+必须/P0
+limit默认20最大100；游标绑定过滤/排序/source/权限版本；普通分页不是冻结快照
+并发新数据不破坏同manifest；撤权后旧游标失效
+GO-API-103
+必须/P0
+RFC3339、UTC存储、IANA业务时区，区间左闭右开；源report日期不被UTC机械改日
+DST/跨月/日界线、源PT/客户时区结果可复算
+GO-API-104
+必须/P0
+预期>3s分析与大导出走queued/running/partial/succeeded/failed/canceled/expired
+超时/取消/许可到期不继续计成功或返回全部数据
+GO-API-105
+必须/P0
+创建监测/分析/导出/按需任务支持Idempotency-Key建议24h；同键异载荷409
+100并发同键仅1任务；逻辑不重计费，源真实重试费保留
+GO-API-106
+必须/P0
+起始每租户读5rps/并发2为H；live默认关闭，批准后≤50任务/day、每任务≤100billable units
+越限429含Retry-After；不能经多租户耗尽同property/CID/source资产
+GO-API-107
+必须/P0
+错误码至少invalid_argument/not_authorized/use_not_permitted/not_covered/unsupported/source_error/quota_exceeded/privacy_suppressed/incompatible_scope/partial_result/outside_observed_depth/ingest_pending/expired
+retryable、source和非敏感原因明确；404/空/不支持/失败/0不同
+GO-API-108
+必须/P0
+CSV/JSONL导出保留原值/性质/scope/状态/版本/expiry；复杂观测优先JSONL；建议链接≤7d且不超源expiry
+100万行异步对账；无受限字段夹入公开导出；下载时重新检查
+GO-API-109
+应当/P1
+域订阅event_id、签名/重放窗口、至少一次、最长24h退避；仅已获准目标
+500/超时/重复/乱序演练，逻辑告警不重复；不自动向未授权外部发送
+GO-API-110
+必须/P0
+不兼容API升主版本、指标/解析语义版本化，源被强制移除时明确降级；旧口径不静默替换
+回放旧报告不换分母；无法继续的源不伪造兼容字段
+6.8 返回示例（虚构示意，非现网）
+下例只展示值与状态关系，正式必填字段以OpenAPI为准。
+{
+"data": {
+"variant_id": "example_variant_us_mobile",
+"organic_position": {
+"value": null,
+"availability": "outside_observed_depth",
+"observed_depth": 10,
+"provenance_kind": "public_observed",
+"measurement_nature": "exact_in_scope",
+"interval": null
+},
+"monthly_searches": {
+"value": 1200,
+"unit": "searches",
+"provenance_kind": "authorized_reported",
+"measurement_nature": "rounded",
+"availability": "available",
+"close_variant_group_id": "example_group_1",
+"scope": {"country": "US", "network": "GOOGLE_SEARCH"},
+"interval": null
+}
+},
+"meta": {
+"request_id": "example_request_1",
+"query_id": "example_query_1",
+"input_manifest_id": "example_manifest_1",
+"quality": "partial",
+"warnings": ["rank_outside_observed_depth", "search_volume_is_rounded"]
+},
+"errors": []
+}
+7. 质量、SLO、容量与费用
+7.1 质量门槛（建议H）
+编号
+需求/建议阈值
+失败处理
+GO-QA-001
+GO-AC-002样本；原始ID/variant/run/source/权限/观测时间关键字段缺失0，未来源时间0；重复逻辑记录<1%
+阻断相关域上线，不修字段默认值掩盖缺失
+GO-QA-002
+URL/query上下文关联100%正确；人工对照有可匹配条件的200套SERP，top10 organic解析precision与recall各≥0.98
+若源结果不同先分源差异与parser错误，不能把个性化差异当解析真值
+GO-QA-003
+200个多feature金标中feature presence/ownership分类F1≥0.95；unknown类型不自动记absent
+未支持类型显示unknown，parser升级重放并保留版本
+GO-QA-004
+数值/单位/scale/币种/期间/scope转录准确率100%；Trends与Ads圆整/低量/匿名/合并组无丢失
+不可解释差异阻断标准聚合
+GO-QA-005
+GEN-14正文质量在真实article范围按通用要求执行；SERP/结构化报表/Trends单独批准profile；支持语言检测macro-F1≥0.95
+正文缺失不伪造；不支持语言unknown，报表无需伪语言
+GO-QA-006
+小时发送/受理/拒绝/终态/读回/过期账；静默>计划3倍告警；rows、runs、HTTP、积分分别统计
+先核口径/rollup窗口/过滤，再判断丢失；历史任务成功不代替连续验证
+GO-QA-007
+每source/field监测schema漂移、空值率、缓存年龄、depth下降、rights/expiry与分母变化
+结构变化触发暂停依赖计算；不把源故障当品牌变化
+GO-QA-008
+排名、时序、AI提及/引用与授权报告各抽100个输出，可按同manifest/版本/舍入独立重算
+历史许可已过期则标不可重放；不能承诺超合同复算
+7.2 SLO（建议，非现网SLA）
+编号
+分域目标H
+验收口径
+GO-SLO-001
+批准的SERP日内/日更计划准时完成率≥99%，核心最近真实观测年龄P95≤7h、普通≤27h
+核心4轮/日、普通1轮/日；缓存source time不能改为request time；失败和missed不剔除
+GO-SLO-002
+可持久化源结果已取得→Whale可独立读回P95≤5min；计划点到发起P95≤15min
+连续7天、≥200样本；无权/到期/截断/失败单列，不以HTTP accepted代替
+GO-SLO-003
+News列表按6h轮询；对独立已知相关文章集，确证publish→首次捕获P95≤8h、受管查询样本召回≥0.90
+只能对批准词与可知参考集报告，RSS无SLA入口失效纳入覆盖；不声称全网召回
+GO-SLO-004
+Trends日更计划完成率≥99%；已确认源更新后≤24h捕获；partial与近7d修订记录完整
+不承诺官方Alpha实时、绝对量或未获准的历史/配额
+GO-SLO-005
+AI Mode日更计划完成率≥98%；P95观察年龄≤27h；AIO短效补拉按真实source窗口
+successful/eligible/failed/未展开分别统计；一次日更不宣称稳定出现概率
+GO-SLO-006
+GSC/GA4/Ads获准域计划完成率≥99%；新可用报表在下一批准轮询周期内取得；D-1/D-3/D-7等回补不漏计划
+平台数据延迟与自方调度延迟分开，未final不承诺终值；源缺数据不补0
+GO-SLO-007
+来源/云/媒体预算日月双上限；80%告警、100%停止新增可计费任务；已返回落库/回执优先
+失败源调用计费、分页/二次请求/重试和订阅都可追；不自动涨预算
+GO-SLO-008
+S1约500万逻辑行30d、单租户5rps/并发2下，简单索引查询P95≤1.5s；复杂预计>3s转异步
+真实测试数据/查询模板/资源与未命中缓存分别报告；百万行导出不堵同步读
+7.3 S1逻辑记录与存储基线（全部H）
+这是批准后的完整试点情景，含条件P1域；不是已经存在的数据、Whale消息数或严格上界。采集器实际拆分/压缩/合并依正式schema与POC确定，不能用逻辑行直接和receipts对账。
+记录类型
+日基线H
+平均压缩字节H
+日体积MB十进制
+SERP run
+100×2×2×4＋900×2×2=5,200
+4,000
+20.80
+SERP items
+5,200×10=52,000
+2,000
+104.00
+AI answers
+Mode400＋AIO假设1,040=1,440
+8,000
+11.52
+AI citations
+1,440×5=7,200
+1,000
+7.20
+Trends series元数据
+200×2=400
+1,000
+0.40
+Trends point observations
+400×7个重读日期点=2,800
+500
+1.40
+News occurrences
+100×2×4×20=16,000
+1,500
+24.00
+独立article元数据
+假设occurrences的25%=4,000
+2,000
+8.00
+授权/关键词结果行
+GSC60,000＋GA4 12,000＋Ads2,000＋关键词1,000=75,000
+750
+56.25
+授权报告/请求组元数据
+GSC120＋GA4 120＋Ads30=270
+2,000
+0.54
+合计
+164,310逻辑记录/day
+分类型假设
+234.11MB/day，7.0233GB/30d
+AIO20%、每次5citation、News去重25%、每GSC模板500行、每GA4/Ads模板100行均非市场事实；超过样本深度/分页/迟到重读会扩量。未计Local、Merchant、原始响应、article全文、截图、HTML、审计、索引、向量、副本、物化视图或GA4事件级BigQuery导出。禁止用约7GB批准全部基础设施容量。
+建议文本/报告raw保留30d、获准历史事实和manifest365d、缓存30d、临时导出≤7d、审计180d；以每条source contract和用户授权更短期限为优先。Semrush默认一个月限制、Places/GBP特殊规则不得被本建议覆盖；派生数据是否可留同样核验。没有相应保留权时不承诺365d回溯。
+7.4 请求、费用、配额与峰值
+通道
+算式H
+日基线请求/任务
+商业SERP
+核心1,600＋普通3,600；top10且每run单请求假设
+5,200
+AIO补拉
+5,200×20%需二次请求假设
+1,040
+AI Mode
+200prompt×2市场×1次
+400
+Trends
+400series/假设每请求5series
+80
+News
+100主题×2市场×4轮×1页
+800
+商业小计/20%余量
+7,520×1.2
+9,024/day
+官方GSC
+10property×4模板×3日期分区
+120请求组
+官方GA4
+同上，额外token/页数按实际
+120请求组
+官方Ads
+关键词10组＋经营报表20组
+30请求组
+官方小计
+不含URL Inspection/Merchant/大分页/BQ
+270/day；不是统一可共享额度
+Local条件域
+10店×5词×25点，每周1轮
+1,250/执行日；不是按每日平均摊薄峰值
+GSC分页与load、GA4 token/并发、Ads CID 1req/s及60秒窗口、供应商积分/行/字段/任务/深度、Trends合批能力都必须实测。DataForSEO部分高级搜索操作符加价/深度与AIO追加成本、SerpAPI缓存/二次展开计费不能被统一“每次查询”掩盖。Provider如按条计费，不套按请求优惠。
+纯假设单价情景，不是任何供应商报价： SERP/AIO每1,000请求$2、AI Mode $10、Trends $5、News $2。
+项
+算式
+金额H
+日基本用量
+6,240×2/1,000＋400×10/1,000＋80×5/1,000＋800×2/1,000
+$18.48
+加20%余量
+18.48×1.2
+$22.176/day，显示$22.18
+30d
+22.176×30
+$665.28
+所有有效单位成本或请求翻倍
+22.176×2
+$44.352/day，30d $1,330.56
+建议商业调用硬上限$50/day且$1,500/滚动30d；Local另行批准，平台订阅/授权包/账户/Cloud/BQ/存储/出网单列。上述不是“总价$665.28即可做到全部功能”。官方270请求不套第三方单价，不把GA4配额token当收费token。BigQuery按实际event bytes、存储、scan bytes/slots与export方案预算，S1未含事件全量链路。
+Local 1,250点/周在30d可能4或5次，即5,000或6,250点，不能写成固定5,000；算法/网格AI分析另算。执行日1,250点加20%余量是1,500 units，商业主链同日若并行可达10,524 units。是否存在批量返回、平台credits或独立Maps API订阅由实际合同决定，不能跨产品套价。
+降级：先停历史回填/截图/长文加工→停额外AI重复/高密网格→缩长尾或低优先query；保护已付费返回落库、短效补拉、报表修订与回执。达到硬预算明确暂停受影响域、披露覆盖/SLO，不静默降深度后仍称top10完成。
+第二部分：分析与数据洞察
+8. 指标中心与分析模块
+8.1 指标字典
+每指标定义含ID/version、grain、source/provenance/nature、公式/分母、scope、时间/时区、集合/权重、缺失与修订、可加性、误差/留出方法和manifest。
+ID
+定义H
+语义边界
+GO-MET-001
+organic_position=指定run内目标URL或域名首次自然结果序号；保留全部occurrences
+未进topN为outside_observed_depth，不填N+1或101；跨device/geo不混平均
+GO-MET-002
+observed_topK_share=成功且满足深度的run中目标进前K的次数/有效run数
+planned/completed/eligible/failed同时公开；不是Google用户真实曝光份额
+GO-MET-003
+weighted_visibility=Σ固定query权重×获准CTR模型(position)/Σ权重
+仅同cohort/market/device/surface；默认权重1或显式量权重；模型估计不是实际访问
+GO-MET-004
+feature_presence/ownership_rate=有feature或目标拥有feature的有效run数/具检测能力的有效run数
+没有检测能力不算absence；AIO是否出现与是否引用目标分开
+GO-MET-005
+rank_change=可比前期位置−后期位置，正为改善
+只对两边都见到/同源同scope结果；掉出深度另报censored transition，不虚构改变量
+GO-MET-006
+volatility=固定cohort中预定义变化/进出深度/feature转移率
+阈值、缺测、source切换分开；不是Google算法更新确定归因
+GO-MET-007
+search_demand=源定义的月量/圆整量/估算量；close variants组唯一计
+不能把重复组量分配每词后再总和；Trends index不与searches相加
+GO-MET-008
+trend_change=(本期同尺度值−基期值)/基期值；基期>0且可比
+低量0/缺失不算无限增长；同比要同季节粒度，窗缩放变化另校准
+GO-MET-009
+brand_demand_share=固定品牌词组可去重需求/固定品牌词宇宙需求
+keyword overlap/close variants交叉可控；否则只报告相对词集份额，不叫市场份额
+GO-MET-010
+news_voice=count distinct eligible publisher article；occurrences另计
+转载/近重复/事件簇分开；无全网分母不称全媒体占有率
+GO-MET-011
+AI_mention_rate=至少1次显式品牌mention的有效回答数/已触发且完整可判定mention的AI回答数
+AIO未触发不入该条件分母；同时返回feature触发率和计划覆盖；0有效回答返回null＋no_eligible_answers，不代表真实用户曝光
+GO-MET-012
+AI_citation_rate=包含目标域/页可见引用的有效回答数/源具引用能力且引用结果完整可判定的AI回答数
+与mention可有不同有效分母，分别返回；成功完整且无引用为真0；源未提供/未展开排除，0有效回答返回null＋no_eligible_answers
+GO-MET-013
+AI_SoV=本品牌按回答去重mention数/同一有效回答集合内固定tracked brand集合按回答去重mention总数
+多品牌回答可贡献多个mention；分母为0返回null＋no_tracked_mentions；集合版本变更产生断点，不和mention rate混用
+GO-MET-014
+AI_first_mention_position=回答中全部已识别且消歧品牌（含未跟踪品牌）按首次出现去重排序，取目标品牌条件均值/中位
+保留品牌识别版本；仅在提到目标的回答中聚合并同时返回mention rate；不出现不填末位，无合格样本为null，不称自然排名
+GO-MET-015
+GSC_CTR=Σclicks/Σimpressions；position按同grain impressions加权
+site/page、search type、filtered/anonymous/top_rows不可乱混；query分组和不等于总量
+GO-MET-016
+GSC_BQ_position=site SUM(sum_top_position)/SUM(impressions)+1；URL用sum_position
+BQ位置0基，API均值1基；不能平均已平均position；表grain单独
+GO-MET-017
+qualified_opportunity=透明加权的可见性gap、可比需求、业务相关性、执行成本与证据confidence
+评分和权重公开；缺因子标partial，不假定搜索量就是可实现销量
+GO-MET-018
+local_top3_share=成功且深度≥3的点中目标进前3点数/有效点数
+完成覆盖/排除水域/间距权重另列；点不是实际用户，非厂商SoLV同口径除非明确映射
+GO-MET-019
+review_target_sentiment=独立获准样本中对目标可判定情感的分类比例
+排序/截断/未知/语言单列；不得用官方5条相关评论估计全部消费者态度
+GO-MET-020
+GA4 key_event_rate/users/sessions等采用源定义+scope/identity/attribution版本
+distinct通常非可加，HLL++/threshold/modeling可能存在；不能把BQ重算值强装成Data API值
+GO-MET-021
+Ads CTR/CPC/CPM/CPA/ROAS按兼容窗口/币种/归因定义算；cost_micros÷1e6
+conversions可小数；ROAS不是利润或因果增量；竞品spend estimate另指标
+GO-MET-022
+search_to_business_reconciliation=按获准粒度对GSC clicks、GA4 sessions/key events、Ads clicks等作差异分解
+不假设一click一session，不做未授权用户级拼接；变化只能关联，不自动因果归因
+8.2 统计与榜单通则
+默认固定cohort按market/device/surface/source分别比较，最小有效query/run/answer数随输出返回；缺测覆盖不足不排名。量权重采用同scope且获准的量，未校准不能跨Google Ads、Trends、供应商模型直接替代。数据刷新与业务变化分开，切源/解析/词库/品牌集合变更产生断点。
+AI分母实例：10个成功且支持AIO检测的SERP只有1个触发AIO，该回答完整且提到目标，则AIO presence=1/10，条件mention rate=1/1；两者必须同时展示，不把1/1解释成所有查询或真实用户的100%曝光。若10次均未触发，presence为0/10而mention/citation rate为null。若有效回答中未提及任何tracked品牌，SoV为null；若其他tracked品牌有mention而目标没有，目标SoV可为真0。失败按既定eligibility规则排除且降低计划覆盖，不为维持分母数量填入假回答。
+AI观察受prompt选择、地区、时间、登录态、底层路由和随机性影响。日更一次支持“已测回答中的观察率”；稳定概率研究须在预注册subset至少20prompt×2地区×2channel、每格每时窗≥3次独立观测，并采用prompt/时间聚类bootstrap或相应方法；预算从既有额度分配。不得把同缓存或失败重试当独立回答，也不把便于获取的prompt当真实用户需求抽样。
+8.3 分析模块与用户故事
+GO-INS-001 搜索排名、feature与竞品组合（必须/P0）
+用户故事：作为SEO/研究员，我要比较固定词集在不同市场设备的排名与feature，找出可解释的变化。
+输入：2～20域名、100～1,000词、variant/cohort、日期/source；输出topK、分布、进出深度、URL切换、feature拥有、可比差异和数据质量。
+行动：保存对比、下钻SERP、加入监测、导出manifest；不默认输出真实竞品流量。
+验收：≥200套SERP/≥100词，独立解析与复算一致；SERP block/自然序号不混；失败/缓存/深度不同不能制造排名下降。
+GO-INS-002 关键词、主题与内容机会（必须/P0基础，P1官方扩展）
+用户故事：作为内容负责人，我要把需求、意图、现有可见性和执行成本组合成待测试机会，而非只按搜索量排序。
+输出query/topic/close variants、意图、需求来源、SERP content pattern、内容gap与公开评分因子；可关联获准GSC页面表现。
+SEO难度与广告competition分列，估计CTR/可实现流量为模型，不承诺转化。
+验收：200候选/20业务任务，top10人工相关率≥0.80；1,000词意图macro-F1≥0.80；每候选≥3证据或明确不足；缺量不填0排末位。
+GO-INS-003 品牌需求、趋势与季节性（必须/P0描述，P1预测）
+用户故事：作为品牌研究员，我要分辨需求增长、季节性和尺度变化，决定继续观察或发起验证。
+输出同尺度趋势、同比/环比、related/rising、低量、品牌词share与相关新闻/社交关联；词和topic不混。
+预测需≥24个月或源支持的足够季节周期、时间留出、与季节naive比较；源只有短历史则不提供长期预测。
+验收：≥100 series，切窗口/锚词/低量/partial/修订样本正确；所有增长可复算；预测未胜基线或区间未校准则只交历史分布。
+GO-INS-004 新闻、事件与品牌叙事（必须/P0基础）
+用户故事：作为市场研究员，我要找出相关报道、独立来源与叙事差异，避免把转载扩散误当多方证实。
+输出事件簇/时间线、publisher多样性、转载/近重复、品牌目标情感、原文/摘要层级和反例；仅对已采集语料给声量。
+数据链接：News occurrence→publisher article→event cluster；相关文章与新闻索引分源处理。
+验收：≥1,000文章元数据、≥100事件簇，近重复precision≥0.95、事件纯度≥0.85、品牌相关precision≥0.90；无法取全文则结论明确仅基于title/snippet。
+GO-INS-005 AI Overviews/AI Mode可见性与引用（必须/P0基础，P1深入）
+用户故事：作为品牌/内容团队，我要知道在已测问题上品牌如何被提及、哪些页被引用，以及是否值得测试内容更新。
+输出prompt/channel/market的mention、citation、SoV、first mention位置、目标情感、可见引用源/域、来源机会与稳定性；AIO/AI Mode分开。
+同一品牌被提及、域被引用、第三方讨论品牌、广告块出现为不同事件；API生成不冒充消费者UI，不推断隐藏fan-out。
+验收：≥500回答、≥100无提及/同名/只引用反例，mention precision≥0.95、recall≥0.90、citation URL precision≥0.98；分母和版权可用证据100%正确；随机性研究按8.2独立验收。
+GO-INS-006 页面、域名与内容组合诊断（必须/P0描述，P1 GSC）
+用户故事：作为SEO负责人，我要发现同查询URL交替、内容空白和损失位置，生成具体诊断任务。
+输出固定cohort页面分布、URL切换、feature/source变化、获准的GSC query-page关系与抽样索引状态。
+“关键词蚕食”作为待核信号而非算法确定惩罚；未进前N不直接判页面失索引。
+验收：100真实案例/人工反例，URL归并与query上下文不丢；20个索引诊断仅使用授权property且注明索引版本/时点。
+GO-INS-007 GSC授权搜索表现与机会（必须/P0条件）
+用户故事：作为站点所有者，我要分析可解释的搜索点击/曝光与query-page机会，避免top rows或新近数据误导。
+输出property/page/type/filter粒度、匿名缺口、fresh/final、Bulk/API区别和同scope CTR/position；AI仅Web合并量，不独造AI独立流量。
+验收：≥3property、30d/低维和高维模板；API top rows与低维总量/BQ差异逐项解释，匿名query不生成假词；BQ0基position换算正确；无授权组织不可读。
+GO-INS-008 GA4、GSC与Ads经营对账（必须/P1条件）
+用户故事：作为增长分析员，我要理解搜索可见性变化是否伴随站点访问/关键事件变化，以及各系统差异来自哪里。
+输出授权聚合趋势、date/timezone/scope/attribution对齐、采样/threshold/(other)/HLL++/consent/modeling/迟到差异说明。
+Ads域须先通过GO-SRC-003；只做获准粒度链接，不跨源重识别用户，也不强行使clicks=sessions。
+验收：≥30报表用例包含不同身份/归因/币种/时区与BQ；所有未解释差异有状态，不自动更改定义消除差异；20案例经独立分析员复算。
+GO-INS-009 广告、Shopping与商业机会（应当/P1条件）
+用户故事：作为获准广告/电商分析员，我要区分公开广告/商品呈现、关键词规划估算和自己账户实绩。
+输出SERP sponsor/Shopping item素材/落地页、许可内竞品估算、授权Ads/Merchant报表、归因/币种/数据日；不把竞品持续投放解释成盈利。
+验收：100广告/商品样本及20授权报表，sponsored/merchant identity与currency准确；旧Content API不入新实现；零转化与无权限/隐私/未覆盖不同。
+GO-INS-010 本地地理网格与商家研究（应当/P1条件）
+用户故事：作为多门店负责人，我要在固定位置与词集比较本地发现能力，并知道缺测和预算。
+输出网格中心/点/间距/排除区、point-level rank、top3 share、同期竞品与范围；官方Place按获准方式归属展示。
+评论主题与响应速度仅在独立来源/用途允许后启用；不是用官方5条相关评论代表所有消费者。默认不提供通用GBP数据代理。
+验收：10网格、≥250点观测、失败/水域排除/深度不足负例；point与账单units一致，1,250点执行日峰值限额正确；未准入不存/不发受限字段。
+GO-INS-011 异常、提醒与监测闭环（必须/P0站内，P1订阅）
+保存词库/prompt/品牌/域/地点、集合版本、source/预算、rank/feature/需求/新闻/AI规则、baseline、冷却和升级。
+区分业务异常、数据源故障、授权过期、parser漂移和样本扩张；每条带触发值、分母、scope、证据和下一步验证。
+验收：100规则回放含乱序/重复/迟到/切源，逻辑触发一致；派生值可用后站内告警P95≤5min；失败不触发“品牌消失”，重大升级不被冷却吞掉。
+GO-INS-012 自助探索、报告与证据导出（必须/P0，AI为P2）
+聚合值≤3次操作下钻至query配置、run、item/answer/report row、源与定义；保留筛选条件返回。
+保存对比/研究问题/manifest；API/页面/CSV/JSONL一致，值/性质/scope/expiry不丢；报告包含结论、反例、限制、待验证行动。
+验收：100指标三端一致，50manifest重放一致或有合法expiry原因；撤权后旧报告不继续展示私有数字/证据；键盘、空态、未准入、过期与部分失败可操作。
+GO-INS-013 跨平台需求与内容证据（应当/P2）
+关联Google查询/新闻/AI引用中的Reddit、TikTok、Instagram、YouTube和网站实体，分平台显示语言、时间、样本和指标定义。
+query增长、社交讨论和AI引用仅作为关联线索；身份匹配有证据，不把同名跨平台自动并为一人；转化增量需另行实验。
+验收：30跨平台案例、同名/转载/相似素材反例；每个数字与链接有出处；无法识别因果时明确不可归因。
+8.4 模型与估算准入
+模型必须登记训练数据及用途、feature、cohort、版本、label/oracle、留出、误差分层、漂移与降级。供应商流量/绝对量/广告花费估算不自动进入自有模型训练集。与授权真值可比时至少30站点/30d、按站点和时间留出并按市场/设备/量级报告coverage与误差；样本不足不宣称普遍准确。区间需独立校准，不能把官方未提供误差补成假置信区间。
+8.5 AI报告要求
+编号
+等级
+必须要求
+验收
+GO-AI-001
+必须/P2
+数字只来自受管query/tool，保存query ID/参数、结果hash、scope、时点/expiry与metric version
+100报告的数值可重算；模型自造数字或改分母必须拦截
+GO-AI-002
+必须/P2
+事实、估计、相关解释、假设与行动建议分列；不宣称未经实验的算法/流量/收入因果
+200条陈述金标，事实支持precision≥0.98、无证据数值0
+GO-AI-003
+必须/P2
+只读最小许可数据，回答/网页内指令视为外部数据；不能改变权限/采购/导出或模型用途
+prompt injection、跨租户、过期证据、改查询scope负例全通过
+GO-AI-004
+必须/P2
+引用定位原文span/观测，不把一条引用当全部结论支持；无全文时不能声称读过
+100引用案例、反例与来源限制正确；模型输出能回到确定性数据
+GO-AI-005
+必须/P2
+LLM费用/延迟/数据用途单独预算，超额降为确定性报告；无合格输入则不生成
+预算/断网/撤权/模型失败演练不返回伪结论，不隐式发给第三方模型
+9. 非功能、治理与恢复
+编号
+等级
+需求
+验收
+GO-NFR-001
+必须/P0
+adapter并发/内存/磁盘、日月预算可配置；试点默认每adapter并发≤2、单进程内存≤1GB建议
+负载前记录机器资源；80%内存/磁盘余量不足优先暂停加工/回填，不拖垮机器
+GO-NFR-002
+必须/P0
+request/run/event/query/manifest IDs贯通；源延迟、cache、配额、解析、rights、入库/回执/读回分段可观测
+单个故障能定位阶段；日志不含OAuth/密码、短效token或未获准全文
+GO-NFR-003
+必须/P0
+费用按task/provider/unit/field/page/retry/subscription、Cloud scan/storage/egress分账
+100任务与provider账单按原舍入对账；金额汇总含币种与计费周期
+GO-NFR-004
+必须/P0
+tenant/asset/source/use/field/retention联合授权；派生结果继承最严格限制
+报告/缓存/manifest/导出/向量均负向测试；不同license不混成可外发总集
+GO-NFR-005
+必须/P0
+最小OAuth scope与批准目标，秘密管理独立；不配置管理员密码给connector
+日志/文档/快照无凭据；测试读取授权不构成改账号/token授权
+GO-NFR-006
+必须/P0
+不采未必需个人标识，不默认跨源用户级归并；API Services User Data Policy与服务专门条款逐源登记
+字段清单/删除/用途测试；匿名/threshold不尝试重构
+GO-NFR-007
+必须/P0
+撤权/expiry/删除触发停止新采、在途处置、下游清除和重新查权
+旧报告/旧下载URL/缓存/索引不能继续泄露；保留审计不夹带正文
+GO-NFR-008
+必须/P0
+退役：停调度/live、处理在途、逐scope撤销、按TTL清理、归档批准证据与负责人
+无悬挂任务/持续费用；不撤销共享无关Key，不擅自删除生产数据
+GO-NFR-009
+必须/P0
+域投影可从许可内Whale记录/版本/manifest重建；备份恢复前应用tombstones/expiry
+全重建与增量重放一致；到期数据不复活，不能暗存第二原始库
+GO-NFR-010
+应当/P0
+建议RPO≤24h、RTO≤8h，仅限批准保留的数据；需平台实际备份能力确认
+恢复演练/数据权限/费用重算；未演练不宣称已达标
+10. 中台依赖与研发工作包
+10.1 必须确认的Whale能力
+编号
+缺口/确认项
+验收与未满足处理
+WHL-GO-01
+公开/私有/字段/资产/用途/到期隔离，canonical归并不泄露
+同URL两个租户私有报表负向读/快照/搜索/导出；不通过则私有域不上线
+WHL-GO-02
+SERP完整run/item/有序列表、AI answer/citation与授权report正式schema/source注册
+dry-run和独立读回；不借其他平台或伪正文通过质量；映射未定先只做POC
+WHL-GO-03
+同值新观测、rank/source/scale/scope/revision无损，事实和历史快照分工
+写→读→JSONL往返/回放；discovery.rank不是自动时序库；不通过则相关聚合不上线
+WHL-GO-04
+TTL/rights expiry/撤权/删除传播至索引、向量、缓存、导出、备份
+模拟一个月许可与共享canonical；不能只删除raw保留受限派生
+WHL-GO-05
+schema质量profile支持摘要/结构化报表/无发布时间/无自然语言记录
+平台批准例外与字段阈值；GEN-14不靠假body/language绕过
+WHL-GO-06
+冻结manifest/版本保留、回补与批读/快照授权范围
+验证scope过滤/历史TTL；不足缩短复算期限，不暗建原始真源
+WHL-GO-07
+真实receipt/任务/0结果/背压、小时账与窗口解释
+1,000事件连续端到端；当前208receipt/0doc/46chunks差异调查，不凭表计数猜根因
+WHL-GO-08
+Dataset/source/collector登记、live能力与独立环境
+existing source支持不推导新GA4/Ads/Maps平台已注册；production另批
+WHL-GO-09
+约500万30d逻辑行查询、物化投影与容量、分级embedding
+依中台方案WP-1～WP-3出口与实际压缩测量；不足缩范围/停止媒体回填
+WHL-GO-10
+许可不允许持久化源的按需展示通道及审计最小化
+不进通用索引/API；仅开放已核准用途；技术隔离不替代来源许可
+10.2 研发工作包（提案）
+编号
+交付
+依赖
+验收
+WP-GO-01
+范围/来源/用途矩阵、schema/ID、OpenAPI、指标与oracle冻结
+D-01～08，核心POC
+产品/平台/数据共同确认，未知字段不默认可得
+WP-GO-02
+现有Google collector补齐、SERP/news/trends适配、事件spool/回执/源配额
+01、WHL-GO-02/03/05/07/08
+GT-01～07，真实数据闭环
+WP-GO-03
+关键词/域/URL/AI/事件关系、manifest、指标与基础分析
+02、合格source许可
+GT-08～10，scope/分母/复算正确
+WP-GO-04
+域API、工作台、监测、确定性报告和导出
+03
+GT-11/15，5条关键用户流程
+WP-GO-05
+授权GSC/Bulk、GA4/Ads/Merchant分域连接与对账
+用途/准入批准、WHL-GO-01/04/06
+GT-03/04/14/16，未准入域不外发
+WP-GO-06
+Local/网格/评论及AI重复/趋势预测扩展
+对应source许可与POC
+GT-10/13/16，各模型/域独立通过
+WP-GO-07
+费用/容量/资源/告警、删除/恢复/退役与全回归
+与02～06配套
+GT-06/07/12/14，G1出口完整
+WP-GO-08
+AI研究报告与跨平台证据
+冻结查询/权限/证据成熟
+GT-17及P2用户流程，无依据数字0
+每工作包启动时在真实代码仓库填写owner、预计投入/排期、测试路径/命令、依赖负责人和验收人；本稿不虚构人日或工程命令。付费采购、外部配置、开发实施和上线仍需具体范围批准，本PRD交付不自动授权这些动作。
+11. POC、测试与验收
+11.1 技术/数据POC（本次全部未执行）
+编号
+验证目标
+通过条件与失败降级
+GO-POC-01
+现有collector真实能力、数据面/回执、1,000样本与208/0/46口径
+注册/任务/事件/终态/读回解释一致；不通过维持testing，不恢复旧任务
+GO-POC-02
+SERP供应商/缓存/地理/设备/深度/feature与存储展示许可
+200套人工对照；符合目标用途；无许可的source不入主链
+GO-POC-03
+query/run/URL、同值新观察、私有隔离、正式schema/TTL
+完整无损/负向通过；失败的聚合/私有域阻断
+GO-POC-04
+Trends Alpha/供应商准入，term/topic、scale、批量、low volume/partial/历史
+官方准入不是默认；至少100series跨窗验证；无合格源则该域not_covered
+GO-POC-05
+News RSS/供应商、publisher URL、时间/摘要/正文/事件去重
+独立已知集7天召回/时延与1,000元数据金标；RSS失效按已准入备用源降级
+GO-POC-06
+AIO/AI Mode消费者通道、二次请求、引用/品牌、重复和缓存
+500回答金标，source-specific短窗、分母/许可正确；无UI数据不以生成API冒充
+GO-POC-07
+GSC OAuth/property、API top rows/fresh/BQ匿名/日表与历史可取范围
+≥3property、同grain对账，匿名字段null/empty真实schema确认；不能从匿名构造假query
+GO-POC-08
+GA4模板/配额token/抽样/threshold/(other)、BQ事件/报告差异
+30模板与真实metadata，迟到/时区/归因可解释；不通过不承诺合并经营报表
+GO-POC-09
+Ads Cloud project级别/OAuth/customer/permissible use、SERP组合政策及下游代理
+明确获准路径且Basic/Standard；独立代理商/广告主自身项目/准入绑定；GO-API-031/032主体不匹配、共享项目规避与纯代理负例通过；历史4年/close variants/micros/CID限流通过；未通过不启用相应Ads域
+GO-POC-10
+Local/Places/GBP逐源存储/聚合/embedding/转供、网格和评论样本
+官方来源与独立许可来源分开批准；无许可仅ID/按需允许展示，不留长期评论仓库
+GO-POC-11
+Merchant API当前报表、scope/字段/商品ID/日期
+仅只读且端点真实存在；Content API不作为后备，未获源则延期
+GO-POC-12
+费用、合批/分页/深度/重试/配额/存储/峰值
+实测替代7.3/7.4；预算内，否则缩词/设备/频率而不自动涨费
+GO-POC-13
+撤权/到期/删除/备份/tombstone、恢复和schema重放
+旧报告/下载不泄露，历史不复活，许可不够则缩复算承诺
+11.2 测试层与命令登记
+本工作区只有Markdown，没有可执行quick/unit/integration/E2E/full工程命令，均未运行。后续代码仓库必须登记实际语言/框架下精确命令、CI、覆盖、资源、oracle和证据路径；不复制不存在的示例命令当验收。存在.codex-workflow/quality.json才启用该项目adapter与门禁。
+执行顺序：批准REQ/AC/oracle→缺实现时RED→最小实现GREEN→映射测试→项目真实full回归→用户流程/阶段验收。不删除/弱化/跳过失败测试或看结果后改分母制造通过。
+ID
+层
+需求/域
+必测边界
+GT-01
+单元/契约
+GO-ID-001～006、GO-DAT-002/003
+URL/query/topic/hash/close variants、同URL多query/位置/feature、重复URL与观察去重
+GT-02
+单元/契约
+GO-DAT-004/008、GO-API-103
+PT/UTC/property/customer时区、DST、日/月/周边界、micros/币种/decimal
+GT-03
+单元＋真实边界集成
+GO-DAT-001/003/007、GO-ING-008～010
+null/0/censored、scale/rounded、top rows/匿名、同值新观察、fresh/final/修订与BQ position
+GT-04
+授权报表集成
+GO-SRC-004/008/009、GO-INS-007～009
+GSC property/page grain、GA4 metadata/token/归因、Ads Cloud access/CID/close variants、Merchant当前API
+GT-05
+入库真实边界
+GO-ING-001～004/006、WHL-GO-01～08
+validation_raw/dry-run/错平台/Key、部分400/终态/独立读回、三类header/自主推送
+GT-06
+故障注入
+GO-SRC-009、GO-ING-005/011、GO-API-104/105
+429/503/超时/短效展开、幂等/spool/重启/取消/过期、源实际计费
+GT-07
+连续对账/时效
+GO-QA-001～008、GO-SLO-001～007
+7天计划、发布/观测/缓存年龄、receipt/row口径、rollup窗口、真零结果与源失败
+GT-08
+离线金标
+GO-DAT-005/009、GO-INS-002～005
+语言/品牌消歧、意图/事件/目标情感/引用，不支持语言/无全文/无许可降级
+GT-09
+指标单元/复算
+GO-MET-001～022、GO-INS-001～008
+非可加量、固定cohort、censored排名、AI分母/SoV、GSC/BQ换算、scope/expiry
+GT-10
+留出/回测
+8.2/8.4、GO-INS-003/005
+AI相关重复/聚类区间、趋势季节baseline、机会评分与估算分层误差，漂移停用
+GT-11
+API/导出契约与性能
+GO-API-001～046/100～110、GO-SLO-008
+逐端点正常/空/错/权限、游标/manifest、并发同键、百万行导出/三端一致
+GT-12
+负载/费用/资源
+GO-ING-012、GO-NFR-001～003、7.3/7.4
+高分页/深度/二次请求、各源计费unit、日月预算80/100%、Local执行日峰值、BQ扫描/低磁盘
+GT-13
+Local真实边界
+GO-SRC-010、GO-INS-010、GO-MET-018/019
+place ID与受限内容、相关5条不当全量、坐标网格/排除点/缺测/评论许可与期限
+GT-14
+权限/治理/恢复
+GO-ID-005/007、GO-NFR-004～010、GO-SRC-001～004
+两租户同URL、撤权/expiry/删除/向量/报告/下载/备份、派生期限、Ads组合/独立主体项目准入/纯代理与GBP转供禁用
+GT-15
+工作台E2E
+GO-INS-001～007/011/012
+11.3五条关键流程，键盘/空态/失效/无域/预算/部分失败/证据到期
+GT-16
+条件域验收
+GO-POC-07～11、GO-INS-008～010
+GA4/Ads/Merchant/Local独立准入，未有数据不出假0或套其他域通过
+GT-17
+AI/跨平台评测
+GO-AI-001～005、GO-INS-012/013
+无依据数字/改scope/因果误写/注入/越权、引用证据和跨平台误并
+11.3 五条关键用户流程
+研究员建立词集与域名比较→预览source/coverage/费用→已批准运行→看排名/feature→≤3次下钻run→导出同manifest。
+品牌分析员选term/topic与市场→查看可比趋势/低量/scale→联查news事件→核原文/摘要限制与反例→保存研究报告。
+AI研究员选固定prompt/品牌集合→查看AIO/AI Mode mention/citation→检查失败/未展开/缓存/重复→下钻许可内回答→保存观察结论。
+授权分析员在批准范围内选择GSC/GA4/Ads资产→看独立scope→对账/解释差异→撤权→旧报告/下载立即按批准策略受限。
+管理员查看计划/源质量/额度与费用→模拟429/503/预算或expiry→暂停受影响域→恢复/回放→对账不丢、不重计、不复活过期数据。
+Local另在G2增加网格预估→许可准入→运行→点级证据→许可内评论/对比的流程，不用尚未批准的条件域充当G1已通过E2E。
+11.4 阶段证据包
+每阶段提交批准REQ/AC、source/rights registry、真实schema/OpenAPI、数据manifest/脱敏样本、RED/GREEN/full结果与命令/退出码、7天SLO和费用账、权限负向/恢复演练、限制与未覆盖清单。POC通过只支持对应来源/版本/范围，不外推所有国家、客户或数据类型。
+12. 阶段、出口、决策与风险
+12.1 阶段出口
+阶段
+交付
+必须出口
+G0 范围/来源冻结
+本PRD、业务场景、许可/预算、schema/指标/oracle、Whale依赖、POC结果
+D-01～08明确；P0必需source可得/可存/可返；未满足域写清降级，不能只批准页面清单
+G1 核心研究闭环
+受管SERP/feature、Trends/News批准范围、AIO基础、品牌/内容机会、监测、API/工作台/确定性报告/导出；GSC按D-02
+GO-AC-G1-01～08全部通过；无Trends/授权样本则缩范围并命名，不能宣称全域完成
+G2 授权经营与拓展
+AI Mode重复、GSC深化、GA4/Ads/Merchant、Local/评论、预测与分域source
+相应POC-07～12、GT-10/13/16；用途未准入域继续关闭，不用技术隔离代替批准
+G3 AI/跨平台
+受管查询报告、跨平台证据和经过评测的建议
+GT-17与P2流程通过，数字/引用/因果/权限无阻断缺陷
+12.2 G1验收清单
+编号
+必须交付
+证据映射
+GO-AC-G1-01
+source/许可/保存/展示/分发范围、schema/ID/quality profile冻结，真实样本可读
+GO-POC-01～04、WHL-GO清单、GT-01/05/14
+GO-AC-G1-02
+事件身份/部分失败/源限额/终态/独立读回和连续小时账
+GT-03/05～07、GO-POC-01/03
+GO-AC-G1-03
+SERP/feature/query/URL/scale/rounded/censored语义正确、scope/集合变更有断点
+GT-01～03/09、GO-POC-02/04
+GO-AC-G1-04
+News去重/时间/摘要与全文、AI出现/提及/引用/失败/短窗分别正确
+GT-06～10、GO-POC-05/06
+GO-AC-G1-05
+批准域质量/7天时效/召回/金标通过，不支持语言/无数据域有可用降级
+GT-07/08、GO-AC-002～006
+GO-AC-G1-06
+API/工作台/监测/报告/CSV/JSONL一致，manifest复算与expiry可解释
+GT-09/11/15，11.3流程
+GO-AC-G1-07
+S1费用/配额/资源在批准范围、峰值和低资源保护正确
+GT-12、GO-POC-12
+GO-AC-G1-08
+私有隔离/撤权/到期/清除/恢复/退役不泄露或复活，条件域未越准入
+GT-14/16、GO-POC-03/13；若GSC属G1必达另含GO-POC-07
+12.3 待决策
+ID
+决策
+建议H
+未批准前
+D-01
+首试用户、市场、语言与任务
+品牌/SEO内部研究，英语、US/UK，有限词集
+不外宣全网/全球/全语种能力
+D-02
+G1范围与必达条件域
+SERP/Trends/News/AIO基础闭环；GSC有≥3资产授权后纳入必达，否则明确public-only版
+缺域不当通过；GA4/Ads/Local/Merchant后续独立准入
+D-03
+S1规模/日月预算与绩效目标
+1,000词核心100、2市场2设备；商业≤$50/day/≤$1,500滚动30d，订阅/Cloud另列
+不采购/付费调用/自动增额或做大回填
+D-04
+source/provider、用途/保存/分发、Google Ads组合政策
+先取得匹配用途的合同/明确结论，不凭供应商API可达证明可用
+未明source不开生产，Ads组合与GBP代理保持关闭
+D-05
+OAuth/Cloud project/资产/访问级别与金标oracle
+最小scope，3 GSC/GA4资产和获准Ads账户，真实角色验证
+不创建/修改账号/token/project或以admin替代consumer验收
+D-06
+schema/Dataset/身份/manifest/保留与清除负责方
+私有独立受限观测；默认外链、期限服从最短许可
+不迁移存量、不新建生产Key；无法复算期限明示
+D-07
+SLO、模型/金标阈值、资源与费用单位
+本稿建议先冻结再盲测，业务/平台共同验收
+不在结果后改oracle、分母、剔失败或补0
+D-08
+项目owner、依赖、工作包顺序与真实测试/CI
+WP-GO-01先定契约，02～04核心闭环，07配套，其他按条件
+不虚构排期/人日/工程测试已通过
+D-09
+AI重复、Local/评论、Merchant、预测和AI报告投入
+G2/G3独立验证，按业务场景决定采购与建设
+只交已验证描述性研究，不宣传预测/归因或全量评论
+12.4 风险与降级
+ID
+真实约束/风险
+处理
+R01
+Google是多域，需求扩为全套营销/全网索引会失焦
+固定用户问题/词集/市场，D-02按域验收
+R02
+SERP地理/个性化/缓存/DOM变更影响可比
+明确variant与源时间；unknown/断点不补0
+R03
+Ads Developer Policies与scraped SERP组合、供应商缓存/再分发权不相容
+G0核准具体用途/架构/来源，不认为分库就解除；未解决相关域关闭
+R04
+Trends Alpha不可普遍申请、网页缩放/低量、供应商绝对量是估算
+分源scale/准入，校准与模型另验；无合格源则not_covered
+R05
+AIO/AI Mode随机性、展开/缓存、UI/API差异与未知底层模型
+渠道分开，重复预注册、聚类区间，只说明观察范围
+R06
+GSC top rows/匿名/新近、GA4抽样/threshold/(other)/模型、报表grain混合
+保留metadata，低维/事件对照解释，不强制零差异
+R07
+Places/GBP存储、聚合和转供限制，相关5条评论偏样本
+默认不建长期仓库/通用转供，独立准入来源后才深层分析
+R08
+新闻RSS无保证、wrapper URL/摘要/转载误判
+许可内备用源与元数据质量，全文另采，事件/转载金标
+R09
+计费单位/分页/深度/短效补拉/重试和BQ扫描令预算失真
+实测单价和单位，日月双上限、执行日峰值与分域降级
+R10
+当前Google采集器心跳陈旧、标题链接能力有限；中台存储86.15%
+先补真实闭环与中台WP-1～WP-3，不大回填或批量存截图
+R11
+同URL公开私有归并与expiry/缓存/备份漏清理
+同对象跨租户负向测试、继承最严许可、tombstone恢复验证
+R12
+旧文档自动摘要和新正文冲突，或已sunset服务被照抄
+优先当前端点正文/变更、pin版本；Custom Search/Content API/旧Ads token路径不入新设计
+附录A：开发交接必须保留的语义
+主题
+必须保留的决定
+依据
+Google范围
+搜索/趋势/新闻/AI/Local/授权报表是独立数据域，YouTube另做
+CLAUDE.md、D-02
+Ads新接入
+2026-09-09 developer token sunset，Cloud project access；Explorer不支持KeywordPlan*
+G-O15/16/37
+组合用途
+Ads Developer Policies的SERP采购与下游proxy限制必须核准
+G-O62、GO-SRC-003
+Custom Search
+新客户关闭、老客户2027-01-01停用，不能作新依赖
+G-O24
+Trends
+Alpha准入、relative index/consistent scale/供应商绝对估算分别处理
+G-O22/23、G-P11、G-C36
+AI观测
+消费者UI不等生成API；出现/提及/引用/点击各不相同
+G-C44～48、G-O06/43
+GSC
+Web包含AI流量，无已核实独立AI filter；top rows/匿名/aggregate/BQ position区别
+G-O01/04/30/31/43/56/57
+GA4
+token/metadata、报告估计/事件导出/归因/retention不能混为统一上限
+G-O07/13/32/35/45
+Local
+Places最多5条相关评论、ID例外；GBP缓存/聚合/转供受限
+G-P02/06/15/16
+历史许可
+Semrush未经书面许可不得缓存超过1个月；派生可留性另核
+G-C31
+Whale
+queued非完成，完整rank/run历史/新source/私有隔离必须补证
+G-W01～04、WHL-GO-01～10、GEN-01～18
+附录B：本次完成度
+已完成：既有文档对照、并行官方与竞品网络研究、公开补充检索/第三方资料、Whale只读基线、数据模型/用途/采集契约、46组域API、22项指标、13个洞察模块、容量费用情景、GEN映射、研发工作包、13项POC、17组测试映射和阶段验收。
+未执行：客户访谈、付费竞品工作台实测、Google真实业务API/Alpha/账号准入POC、供应商合同/商务/用途核验、开发实现、所有工程测试与生产验收。
+当前为完整研发评审稿；待决策和POC已具体列明，不能把研究报告的证据或需求文档的验收表当实现通过。

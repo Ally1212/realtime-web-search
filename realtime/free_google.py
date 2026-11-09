@@ -113,12 +113,12 @@ class GoogleTransport:
 
     def fetch(
         self, provider: str, query: str, page: int, proxy_url: str | None,
-        *, proxy_key: str | None = None,
+        *, proxy_key: str | None = None, vertical: str = "web",
     ) -> list[SearchResult]:
         self.local.last_evidence = {}
         self.local.last_serp_response = {}
         try:
-            return self._fetch(provider, query, page, proxy_url, proxy_key=proxy_key)
+            return self._fetch(provider, query, page, proxy_url, proxy_key=proxy_key, vertical=vertical)
         except Exception as exc:
             if bool(os.getenv("GOOGLE_SERP_SAVE_HTML")) and isinstance(exc, GoogleBlocked):
                 self.local.last_evidence.setdefault("exception", f"{type(exc).__name__}:{exc.reason}")
@@ -127,10 +127,10 @@ class GoogleTransport:
 
     def _fetch(
         self, provider: str, query: str, page: int, proxy_url: str | None,
-        *, proxy_key: str | None = None,
+        *, proxy_key: str | None = None, vertical: str = "web",
     ) -> list[SearchResult]:
         if provider == "openserp":
-            return self.openserp(query, page, proxy_url, proxy_key)
+            return self.openserp(query, page, proxy_url, proxy_key, vertical=vertical)
         if provider == "searxng":
             return self.searxng(query, page)
         if provider.startswith("wml"):
@@ -250,8 +250,10 @@ class GoogleTransport:
 
     def openserp(
         self, query: str, page: int, proxy_url: str | None, proxy_key: str | None,
+        *, vertical: str = "web",
     ) -> list[SearchResult]:
         self.local.last_serp_response = {}
+        self.local.last_private_response_capture = None
         if not self.openserp_url:
             raise GoogleBlocked("openserp_not_configured")
         session = getattr(self.local, "openserp_session", None)
@@ -259,6 +261,9 @@ class GoogleTransport:
             session = requests.Session()
             session.trust_env = False
             self.local.openserp_session = session
+        if vertical == 'images':
+            from .google_images import fetch_page
+            return fetch_page(self,query,page,proxy_url,proxy_key)
         params = {
             "text": query,
             "start": (page - 1) * 10,
@@ -269,6 +274,13 @@ class GoogleTransport:
             "features": "true" if self.serp_features_enabled else "false",
             "extract": 0,
         }
+        if vertical == "images":
+            # OpenSERP uses the Google vertical selector. Keep it explicit in
+            # the request and persisted metadata so image rows never look like
+            # ordinary organic results.
+            params["vertical"] = "images"
+        elif vertical != "web":
+            raise GoogleBlocked("openserp_bad_vertical")
         request_url = self.openserp_url + "/google/search?" + urlencode(params)
         request_id = str(uuid.uuid4())
         headers = {"Accept": "application/json", "X-Request-ID": request_id}
@@ -290,6 +302,12 @@ class GoogleTransport:
                 timeout=self.openserp_request_timeout_seconds,
             )
             raw = response.content
+            recorder = getattr(self, 'raw_response_recorder', None)
+            if recorder is not None:
+                # Opt-in private sink runs before JSON/status validation. Never
+                # attach ciphertext, keys or a filesystem path to public SERP data.
+                self.local.last_private_response_capture = recorder(
+                    request_id=request_id, body=raw, http_status=response.status_code)
             try:
                 payload = response.json()
             except ValueError:
@@ -333,6 +351,7 @@ class GoogleTransport:
             ):
                 raise GoogleBlocked("openserp_invalid_response", 200)
             results: dict[str, SearchResult] = {}
+            organic_observations = []
             wrapped_google_results = 0
             resolved_google_results = 0
             for item in rows:
@@ -340,7 +359,10 @@ class GoogleTransport:
                     continue
                 if str(item.get("engine") or "").lower() != "google":
                     raise GoogleBlocked("openserp_invalid_response", 200)
-                if str(item.get("type") or "").lower() != "organic":
+                item_type = str(item.get("type") or "").lower()
+                if vertical == "images" and item_type not in {"image", "images", "image_result"}:
+                    continue
+                if vertical != "images" and item_type != "organic":
                     continue
                 url = str(item.get("url") or "").strip()
                 title = str(item.get("title") or "").strip()
@@ -349,13 +371,32 @@ class GoogleTransport:
                     url = self._resolve_google_goto(session, url, proxy_url)
                     if url:
                         resolved_google_results += 1
-                if self._valid_result_url(url) and url not in results:
+                if vertical == "images":
+                    from .serp_fields import image_result
+                    image = image_result(item, page=page, rank=len(results) + 1)
+                    image_url = image.get('image_url')
+                    if isinstance(image_url, str) and image_url.startswith(('http://', 'https://')) and image_url not in results:
+                        results[image_url] = SearchResult(
+                            image_url, image.get('title') or '', ("google_images",), image,
+                        )
+                    continue
+                if self._valid_result_url(url):
                     from .serp_fields import organic_result
-                    results[url] = SearchResult(
-                        url, title, ("google_web",), organic_result(item, url=url, page=page),
-                    )
+                    fields = organic_result(item, url=url, page=page)
+                    organic_observations.append(fields)
+                    if url not in results:
+                        results[url] = SearchResult(url, title, ("google_web",), fields)
             from .serp_fields import response_envelope
             self.local.last_serp_response = response_envelope(payload, params, list(results.values()))
+            if vertical == 'web':
+                # URL dedup limits downstream work; observation order and repeated
+                # ranks remain independent facts in the saved response.
+                self.local.last_serp_response['organic_results'] = organic_observations
+            if vertical == "images":
+                self.local.last_serp_response['source'] = 'google_images'
+                self.local.last_serp_response['search_parameters']['vertical'] = 'images'
+                self.local.last_serp_response['image_results'] = [r.serp_fields for r in results.values()]
+                self.local.last_serp_response['organic_results'] = []
             classification = "results" if results else "empty"
             self._openserp_evidence(
                 response, raw, classification, request_url, payload,

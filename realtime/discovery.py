@@ -8,6 +8,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, urlsplit
 from xml.etree import ElementTree
@@ -424,7 +425,7 @@ class SearchDiscovery:
             return "google_invalid_response"
         return "google_transport_error"
 
-    def _attempt(self, provider: str, query: str, page: int) -> list[SearchResult]:
+    def _attempt(self, provider: str, query: str, page: int, *, vertical: str = "web") -> list[SearchResult]:
         if self.should_continue and not self.should_continue():
             raise GoogleBlocked("campaign_inactive")
         source = f"google_{provider}"
@@ -443,14 +444,21 @@ class SearchDiscovery:
         started = time.monotonic()
         results: list[SearchResult] = []
         failure: Exception | None = None
+        requested_at = None
         try:
             with self.global_limiter:
-                results = self.transport.fetch(provider, query, page, proxy_url, proxy_key=proxy_key)
+                requested_at = datetime.now(timezone.utc).isoformat()
+                if vertical == 'images':
+                    from .google_images import fetch_page
+                    results = fetch_page(self.transport, query, page, proxy_url, proxy_key)
+                else:
+                    results = self.transport.fetch(provider, query, page, proxy_url, proxy_key=proxy_key)
             return results
         except Exception as exc:
             failure = exc
             raise GoogleBlocked(self._error_code(exc), captcha=isinstance(exc, GoogleBlocked) and exc.captcha) from None
         finally:
+            received_at = datetime.now(timezone.utc).isoformat()
             elapsed = time.monotonic() - started
             code = self._error_code(failure) if failure else ""
             captcha = isinstance(failure, GoogleBlocked) and failure.captcha
@@ -525,12 +533,14 @@ class SearchDiscovery:
                 self._thread_state.last_serp_request_id = self.serp_response_recorder(
                     provider=provider, query=query, page=page, language=self.language,
                     region=self.transport.region,
+                    **({'source':'google_images'} if vertical == 'images' else {}),
                     results=results, response=self.transport.last_serp_response,
                     elapsed_seconds=elapsed, classification=classification,
                     http_status=evidence.get("http_status"), error_code=code or None,
                     upstream_request_id=evidence.get("upstream_request_id"),
                     upstream_version=evidence.get("upstream_version"),
                     upstream_cache_status=evidence.get("upstream_cache_status"),
+                    requested_at=requested_at, received_at=received_at,
                 )
             if self.serp_attempt_recorder:
                 try:

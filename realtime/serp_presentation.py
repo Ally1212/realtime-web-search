@@ -2,7 +2,7 @@
 from urllib.parse import urlsplit
 import json
 
-SOURCES = {'google_web': 'Google 网页', 'google_news': 'Google 新闻', 'google_trends': 'Google 热门话题'}
+SOURCES = {'google_web': 'Google 网页', 'google_news': 'Google 新闻', 'google_trends': 'Google 热门话题', 'google_images':'Google 图片'}
 USER_COLUMNS = ('数据类型', '标题', '链接', '摘要', '链接网站', '媒体', '自然排名', '新闻列表顺序', '搜索关键词', '搜索地区', '搜索语言', '采集时间', '发布时间', '搜索页数', '历史首次发现', '热门话题', '搜索量标记')
 EXTRA_COLUMNS = {
     '绝对排名':'rank_absolute', '上游域名':'upstream_domain', '上游图标':'upstream_favicon',
@@ -13,7 +13,7 @@ EXTRA_COLUMNS = {
     '上游域名分类':'upstream_domain_info', '字段状态':'field_status', '采集方式':'collection_method',
 }
 BASE_COLUMNS = USER_COLUMNS
-USER_COLUMNS += (*EXTRA_COLUMNS, '热点地区', '热点图片', '热点图片来源', '热度量级数值', '量级是否为下限', '设备', '城市')
+USER_COLUMNS += (*EXTRA_COLUMNS, '热点地区', '热点图片', '热点图片来源', '热度量级数值', '量级是否为下限', '设备', '城市', '图片地址', '图片来源网页', '图片宽度', '图片高度', '图片返回顺序','图片原始记录 JSON')
 
 
 def user_result_rows(row):
@@ -42,6 +42,10 @@ def user_result_rows(row):
                        '热点图片来源':topic.get('picture_source'), '热度量级数值':topic.get('traffic_value'),
                        '量级是否为下限':topic.get('traffic_is_lower_bound'),
                        '设备':params.get('device'), '城市':params.get('location')})
+        if row.get('source') == 'google_images':
+            values.update({'图片地址':result.get('image_url'),'图片来源网页':result.get('source_url'),
+                           '图片宽度':result.get('width'),'图片高度':result.get('height'),'图片返回顺序':result.get('observed_order'),'图片原始记录 JSON':result})
+        for column in USER_COLUMNS:values.setdefault(column,None)
         yield values
 
 

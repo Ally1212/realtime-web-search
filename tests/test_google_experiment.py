@@ -370,7 +370,8 @@ class ExperimentTests(unittest.TestCase):
 
     def test_report_has_content_and_keeps_whale_baseline_separate(self):
         self.save()
-        report=export_report(self.store,self.root/'export',full=True)
+        with patch('realtime.google_experiment.shutil.disk_usage', return_value=SimpleNamespace(free=3*1024**3)):
+            report=export_report(self.store,self.root/'export',full=True)
         self.assertEqual(report['new'],1)
         self.assertTrue((self.root/'export/全部正文.md').is_file())
         self.assertIn(document()['content'],(self.root/'export/全部正文.md').read_text())

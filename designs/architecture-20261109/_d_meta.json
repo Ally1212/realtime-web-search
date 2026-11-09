@@ -1,0 +1,18 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "preview": {
+      "versions": [
+        {
+          "path": "preview.html",
+          "createdAt": "2026-11-09T02:18:51.427Z",
+          "status": "needs-review"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-11-09T02:18:51.430Z",
+  "updatedAt": "2026-11-09T02:18:51.430Z"
+}

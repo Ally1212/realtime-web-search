@@ -116,6 +116,58 @@ class ConsoleIntegrationTests(unittest.TestCase):
         self.trends = self.record('google_trends', {'trending_searches':[dict(keyword='Energy topic',approx_traffic='20,000+',articles=[dict(title='New report',link='https://example.org/b')]),dict(keyword='No articles',articles=[])]})
         self.error = self.record('google_web', {}, 'captcha')
 
+    def test_cooling_once_task_stays_active_and_progress_is_private_safe(self):
+        cid = self.store.create_task({'query':'waiting','sources':['google_web']}, self.config)['campaign_id']
+        discovery = Mock(locale='test:serp-v1')
+        discovery.discover_many.return_value = ([], [])
+        with patch('realtime.serp_worker.make_discovery', return_value=discovery):
+            run_serp_campaign(cid,self.config,self.base,self.store)
+        self.assertEqual(self.base.campaign(cid)['status'],'active')
+        progress = self.store.collection_progress(cid)
+        self.assertFalse(progress['scope_complete'])
+        self.assertEqual(progress['fresh_attempts'],0)
+        self.assertIsNotNone(progress['retry_started_at'])
+        with self.base.connect() as db:
+            db.execute("UPDATE serp_task_options SET options=options || '{\"customer_private\":true}'::jsonb WHERE campaign_id=%s", (cid,))
+        self.assertIsNone(self.store.collection_progress(cid))
+        self.assertIsNotNone(self.store.collection_progress(cid, public_only=False))
+
+    def test_retry_window_begins_at_execution_and_rejects_invalid_input(self):
+        for value in (True,59,14401,'60'):
+            with self.assertRaises(ValueError):
+                options({'retry_window_seconds':value})
+        self.assertFalse(self.store.once_retry_expired(self.cid))  # paused draft
+        self.assertNotIn('_retry_started_at',self.store.task_options(self.cid))
+        self.store.action(self.cid,'start')
+        self.assertFalse(self.store.once_retry_expired(self.cid))
+        self.assertIn('_retry_started_at',self.store.task_options(self.cid))
+        started=self.store.task_options(self.cid)['_retry_started_at']
+        self.store.action(self.cid,'pause'); self.store.action(self.cid,'resume')
+        self.assertEqual(self.store.task_options(self.cid)['_retry_started_at'],started)
+        self.store.action(self.cid,'stop'); self.store.action(self.cid,'start')
+        self.assertNotIn('_retry_started_at',self.store.task_options(self.cid))
+
+    def test_manual_task_idempotency_reuses_one_task_and_rejects_conflict(self):
+        payload=dict(query='idempotent task',sources=['google_web'],start=False)
+        first=self.store.create_task(payload,self.config,idempotency_key='qa-unique-1')
+        again=self.store.create_task(payload,self.config,idempotency_key='qa-unique-1')
+        self.assertEqual(first['campaign_id'],again['campaign_id'])
+        self.assertTrue(again['idempotent_replay'])
+        self.assertNotIn('_creation_key',first['options'])
+        with self.assertRaises(ValueError):
+            self.store.create_task(dict(payload,query='different'),self.config,idempotency_key='qa-unique-1')
+        with self.base.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) n FROM campaigns WHERE query='idempotent task'").fetchone()['n'],1)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures=[pool.submit(self.store.create_task,payload,self.config,idempotency_key='qa-race-1') for _ in range(2)]
+            results=[f.result() for f in futures]
+        self.assertEqual(results[0]['campaign_id'],results[1]['campaign_id'])
+        self.assertEqual(sum(bool(r.get('idempotent_replay')) for r in results),1)
+        for key in ('', 'with space', 'x'*129):
+            with self.assertRaises(ValueError):
+                self.store.create_task(payload,self.config,idempotency_key=key)
+
     def test_once_task_scope_budget_and_completion(self):
         cid = self.store.create_task({'keywords':['a','b'], 'sources':['google_web','google_news','google_trends'], 'options':{'web_pages':3,'news_locale':'US:en','trends_geo':'US'}, 'mode':'once', 'max_successful_searches':2, 'start':False}, self.config)['campaign_id']
         row = next(x for x in self.store.tasks()['tasks'] if str(x['id'])==cid)
@@ -353,6 +405,20 @@ class ConsoleIntegrationTests(unittest.TestCase):
         row = next(x for x in self.store.tasks()['tasks'] if str(x['id'])==second)
         self.assertEqual((row['cached'],row['new_links']),(1,0))
         self.assertEqual(self.store.overview()['requests']['attempts'],1)
+
+    def test_private_origin_cache_is_not_reused_as_invisible_public_results(self):
+        from psycopg.types.json import Jsonb
+        private = self.store.create_task({'query':'private cache','sources':['google_trends'],'start':False}, self.config)['campaign_id']
+        with self.base.connect() as db:
+            db.execute('UPDATE serp_task_options SET options=%s WHERE campaign_id=%s',
+                       (Jsonb({'customer_private': True}), private))
+        rid = self.record('google_trends', {'trending_searches':[{'keyword':'topic','articles':[]}]}, cid=private)
+        self.store.cache_feed('c'*64, rid, 600)
+        self.assertIsNotNone(self.store.cached_feed('c'*64, private))
+        self.assertIsNone(self.store.cached_feed('c'*64, self.cid))
+        with self.base.connect() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM serp_campaign_requests WHERE campaign_id=%s AND request_id=%s', (self.cid, rid)).fetchone())
+        self.assertEqual(self.store.browse({'campaign_id': self.cid}, 'requests')['rows'], [])
 
     def test_actual_http_task_settings_filters_json_and_export(self):
         self.seed_results()

@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import requests
@@ -48,8 +53,55 @@ CREATE TABLE IF NOT EXISTS whale_serp_job_items (
  PRIMARY KEY(job_id,outbox_id)
 );
 """
-TERMINAL_RECEIPTS = {'queued', 'accepted', 'duplicate'}
+INGEST_RECEIPTS = {'queued', 'accepted', 'duplicate'}
+TERMINAL_RECEIPTS = {'accepted', 'duplicate', 'rejected'}
 TASK_TYPES = ('keyword_search', 'backfill', 'content_detail')
+LINK_EVENT_IDENTITY_VERSION = 'serp-link-observation-2'
+
+
+def retry_delay(attempts, retry_after=None, *, minimum=0, now=None):
+    delay=max(minimum,min(3600,2**min(max(0,attempts),10)))
+    if retry_after is not None:
+        try:
+            seconds=float(retry_after)
+        except (ValueError,TypeError):
+            try:
+                date=parsedate_to_datetime(str(retry_after))
+                seconds=(date-(now or datetime.now(timezone.utc))).total_seconds()
+            except (ValueError,TypeError,OverflowError):seconds=0
+        if math.isfinite(seconds):delay=max(delay,min(86400,max(0,seconds)))
+    return delay+random.uniform(0,min(30,delay*.1))
+
+
+def receipt_query(row):
+    payload=row['payload'];source=payload['source']
+    query=dict(dataset_id=row['dataset_id'],**{k:source[k] for k in ('source_platform','source_name','source_record_key')})
+    if (payload.get('dataset_id')!=row['dataset_id'] or source['source_record_key']!=row['record_key']
+            or any(not isinstance(v,str) or not v for v in query.values())):
+        raise ValueError('Invalid saved receipt scope')
+    return query
+
+
+def processing_receipts(rows, response):
+    entries=response.get('receipts') if isinstance(response,dict) else None
+    if not isinstance(entries,list) or len(entries)!=len(rows):raise ValueError('Incomplete processing receipt batch')
+    result=[]
+    for row,entry in zip(rows,entries):
+        query=receipt_query(row)
+        if not isinstance(entry,dict) or any(entry.get(k)!=v for k,v in query.items()):
+            raise ValueError('Processing receipt scope differs')
+        if entry.get('status') not in {'unknown','pending','queued','retrying','failed','accepted','duplicate'}:
+            raise ValueError('Unknown processing receipt status')
+        previous=row.get('receipt') or {}
+        if any(k in entry and (not isinstance(entry[k],str) or len(entry[k])>256)
+               for k in ('receipt_id','document_id','version_id','persisted_at')):
+            raise ValueError('Invalid processing receipt identity fields')
+        for field in ('document_id','version_id'):
+            if previous.get(field) and entry.get(field) and previous[field]!=entry[field]:
+                raise ValueError('Processing receipt version identity differs')
+        # Do not persist arbitrary response fields or error text.
+        result.append({k:entry[k] for k in (*query,'status','receipt_id','document_id','version_id','persisted_at') if k in entry})
+    return result
 
 
 def canonical_hash(value):
@@ -75,10 +127,15 @@ def link_message(row, item, config, platform_task_id=None):
         for topic in row['response'].get('trending_searches') or []:
             if any((a.get('normalized_link') or a.get('link')) == (item.get('normalized_link') or item.get('link')) for a in topic.get('articles') or []):
                 metadata['trend']={k:v for k,v in topic.items() if k!='articles'};break
-    # Request/campaign IDs and observation time do not change retry identity.
-    event = canonical_hash(dict(item=observed, query=row['query'], source=row['source'], page=row['page']))
-    task_part = ':' + canonical_hash(platform_task_id)[:16] if platform_task_id else ''
-    record_key = f'{config.whale_source_platform}:serp:{digest}:{event}{task_part}'
+    # A genuine new saved request is a new observation, even with identical
+    # values. Retries bind to the same run/URL/task; content is not event identity.
+    # This remains a link-only object contract, not a complete occurrence export.
+    request_id = str(UUID(str(row['request_id'])))
+    identity = dict(version=LINK_EVENT_IDENTITY_VERSION, request_id=request_id,
+                    source=row['source'], page=row['page'], url_id=digest,
+                    platform_task_id=platform_task_id)
+    record_key = f'{config.whale_source_platform}:{LINK_EVENT_IDENTITY_VERSION}:{canonical_hash(identity)}'
+    metadata['event_identity_version'] = LINK_EVENT_IDENTITY_VERSION
     content = dict(external_content_id='url:'+digest, content_type='search_result',
                    source_url=url, canonical_url=url, status='published')
     capabilities = ['identity']
@@ -91,8 +148,9 @@ def link_message(row, item, config, platform_task_id=None):
             dt = datetime.fromisoformat(str(published).replace('Z', '+00:00'))
             if dt.tzinfo is not None: content['published_at'] = dt.isoformat()
         except (ValueError, TypeError): pass
+    payload_hash = canonical_hash(dict(metadata=metadata, content=content, received_at=received))
     source = dict(source_platform=config.whale_source_platform, source_name=config.whale_source_name+'.serp',
-                  source_record_key=record_key, payload_hash='sha256:'+event, received_at=received,
+                  source_record_key=record_key, payload_hash='sha256:'+payload_hash, received_at=received,
                   trace_id=str(row['request_id']))
     if platform_task_id: source['collection_task_id'] = platform_task_id
     message = dict(schema_version='whale.ingest.v1', dataset_id=config.whale_dataset_id, source=source,
@@ -185,6 +243,26 @@ class WhaleSerpStore:
         with self.store.connect() as db:
             db.execute('UPDATE whale_serp_settings SET runtime=runtime||%s WHERE id=true',(Jsonb(values),))
 
+    def ingest_ready(self):
+        with self.store.connect() as db:
+            row=db.execute("SELECT coalesce((runtime->>'ingest_retry_not_before')::timestamptz,'-infinity'::timestamptz)<=clock_timestamp() ready FROM whale_serp_settings WHERE id=true").fetchone()
+            return bool(row and row['ready'])
+
+    def defer_ingest(self,attempts,*,status_code,retry_after=None):
+        if status_code!=429 and not 500<=status_code<=599:raise ValueError('Invalid backpressure status')
+        with self.store.connect() as db:
+            row=db.execute('SELECT runtime,clock_timestamp() observed_at FROM whale_serp_settings WHERE id=true FOR UPDATE').fetchone()
+            if row is None:raise ValueError('Ingest settings are unavailable')
+            until=row['observed_at']+timedelta(seconds=retry_delay(attempts,retry_after,now=row['observed_at']))
+            prior=row['runtime'].get('ingest_retry_not_before')
+            if prior:
+                prior=datetime.fromisoformat(prior.replace('Z','+00:00'))
+                if prior.tzinfo is None:raise ValueError('Invalid persisted ingest cooldown')
+                until=max(until,prior)
+            values=dict(ingest_retry_not_before=until.isoformat(),ingest_backpressure_reason='http_'+str(status_code))
+            db.execute('UPDATE whale_serp_settings SET runtime=runtime||%s WHERE id=true',(Jsonb(values),))
+            return until
+
     def get_job(self,jid):
         with self.store.connect() as db:
             r=db.execute('SELECT * FROM whale_serp_jobs WHERE id=%s',(str(UUID(str(jid))),)).fetchone()
@@ -195,7 +273,9 @@ class WhaleSerpStore:
     def counts(db,jid):
         rows=db.execute('SELECT o.state,count(*) n FROM whale_serp_job_items i JOIN whale_serp_outbox o ON o.id=i.outbox_id WHERE i.job_id=%s GROUP BY o.state',(jid,)).fetchall()
         c={k:0 for k in ('pending','queued','accepted','duplicate','rejected')};c.update({r['state']:r['n'] for r in rows})
-        return dict(counts=c,collected=sum(c.values()),received=c['queued']+c['accepted'],duplicates=c['duplicate'])
+        return dict(counts=c,collected=sum(c.values()),received=c['queued']+c['accepted'],
+                    persisted=c['accepted'],awaiting_persistence=c['queued'],
+                    terminal=c['accepted']+c['duplicate']+c['rejected'],duplicates=c['duplicate'])
 
     def active_jobs(self):
         with self.store.connect() as db:
@@ -239,6 +319,7 @@ class WhaleSerpStore:
     def enqueue(self,payload,config):
         allowed={'campaign_id','source','since','until','q','new_only','urls','limit','start'}
         if not isinstance(payload,dict) or set(payload)-allowed: raise ValueError('无效上传筛选字段')
+        if payload.get('source') == 'google_images':raise ValueError('图片数据暂不支持平台上传，请使用 JSONL/CSV 导出')
         limit=bounded_int(payload.get('limit'),100,1,10000,'limit')
         if type(payload.get('start',True)) is not bool: raise ValueError('start 必须为布尔值')
         filters={k:v for k,v in payload.items() if k not in ('urls','limit','start')}
@@ -256,6 +337,7 @@ class WhaleSerpStore:
 
     def stage(self,db,jid,config,filters,selected,limit,task_id=None):
         clauses,params=ConsoleStore.filters(filters)
+        clauses.append("r.source <> 'google_images'")
         where=' AND '.join(clauses) if clauses else 'true'
         selected_set={normalize_serp_url(u) for u in selected} if selected else None
         existing=db.execute("SELECT o.payload->'content'->>'canonical_url' url FROM whale_serp_job_items i JOIN whale_serp_outbox o ON o.id=i.outbox_id WHERE i.job_id=%s",(jid,)).fetchall()
@@ -275,7 +357,9 @@ class WhaleSerpStore:
                     q=str(filters.get('q') or '').casefold()
                     if q and not any(q in str(v or '').casefold() for v in [row['query'],item.get('title'),item.get('snippet'),raw]):continue
                     key,msg=link_message(row,item,config,task_id)
-                    out=db.execute('INSERT INTO whale_serp_outbox(dataset_id,record_key,payload) VALUES(%s,%s,%s) ON CONFLICT(dataset_id,record_key) DO UPDATE SET record_key=excluded.record_key RETURNING id',(config.whale_dataset_id,key,Jsonb(msg))).fetchone()
+                    out=db.execute('INSERT INTO whale_serp_outbox(dataset_id,record_key,payload) VALUES(%s,%s,%s) ON CONFLICT(dataset_id,record_key) DO UPDATE SET record_key=excluded.record_key WHERE whale_serp_outbox.payload=excluded.payload RETURNING id',(config.whale_dataset_id,key,Jsonb(msg))).fetchone()
+                    if out is None:
+                        raise ValueError('Same upload event has a different payload; saved evidence was not replaced')
                     db.execute('INSERT INTO whale_serp_job_items(job_id,outbox_id) VALUES(%s,%s) ON CONFLICT DO NOTHING',(jid,out['id']))
                     seen.add(url);remaining-=1
                     if not remaining:return
@@ -301,24 +385,44 @@ class WhaleSerpStore:
     def reserve(self,jid,batch_size):
         token=str(uuid4())
         with self.store.connect() as db:
-            rows=db.execute("SELECT o.id FROM whale_serp_outbox o JOIN whale_serp_job_items i ON i.outbox_id=o.id JOIN whale_serp_jobs j ON j.id=i.job_id WHERE j.id=%s AND j.status='active' AND o.state='pending' AND o.next_attempt_at<=now() AND (o.lease_expires_at IS NULL OR o.lease_expires_at<=now()) AND (SELECT uploads_enabled FROM whale_serp_settings WHERE id=true) ORDER BY o.id FOR UPDATE OF o SKIP LOCKED LIMIT %s",(jid,batch_size)).fetchall()
+            rows=db.execute("SELECT o.id FROM whale_serp_outbox o JOIN whale_serp_job_items i ON i.outbox_id=o.id JOIN whale_serp_jobs j ON j.id=i.job_id WHERE j.id=%s AND j.status='active' AND o.state='pending' AND o.next_attempt_at<=now() AND (o.lease_expires_at IS NULL OR o.lease_expires_at<=now()) AND (SELECT uploads_enabled AND coalesce((runtime->>'ingest_retry_not_before')::timestamptz,'-infinity'::timestamptz)<=clock_timestamp() FROM whale_serp_settings WHERE id=true) ORDER BY o.id FOR UPDATE OF o SKIP LOCKED LIMIT %s",(jid,batch_size)).fetchall()
             ids=[r['id'] for r in rows]
             if not ids: return []
             return db.execute("UPDATE whale_serp_outbox SET lease_token=%s,lease_expires_at=now()+interval '120 seconds',attempts=attempts+1 WHERE id=ANY(%s) RETURNING *",(token,ids)).fetchall()
 
     def settle(self,rows,receipts=None,error=None,retryable=True,retry_after=None):
+        if receipts is not None and (not isinstance(receipts,list) or len(receipts)!=len(rows)):
+            raise ValueError('Bulk receipt count differs')
         with self.store.connect() as db:
             for index,row in enumerate(rows):
                 receipt=receipts[index] if receipts is not None else None
                 state=receipt.get('receipt_status') if isinstance(receipt,dict) else None
-                if state not in TERMINAL_RECEIPTS:
-                    state='pending' if retryable and receipt is None else 'rejected'
-                reason=None if state in TERMINAL_RECEIPTS else error or 'platform_rejected'
-                delay=min(3600,2**min(row['attempts'],10))
-                if retry_after is not None:
-                    try:delay=max(delay,min(86400,max(0,float(retry_after))))
-                    except (ValueError,TypeError):pass
-                db.execute("UPDATE whale_serp_outbox SET state=%s,receipt=%s,last_error=%s,lease_token=NULL,lease_expires_at=NULL,next_attempt_at=now()+(%s*interval '1 second'),updated_at=now() WHERE id=%s AND lease_token=%s",(state,Jsonb(receipt) if receipt else None,reason,delay,row['id'],row['lease_token']))
+                if state not in INGEST_RECEIPTS and state!='rejected':state='pending' if retryable else 'rejected'
+                reason=None if state in INGEST_RECEIPTS else error or 'platform_rejected'
+                delay=retry_delay(row['attempts'],retry_after,minimum=5 if state=='queued' else 0)
+                db.execute("UPDATE whale_serp_outbox SET state=%s,receipt=%s,last_error=%s,lease_token=NULL,lease_expires_at=NULL,next_attempt_at=now()+(%s*interval '1 second'),updated_at=now() WHERE id=%s AND lease_token=%s AND lease_expires_at>now()",(state,Jsonb(receipt) if receipt else None,reason,delay,row['id'],row['lease_token']))
+
+    def reserve_receipt_poll(self,jid,batch_size):
+        token=str(uuid4())
+        with self.store.connect() as db:
+            ids=[r['id'] for r in db.execute("SELECT o.id FROM whale_serp_outbox o JOIN whale_serp_job_items i ON i.outbox_id=o.id JOIN whale_serp_jobs j ON j.id=i.job_id WHERE j.id=%s AND j.status='active' AND o.state='queued' AND o.next_attempt_at<=now() AND (o.lease_expires_at IS NULL OR o.lease_expires_at<=now()) AND (SELECT uploads_enabled AND coalesce((runtime->>'ingest_retry_not_before')::timestamptz,'-infinity'::timestamptz)<=clock_timestamp() FROM whale_serp_settings WHERE id=true) ORDER BY o.id FOR UPDATE OF o SKIP LOCKED LIMIT %s",(jid,batch_size)).fetchall()]
+            if not ids:return []
+            return db.execute("UPDATE whale_serp_outbox SET lease_token=%s,lease_expires_at=now()+interval '120 seconds' WHERE id=ANY(%s) RETURNING *",(token,ids)).fetchall()
+
+    def settle_processing_receipts(self,rows,response=None,*,error=None,retry_after=None):
+        entries=processing_receipts(rows,response) if response is not None else [None]*len(rows)
+        with self.store.connect() as db:
+            for row,entry in zip(rows,entries):
+                state='queued';receipt=dict(row.get('receipt') or {});reason=error
+                if entry:
+                    status=entry['status'];receipt['processing_receipt']=entry
+                    if status in {'accepted','duplicate'}:
+                        state=status;receipt.update({k:entry[k] for k in ('receipt_id','document_id','version_id','persisted_at') if k in entry})
+                        receipt['receipt_status']=status
+                    elif status=='failed':state='rejected';reason='persistence_failed'
+                    elif status=='unknown':reason='processing_status_unknown'
+                delay=retry_delay(row['attempts'],retry_after,minimum=5)
+                db.execute("UPDATE whale_serp_outbox SET state=%s,receipt=%s,last_error=%s,lease_token=NULL,lease_expires_at=NULL,next_attempt_at=now()+(%s*interval '1 second'),updated_at=now() WHERE id=%s AND state='queued' AND lease_token=%s AND lease_expires_at>now()",(state,Jsonb(receipt),reason,delay,row['id'],row['lease_token']))
 
     def import_task(self,task,config):
         taskid=str(task.get('id') or task.get('task_id') or '')
@@ -346,14 +450,32 @@ class WhaleSerpStore:
         return jid
 
 
+def collector_endpoint(config):
+    """Explicit endpoint migration without modifying frozen Compose or credentials."""
+    path = Path('/app/state/private/whale-api-endpoint.json')
+    if not path.exists():
+        return config.whale_base_url.rstrip('/')
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+        base = value['base_url']
+        parsed = urlsplit(base)
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+                or parsed.query or parsed.fragment or parsed.path not in ('', '/')):
+            raise ValueError()
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ValueError('Whale endpoint configuration is invalid') from None
+    return base.rstrip('/')
+
+
 class WhaleLinkClient:
     def __init__(self,config,session=None):
         self.config=config;self.session=session or requests.Session();self.agent_id=config.whale_agent_id
+        self.base_url=collector_endpoint(config)
         if not config.whale_collector_api_key: raise ValueError('未配置 Whale Collector Key')
     def post(self,path,payload):
-        r=self.session.post(self.config.whale_base_url.rstrip('/')+path,json=payload,
-                            headers={'Authorization':'Bearer '+self.config.whale_collector_api_key},timeout=20)
-        if not r.ok:
+        r=self.session.post(self.base_url+path,json=payload,
+                            headers={'Authorization':'Bearer '+self.config.whale_collector_api_key},timeout=20,allow_redirects=False)
+        if not 200 <= r.status_code < 300:
             e=RuntimeError('Whale HTTP '+str(r.status_code));e.status_code=r.status_code
             e.retry_after=r.headers.get('Retry-After');raise e
         return r.json()
@@ -369,12 +491,12 @@ class WhaleLinkClient:
         r=self.post('/v1/collection/tasks/claim',dict(agent_id=self.agent_id,declared_capabilities=['identity','title'],limit=1))
         return r.get('tasks') or []
     def task_heartbeat(self,job):
-        stats=dict(collected_count=job['collected'],ingested_count=job['received'],duplicate_count=job['duplicates'])
+        stats=dict(collected_count=job['collected'],ingested_count=job['persisted'],duplicate_count=job['duplicates'])
         cursor=json.dumps(dict(job_id=str(job['id']),campaign_id=str(job['campaign_id']),local_status=job['status'],counts=job['counts']))
         return self.post('/v1/collection/tasks/'+job['platform_task_id']+'/heartbeat',dict(agent_id=self.agent_id,cursor=cursor,stats=stats))
     def complete(self,job):
         return self.post('/v1/collection/tasks/'+job['platform_task_id']+'/complete',dict(agent_id=self.agent_id,
-            collected_count=job['collected'],ingested_count=job['received'],duplicate_count=job['duplicates'],cursor=str(job['id'])))
+            collected_count=job['collected'],ingested_count=job['persisted'],duplicate_count=job['duplicates'],cursor=str(job['id'])))
     def fail(self,task_id,message,retry=True):
         return self.post('/v1/collection/tasks/'+task_id+'/fail',dict(agent_id=self.agent_id,message=message,cursor='',retry=retry))
 
@@ -393,9 +515,27 @@ class WhaleSerpRuntime:
             self.store.settle(rows,receipts)
         except Exception as e:
             code=getattr(e,'status_code',None)
-            retry=code is None or code in (408,425,429) or code>=500
-            self.store.settle(rows,error='Whale HTTP '+str(code) if code else type(e).__name__,retryable=retry,retry_after=getattr(e,'retry_after',None))
+            if code==429 or isinstance(code,int) and 500<=code<=599:
+                self.store.defer_ingest(max(r['attempts'] for r in rows),status_code=code,retry_after=getattr(e,'retry_after',None))
+            retry=code is None or code in (400,408,425,429) or code>=500
+            recovered=None
+            if code==400:
+                try:
+                    entries=processing_receipts(rows,self.client.post('/v1/ingest/receipts',[receipt_query(r) for r in rows]))
+                    recovered=[dict(entry,receipt_status={'failed':'rejected','retrying':'queued'}.get(entry['status'],entry['status'])) if entry['status'] in {'queued','accepted','duplicate','failed','retrying'} else None for entry in entries]
+                except Exception:pass
+            self.store.settle(rows,recovered,error='Whale HTTP '+str(code) if code else type(e).__name__,retryable=retry,retry_after=getattr(e,'retry_after',None))
             self.store.runtime(last_error='Whale HTTP '+str(code) if code else type(e).__name__)
+
+    def poll_queued(self,job):
+        rows=self.store.reserve_receipt_poll(job['id'],100)
+        if not rows:return
+        try:self.store.settle_processing_receipts(rows,self.client.post('/v1/ingest/receipts',[receipt_query(r) for r in rows]))
+        except Exception as e:
+            code=getattr(e,'status_code',None)
+            if code==429 or isinstance(code,int) and 500<=code<=599:
+                self.store.defer_ingest(max(r['attempts'] for r in rows),status_code=code,retry_after=getattr(e,'retry_after',None))
+            self.store.settle_processing_receipts(rows,error='receipt_poll:'+str(getattr(e,'status_code',type(e).__name__)),retry_after=getattr(e,'retry_after',None))
     def collect(self,job):
         from .serp_worker import run_serp_campaign
         spec=job['specification']
@@ -487,14 +627,16 @@ class WhaleSerpRuntime:
                         self.client.fail(job['platform_task_id'],'任务达到运行时限，分页游标和上传记录保留',True)
                         self.store.finish(job['id'],'failed','duration_limit');continue
                     if job['collected']>=spec['max_items']:done=True
-                    if not done and not self.searches and not job['discovery_done']:
+                    if not done and not self.searches and not job['discovery_done'] and self.store.ingest_ready():
                         self.searches[jid]=self.pool.submit(self.collect,job)
                 if done:
                     self.store.store.set_status(str(job['campaign_id']),'paused')
                     with self.store.store.connect() as db:db.execute('UPDATE whale_serp_jobs SET discovery_done=true WHERE id=%s',(job['id'],))
-            if settings['uploads_enabled']:self.flush(job)
+            if settings['uploads_enabled']:
+                self.poll_queued(job)
+                self.flush(job)
             job=self.store.get_job(job['id'])
-            if job['discovery_done'] and not job['counts']['pending']:
+            if job['discovery_done'] and not job['counts']['pending'] and not job['counts']['queued']:
                 if job['counts']['rejected']:
                     if job['kind']=='platform':self.client.fail(job['platform_task_id'],'Whale 拒收，已保留记录',False)
                     self.store.finish(job['id'],'failed','platform_rejected')
@@ -503,7 +645,7 @@ class WhaleSerpRuntime:
                     self.store.finish(job['id'],'succeeded')
         with self.store.store.connect() as db:
             active_platform=db.execute("SELECT count(*) n FROM whale_serp_jobs WHERE kind='platform' AND status='active'").fetchone()['n']
-        if self.store.settings()['claims_enabled'] and not active_platform and not self.searches:
+        if self.store.settings()['claims_enabled'] and not active_platform and not self.searches and self.store.ingest_ready():
             for task in self.client.claim():
                 try:self.store.import_task(task,self.config)
                 except ValueError as e:self.client.fail(str(task.get('id') or task.get('task_id')),str(e),False)

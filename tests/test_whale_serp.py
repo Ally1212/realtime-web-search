@@ -22,6 +22,30 @@ from realtime.whale_serp_http import handle
 
 
 class MessageTests(unittest.TestCase):
+    def test_retry_after_seconds_http_date_and_invalid_headers(self):
+        from realtime.whale_serp import retry_delay
+        now=datetime(2026,11,6,0,0,tzinfo=timezone.utc)
+        with patch('realtime.whale_serp.random.uniform',return_value=0):
+            self.assertEqual(retry_delay(1,'120',now=now),120)
+            self.assertEqual(retry_delay(1,'Fri, 06 Nov 2026 00:02:00 GMT',now=now),120)
+            for value in ('invalid','nan','inf','-10'):
+                self.assertEqual(retry_delay(1,value,now=now),2)
+            self.assertEqual(retry_delay(1,minimum=5),5)
+
+    def test_run_event_identity_is_separate_from_url_and_payload(self):
+        row=dict(query='same query',source='google_web',page=1,completed_at=datetime.now(timezone.utc),
+                 request_id=str(uuid4()),campaign_id=str(uuid4()),response={'search_parameters':{'gl':'us'}})
+        item=dict(link='https://example.org/a',title='Same title',snippet='Same snippet',position=1)
+        key,message=link_message(row,item,Config())
+        self.assertEqual(link_message(dict(row),dict(item),Config()),(key,message))
+        newer={**row,'request_id':str(uuid4())}
+        next_key,next_message=link_message(newer,item,Config())
+        self.assertNotEqual(next_key,key)
+        self.assertEqual(next_message['content']['external_content_id'],message['content']['external_content_id'])
+        changed_key,changed_message=link_message(row,{**item,'snippet':'changed'},Config())
+        self.assertEqual(changed_key,key)
+        self.assertNotEqual(changed_message['source']['payload_hash'],message['source']['payload_hash'])
+
     def test_search_result_preserves_fields_without_invented_body_or_publication(self):
         row=dict(query='research',source='google_web',page=1,completed_at=datetime.now(timezone.utc),
                  request_id=str(uuid4()),campaign_id=str(uuid4()),response={'search_parameters':{'q':'research'}})
@@ -33,11 +57,26 @@ class MessageTests(unittest.TestCase):
         self.assertNotIn('body_text',msg['content']);self.assertNotIn('published_at',msg['content'])
         self.assertEqual(msg['discovery']['metadata']['result']['snippet'],'Actual snippet')
         self.assertEqual(msg['provided_capabilities'],['identity','title'])
-        row.update(request_id=str(uuid4()),campaign_id=str(uuid4()),completed_at=datetime.now(timezone.utc))
         self.assertEqual(link_message(row,item,Config(),'ctask_1')[0],key)
+        row.update(request_id=str(uuid4()),campaign_id=str(uuid4()),completed_at=datetime.now(timezone.utc))
+        self.assertNotEqual(link_message(row,item,Config(),'ctask_1')[0],key)
         self.assertNotEqual(link_message(row,item,Config(),'ctask_2')[0],key)
         item['date']='2026-10-01T00:00:00Z'
         self.assertEqual(link_message(row,item,Config())[1]['content']['published_at'],'2026-10-01T00:00:00+00:00')
+
+    def test_explicit_https_endpoint_and_redirect_refusal(self):
+        from realtime.whale_serp import collector_endpoint
+        config=Config(whale_collector_api_key='test-secret')
+        with patch('realtime.whale_serp.Path.exists',return_value=True), patch('realtime.whale_serp.Path.read_text',return_value='{"base_url":"https://www.marsyoo.com"}'):
+            self.assertEqual(collector_endpoint(config),'https://www.marsyoo.com')
+            session=Mock()
+            session.post.return_value=Mock(status_code=302,headers={})
+            client=WhaleLinkClient(config,session=session)
+            with self.assertRaisesRegex(RuntimeError,'Whale HTTP 302'):client.post('/v1/documents/validate',[])
+            self.assertFalse(session.post.call_args.kwargs['allow_redirects'])
+            self.assertEqual(session.post.call_args.args[0],'https://www.marsyoo.com/v1/documents/validate')
+        for value in ('http://example.com','https://user:secret@example.com','https://example.com/?key=x'):
+            with self.subTest(value=value), patch('realtime.whale_serp.Path.exists',return_value=True), patch('realtime.whale_serp.Path.read_text',return_value=json.dumps({'base_url':value})), self.assertRaises(ValueError):collector_endpoint(config)
 
     def test_task_validation_and_native_options(self):
         c=Config(whale_supported_task_types=('keyword_search','backfill','content_detail'))
@@ -97,6 +136,24 @@ class IntegrationTests(unittest.TestCase):
         before=self.store.jobs()['total']
         with self.assertRaises(ValueError):self.job(q='missing value')
         self.assertEqual(self.store.jobs()['total'],before)
+
+    def test_new_identical_run_stages_new_event_and_changed_old_payload_conflicts(self):
+        first=self.job(source='google_web',new_only=False)
+        previous=self.store.receipts(first['id'])[0]
+        self.record(self.cid,'google_web','https://example.org/a','Solar research')
+        second=self.job(source='google_web',new_only=False)
+        current=self.store.receipts(second['id'])[0]
+        self.assertNotEqual(previous['id'],current['id'])
+        self.assertNotEqual(previous['payload']['source']['source_record_key'],current['payload']['source']['source_record_key'])
+        self.assertEqual(previous['payload']['content']['external_content_id'],current['payload']['content']['external_content_id'])
+        rid=current['payload']['source']['trace_id']
+        before=self.store.jobs()['total']
+        with self.base.connect() as db:
+            db.execute("UPDATE serp_requests SET response=jsonb_set(response,'{organic_results,0,snippet}',%s::jsonb) WHERE request_id=%s",('"changed saved payload"',rid))
+        with self.assertRaisesRegex(ValueError,'payload'):
+            self.job(source='google_web',new_only=False)
+        self.assertEqual(self.store.jobs()['total'],before)
+        self.assertEqual(self.store.receipts(second['id'])[0]['payload'],current['payload'])
     def test_all_sources_and_existing_historical_url_observation_can_upload(self):
         other=self.console.create_task({'query':'new search','start':False},self.config)['campaign_id']
         self.record(other,'google_web','https://example.org/a','Again')
@@ -122,6 +179,145 @@ class IntegrationTests(unittest.TestCase):
         rows=self.store.reserve(job['id'],10);self.store.settle(rows,error='Whale HTTP 429',retry_after='120')
         r=self.store.receipts(job['id'])[0];self.assertEqual(r['state'],'pending')
         self.assertGreater((r['next_attempt_at']-datetime.now(timezone.utc)).total_seconds(),110)
+
+    def test_queued_waits_for_scoped_terminal_receipt_without_resending(self):
+        job=self.job(source='google_web');self.store.save_settings({'uploads_enabled':True})
+        processing='unknown';bulk_calls=[]
+        def post(path, rows):
+            if path.endswith('/bulk'):
+                bulk_calls.append(rows)
+                return [dict(receipt_status='queued',document_id='doc',version_id='v') for _ in rows]
+            return {'receipts':[{**query,'status':processing,
+                    **(dict(document_id='doc',version_id='v') if processing=='accepted' else {})} for query in rows]}
+        client=Mock(agent_id='test');client.post.side_effect=post;client.claim.return_value=[]
+        runtime=WhaleSerpRuntime(self.config,self.store,client)
+        try:
+            runtime.tick()
+            self.assertEqual(self.store.get_job(job['id'])['status'],'active')
+            self.assertEqual(self.store.get_job(job['id'])['persisted'],0)
+            with self.base.connect() as db:db.execute('UPDATE whale_serp_outbox SET next_attempt_at=now()')
+            runtime.tick()
+            self.assertEqual(self.store.get_job(job['id'])['status'],'active')
+            self.assertEqual(self.store.receipts(job['id'])[0]['state'],'queued')
+            processing='accepted'
+            with self.base.connect() as db:db.execute('UPDATE whale_serp_outbox SET next_attempt_at=now()')
+            runtime.tick()
+            self.assertEqual(self.store.get_job(job['id'])['status'],'succeeded')
+            self.assertEqual(self.store.get_job(job['id'])['persisted'],1)
+            self.assertEqual(len(bulk_calls),1)
+        finally:runtime.pool.shutdown(wait=True)
+
+    def test_partial_400_reconciles_each_event_instead_of_rejecting_whole_batch(self):
+        job=self.job();self.store.save_settings({'uploads_enabled':True})
+        client=Mock(agent_id='test')
+        def post(path, rows):
+            if path.endswith('/bulk'):
+                error=RuntimeError('partial');error.status_code=400;raise error
+            return {'receipts':[{**q,'status':s} for q,s in zip(rows,['queued','unknown','accepted'])]}
+        client.post.side_effect=post
+        runtime=WhaleSerpRuntime(self.config,self.store,client)
+        try:
+            runtime.flush(job)
+            self.assertEqual([r['state'] for r in self.store.receipts(job['id'])],['queued','pending','accepted'])
+            self.assertEqual([r['attempts'] for r in self.store.receipts(job['id'])],[1,1,1])
+        finally:runtime.pool.shutdown(wait=True)
+
+    def test_processing_receipt_source_mismatch_and_stale_poll_lease_fail_closed(self):
+        job=self.job(source='google_web');self.store.save_settings({'uploads_enabled':True})
+        rows=self.store.reserve(job['id'],1);self.store.settle(rows,[dict(receipt_status='queued')])
+        with self.base.connect() as db:db.execute('UPDATE whale_serp_outbox SET next_attempt_at=now()')
+        polled=self.store.reserve_receipt_poll(job['id'],1)
+        p=polled[0]['payload'];source=p['source']
+        query=dict(dataset_id=p['dataset_id'],**{k:source[k] for k in ('source_platform','source_name','source_record_key')})
+        with self.assertRaises(ValueError):
+            self.store.settle_processing_receipts(polled,{'receipts':[{**query,'source_record_key':'wrong','status':'accepted'}]})
+        self.assertEqual(self.store.receipts(job['id'])[0]['state'],'queued')
+        with self.base.connect() as db:db.execute("UPDATE whale_serp_outbox SET lease_expires_at=now()-interval '1 second'")
+        self.store.settle_processing_receipts(polled,{'receipts':[{**query,'status':'accepted'}]})
+        self.assertEqual(self.store.receipts(job['id'])[0]['state'],'queued')
+
+    def test_unknown_bulk_item_keeps_frozen_payload_pending(self):
+        job=self.job();self.store.save_settings({'uploads_enabled':True})
+        rows=self.store.reserve(job['id'],3)
+        self.store.settle(rows,[dict(receipt_status='queued'),dict(receipt_status='unrecognized'),dict(receipt_status='accepted')])
+        after=self.store.receipts(job['id'])
+        self.assertEqual([r['state'] for r in after],['queued','pending','accepted'])
+        self.assertEqual([r['payload'] for r in after],[r['payload'] for r in rows])
+
+    def test_writer_duplicate_or_failed_is_terminal_but_unknown_never_is(self):
+        self.store.save_settings({'uploads_enabled':True})
+        for source,status,expected in [('google_web','duplicate','succeeded'),('google_news','failed','failed')]:
+            job=self.job(source=source);client=Mock(agent_id='test');client.claim.return_value=[]
+            def post(path,rows):
+                if path.endswith('/bulk'):return [dict(receipt_status='queued') for _ in rows]
+                return {'receipts':[{**q,'status':status} for q in rows]}
+            client.post.side_effect=post;runtime=WhaleSerpRuntime(self.config,self.store,client)
+            try:
+                runtime.tick();self.assertEqual(self.store.get_job(job['id'])['status'],'active')
+                with self.base.connect() as db:db.execute('UPDATE whale_serp_outbox SET next_attempt_at=now()')
+                runtime.tick();after=self.store.get_job(job['id'])
+                self.assertEqual(after['status'],expected)
+                self.assertEqual(after['persisted'],0)
+                self.assertEqual(after['terminal'],1)
+            finally:runtime.pool.shutdown(wait=True)
+
+    def test_global_backoff_survives_runtime_restart_and_blocks_other_jobs_and_polls(self):
+        self.store.save_settings({'uploads_enabled':True})
+        first=self.job(source='google_web');second=self.job(source='google_news');queued=self.job(source='google_trends')
+        rows=self.store.reserve(queued['id'],1);self.store.settle(rows,[dict(receipt_status='queued')])
+        with self.base.connect() as db:db.execute('UPDATE whale_serp_outbox SET next_attempt_at=now()')
+        client=Mock(agent_id='test')
+        error=RuntimeError('rate limited');error.status_code=429;error.retry_after='120'
+        client.post.side_effect=error
+        runtime=WhaleSerpRuntime(self.config,self.store,client)
+        restored=None
+        try:
+            runtime.flush(first)
+            after=client.post.call_count
+            restored=WhaleSerpRuntime(self.config,WhaleSerpStore(self.dsn),client)
+            restored.flush(second);restored.poll_queued(queued)
+            self.assertEqual(client.post.call_count,after)
+            self.assertEqual(self.store.receipts(second['id'])[0]['attempts'],0)
+            self.assertFalse(self.store.settings()['claims_enabled'])
+        finally:
+            runtime.pool.shutdown(wait=True)
+            if restored:restored.pool.shutdown(wait=True)
+
+    def test_global_503_cooldown_never_shortens_and_expiry_allows_dispatch(self):
+        self.store.save_settings({'uploads_enabled':True})
+        job=self.job(source='google_web')
+        with patch('realtime.whale_serp.random.uniform',return_value=0):
+            first=self.store.defer_ingest(1,status_code=503,retry_after='120')
+            second=self.store.defer_ingest(1,status_code=429,retry_after='10')
+        self.assertEqual(first,second)
+        self.assertFalse(WhaleSerpStore(self.dsn).ingest_ready())
+        with self.base.connect() as db:
+            db.execute("UPDATE whale_serp_settings SET runtime=jsonb_set(runtime,'{ingest_retry_not_before}',to_jsonb((clock_timestamp()-interval '1 second')::text))")
+        self.assertTrue(self.store.ingest_ready())
+        client=Mock(agent_id='test');client.post.return_value=[dict(receipt_status='queued')]
+        runtime=WhaleSerpRuntime(self.config,self.store,client)
+        try:
+            runtime.flush(job);client.post.assert_called_once()
+            self.assertEqual(self.store.receipts(job['id'])[0]['state'],'queued')
+        finally:runtime.pool.shutdown(wait=True)
+
+    def test_global_cooldown_blocks_new_claims_and_source_dispatch_but_keeps_heartbeats(self):
+        self.store.save_settings({'uploads_enabled':True,'claims_enabled':True})
+        self.store.defer_ingest(1,status_code=503,retry_after='120')
+        client=Mock(agent_id='test');client.task_heartbeat.return_value={'control_signal':'none'}
+        runtime=WhaleSerpRuntime(self.config,self.store,client)
+        try:
+            runtime.tick();client.claim.assert_not_called()
+            task=dict(id='ctask_deferred',dataset_id=self.config.whale_dataset_id,
+                      source_platform=self.config.whale_source_platform,task_type='keyword_search',
+                      payload={'keyword':'deferred query','max_items':3,'max_pages':1})
+            self.store.import_task(task,self.config)
+            with patch('realtime.serp_worker.run_serp_campaign') as collect:
+                runtime.tick();collect.assert_not_called()
+            self.assertEqual(runtime.searches,{})
+            client.task_heartbeat.assert_called_once()
+            client.claim.assert_not_called()
+        finally:runtime.pool.shutdown(wait=True)
 
     def test_pause_resume_stop_and_reservation_concurrency(self):
         j=self.job();self.store.save_settings({'uploads_enabled':True})
@@ -176,7 +372,8 @@ class IntegrationTests(unittest.TestCase):
                           task_type=kind,payload={'keyword':kind,'max_items':3,'max_pages':1,'page_size':25})
                 jid=self.store.import_task(task,self.config)
                 client=Mock(agent_id='test-agent');client.claim.return_value=[];client.task_heartbeat.return_value={'control_signal':'none'};client.claim.return_value=[]
-                client.post.side_effect=lambda path,rows:[{'receipt_status':'queued'} for _ in rows]
+                client.post.side_effect=lambda path,rows: ([{'receipt_status':'queued'} for _ in rows]
+                    if path.endswith('/bulk') else {'receipts':[{**q,'status':'accepted'} for q in rows]})
                 runtime=WhaleSerpRuntime(self.config,self.store,client)
                 def collect(cid,c):
                     self.assertFalse(c.content_fetch_enabled);self.assertEqual(c.google_web_max_pages,3)
@@ -186,6 +383,9 @@ class IntegrationTests(unittest.TestCase):
                 try:
                     with patch('realtime.serp_worker.run_serp_campaign',side_effect=collect):
                         runtime.tick();runtime.searches[jid].result(timeout=5);runtime.tick()
+                    self.assertEqual(self.store.get_job(jid)['status'],'active');client.complete.assert_not_called()
+                    with self.base.connect() as db:db.execute('UPDATE whale_serp_outbox SET next_attempt_at=now()')
+                    runtime.tick()
                     self.assertEqual(self.store.get_job(jid)['status'],'succeeded');client.complete.assert_called_once()
                     self.assertNotIn('body_text',self.store.receipts(jid)[0]['payload']['content'])
                 finally:runtime.pool.shutdown(wait=True)
@@ -210,6 +410,8 @@ class IntegrationTests(unittest.TestCase):
                 elif inner.path.endswith('/claim'):
                     result={'tasks':[] if claimed else [task]};claimed=True
                 elif inner.path.endswith('/heartbeat'):result={'control_signal':'none'}
+                elif inner.path.endswith('/receipts'):
+                    result={'receipts':[{**q,'status':'accepted','document_id':'doc-real-http','version_id':'v-real-http'} for q in data]}
                 elif inner.path.endswith('/bulk'):
                     if fail_once:status=429;fail_once=False;result={'error':'rate_limit'}
                     else:result=[dict(receipt_status='queued',document_id='doc-real-http') for _ in data]
@@ -222,10 +424,17 @@ class IntegrationTests(unittest.TestCase):
             j=self.job(source='google_web');runtime.tick();self.assertFalse(calls)
             self.store.save_settings({'uploads_enabled':True});runtime.tick()
             self.assertEqual(self.store.get_job(j['id'])['counts']['pending'],1)
+            with self.base.connect() as db:
+                db.execute('UPDATE whale_serp_outbox SET next_attempt_at=now()')
+                db.execute("UPDATE whale_serp_settings SET runtime=jsonb_set(runtime,'{ingest_retry_not_before}',to_jsonb((clock_timestamp()-interval '1 second')::text))")
+            runtime.tick();self.assertEqual(self.store.get_job(j['id'])['status'],'active')
             with self.base.connect() as db:db.execute('UPDATE whale_serp_outbox SET next_attempt_at=now()')
             runtime.tick();self.assertEqual(self.store.get_job(j['id'])['status'],'succeeded')
             self.store.save_settings({'claims_enabled':True});runtime.tick();runtime.tick()
             job=next(j for j in self.store.jobs()['jobs'] if j['kind']=='platform')
+            self.assertEqual(job['status'],'active')
+            with self.base.connect() as db:db.execute('UPDATE whale_serp_outbox SET next_attempt_at=now()')
+            runtime.tick();job=self.store.get_job(job['id'])
             self.assertEqual(job['status'],'succeeded')
             self.assertTrue(any(p.endswith('/complete') for p,_ in calls))
             for p,body in calls:

@@ -6,6 +6,28 @@ from realtime.free_google import GoogleTransport
 
 
 class FreeGoogleTests(unittest.TestCase):
+    def test_openserp_duplicate_urls_keep_distinct_saved_occurrences(self):
+        session=Mock()
+        items=[dict(type='organic',engine='google',title='First',url='https://example.org/a',rank=1),
+               dict(type='organic',engine='google',title='Second',url='https://example.org/a',rank=2)]
+        self._openserp_response(session,results=items)
+        with patch('realtime.free_google.requests.Session',return_value=session):
+            transport=GoogleTransport(5,'zh','',validate_target_dns=False)
+            results=transport.openserp('人工智能',3,None,None)
+        self.assertEqual(len(results),1)
+        saved=transport.last_serp_response
+        self.assertEqual([r['title'] for r in saved['organic_results']],['First','Second'])
+        self.assertEqual(len(saved['upstream_response']['results']),2)
+        self.assertFalse(saved['upstream_response_capture']['verbatim_http_body_retained'])
+
+    def test_upstream_json_projection_preserves_unknown_fields_but_filters_credentials(self):
+        from realtime.serp_fields import response_envelope
+        payload=dict(query={'text':'test'},meta={'version':'test'},results=[],
+            future_public_field={'value':3,'api_key':'do-not-save'},headers={'Authorization':'do-not-save'})
+        envelope=response_envelope(payload,dict(text='test',lang='EN',region='US',start=0,limit=10),[])
+        self.assertEqual(envelope['upstream_response']['future_public_field'],{'value':3})
+        self.assertNotIn('do-not-save',str(envelope))
+
     def test_wrapped_chromium_proxy_failure_is_exit_specific(self):
         for marker in ("ERR_PROXY_CONNECTION_FAILED", "ERR_SOCKS_CONNECTION_FAILED", "ERR_TUNNEL_CONNECTION_FAILED"):
             with self.subTest(marker=marker):

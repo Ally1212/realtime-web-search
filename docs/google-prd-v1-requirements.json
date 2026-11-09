@@ -1,0 +1,4120 @@
+{
+  "source_url": "https://knowledge.xinzhiaigc.com/doc/google-v10-nCI82AHL62",
+  "source_version": "2026-11-02 / v1.0",
+  "captured_at_date": "2026-11-04",
+  "source_snapshot": "docs/google-prd-v1-source-2026-11-04.txt",
+  "source_sha256": "3cbe48ddbdf990fbba5543a3d2cdfdd7c80d437c757f490f403244871b99b8e1",
+  "completion_status": "incomplete",
+  "approval_status": "D-01..09 / WHL-GO 未获独立批准证据；不代签",
+  "latest_verification": {
+    "latest_full_regression": {
+      "log": "state/google-prd-v1-20261104/phase27/full-regression-final.log",
+      "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+      "total": 786,
+      "failures": 0,
+      "skipped": 0,
+      "seconds": 83.376,
+      "exit_code": 0
+    },
+    "latest_google_analytics_tests": {
+      "log": "state/google-prd-v1-20261104/phase12/google-analytics-tests.log",
+      "test": "tests.test_google_analytics",
+      "total": 5,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_google_runtime_tests": {
+      "log": "state/google-prd-v1-20261104/phase13/ads-contracts.log",
+      "test": "tests.test_google_runtime",
+      "total": 7,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_google_api_tests": {
+      "log": "state/google-prd-v1-20261104/phase27/full-regression-final.log",
+      "test": "tests.test_google_api",
+      "total": 64,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_openapi_validation": {
+      "log": "state/google-prd-v1-20261104/phase27/openapi-validation.log",
+      "validator": "openapi-spec-validator==0.7.2",
+      "result": "OK",
+      "sha256": "6f831d9650dc633ca1aaa8c21deb0f3d8ac3c87243e756341174de9d027c7e38",
+      "exit_code": 0
+    },
+    "static_checks": {
+      "compileall_log": "state/google-prd-v1-20261104/phase27/compileall.log",
+      "git_diff_check_log": "state/google-prd-v1-20261104/phase27/git-diff-check.log",
+      "result": "OK"
+    },
+    "latest_google_ads_tests": {
+      "log": "state/google-prd-v1-20261104/phase13/ads-contracts.log",
+      "test": "tests.test_google_ads + tests.test_google_ads_http + tests.test_google_runtime",
+      "total": 35,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_merchant_tests": {
+      "log": "state/google-prd-v1-20261104/phase14/full-regression-final.log",
+      "test": "tests.test_google_merchant + tests.test_google_merchant_http + tests.test_google_runtime",
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_quota_tests": {
+      "log": "state/google-prd-v1-20261104/phase15/full-regression-final.log",
+      "test": "tests.test_google_quota",
+      "total": 5,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_local_tests": {
+      "log": "state/google-prd-v1-20261104/phase16/full-regression-final.log",
+      "test": "tests.test_google_local + tests.test_google_local_http + tests.test_google_runtime",
+      "total": 11,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_aio_tests": {
+      "log": "state/google-prd-v1-20261104/phase17/full-regression-final.log",
+      "test": "tests.test_google_aio",
+      "total": 5,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_ingest_ledger_tests": {
+      "log": "state/google-prd-v1-20261104/phase18/full-regression-final.log",
+      "test": "tests.test_google_ingest_ledger",
+      "total": 9,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_asset_budget_tests": {
+      "log": "state/google-prd-v1-20261104/phase19/full-regression-final.log",
+      "test": "tests.test_google_asset_budget",
+      "total": 7,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_parser_quality_tests": {
+      "log": "state/google-prd-v1-20261104/phase20/full-regression-final.log",
+      "test": "tests.test_google_parser_quality",
+      "total": 6,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_ingest_spool_ledger_tests": {
+      "log": "state/google-prd-v1-20261104/phase21/full-regression-final.log",
+      "test": "tests.test_google_ingest + tests.test_google_ingest_ledger",
+      "total": 36,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_gsc_revision_tests": {
+      "log": "state/google-prd-v1-20261104/phase22/gsc-revisions-tests.log",
+      "test": "tests.test_google_gsc_revisions / tests.test_google_search_console",
+      "total": 27,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_metric_revision_tests": {
+      "log": "state/google-prd-v1-20261104/phase23/metric-revisions-tests.log",
+      "test": "tests.test_google_metrics_revisions",
+      "total": 16,
+      "result": "OK",
+      "command": "TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' .venv/bin/python -m unittest tests.test_google_metrics_revisions -v",
+      "exit_code": 0
+    },
+    "latest_parser_projection_tests": {
+      "log": "state/google-prd-v1-20261104/phase23/targeted-tests.log",
+      "test": "tests.test_google_metrics_revisions + tests.test_google_projection",
+      "total": 48,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_parser_runtime_tests": {
+      "log": "state/google-prd-v1-20261104/phase23/runtime-parser-tests.log",
+      "test": "tests.test_google_runtime",
+      "total": 10,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_ingest_admission_bulk_tests": {
+      "log": "state/google-prd-v1-20261104/phase24/ingest-p0-tests.log",
+      "test": "tests.test_google_ingest",
+      "total": 18,
+      "result": "OK",
+      "command": "TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' .venv/bin/python -m unittest tests.test_google_ingest -v",
+      "exit_code": 0
+    },
+    "latest_surface_content_capability_tests": {
+      "log": "state/google-prd-v1-20261104/phase25/surface-projection-tests.log",
+      "test": "tests.test_google_projection + tests.test_google_domain",
+      "total": 62,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_capability_admission_tests": {
+      "log": "state/google-prd-v1-20261104/phase25/scope-p0-tests.log",
+      "test": "tests.test_google_api",
+      "total": 62,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_scope_domain_tests": {
+      "log": "state/google-prd-v1-20261104/phase26/scope-contracts-tests.log",
+      "test": "tests.test_google_runtime + tests.test_google_metrics_sources + tests.test_google_domain",
+      "total": 43,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_domain_isolation_tests": {
+      "log": "state/google-prd-v1-20261104/phase26/api-isolation-export-tests.log",
+      "test": "tests.test_google_api",
+      "total": 63,
+      "result": "OK",
+      "exit_code": 0
+    },
+    "latest_source_scope_privacy_tests": {
+      "log": "state/google-prd-v1-20261104/phase27/source-scope-privacy-tests.log",
+      "test": "tests.test_google_domain + tests.test_google_projection + tests.test_google_search_console + tests.test_google_analytics + tests.test_google_metrics_sources",
+      "total": 80,
+      "result": "OK",
+      "exit_code": 0
+    }
+  },
+  "entry_count": 273,
+  "entries": [
+    {
+      "id": "GO-AC-001",
+      "source_columns": {
+        "必须遵循的验收原则": "固定来源、API/解析/指标版本、授权主体、国家/语言/精确位置、设备、surface、采样深度、时间/时区、缓存年龄和集合版本；不同语义不拼成同一时序"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-AC-002",
+      "source_columns": {
+        "必须遵循的验收原则": "结构验收≥1,000条真实记录，覆盖≥100关键词、2市场、2设备、主要结果类型；授权域另有≥3真实property/customer；样本不足则限制声明范围"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-003",
+      "source_columns": {
+        "必须遵循的验收原则": "比例报告分子分母、样本大小和适用的95%区间；相关重复不当独立样本；权限泄露、伪造数值、错来源与错时间等阻断缺陷零检出"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-004",
+      "source_columns": {
+        "必须遵循的验收原则": "连续7天验证计划执行、真实观测年龄、入库时延与修订；P95至少200有效样本；失败、未覆盖、缓存、截断、缺失和真0单列"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-005",
+      "source_columns": {
+        "必须遵循的验收原则": "覆盖率仅相对批准的关键词/位置/prompt/账号/任务计划点；无全站分母不声明覆盖全部Google搜索或用户"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-006",
+      "source_columns": {
+        "必须遵循的验收原则": "人工金标双人独立、仲裁和指南版本化；按关键词/站点/时间隔离训练与验收；品牌同名、引用误配和语言混合必须有反例"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-007",
+      "source_columns": {
+        "必须遵循的验收原则": "聚合可重放固定manifest：源观测ID、数据版本、过滤、权限、集合、方法与hash；证据到期后明确不可重放，不绕许可暗存副本"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_export_freezes_manifest_validates_hash_and_is_idempotent; test_domain_metric_matches_jsonl_and_csv_recomputation",
+          "log": "state/google-prd-v1-20261104/phase10/full-regression-final.log",
+          "scope": "同步/异步冻结 manifest、hash、幂等、CSV/JSONL 共享冻结语义和小规模指标复算一致；不代表百万行、对象存储、生产调度、真实 Whale 读回或用户 E2E。"
+        }
+      ],
+      "remaining": "本地 manifest、CSV/JSONL 复算和失败关闭基础已实现；真实 reader/批准、百万行负载、对象存储/流式下载、生产调度、备份链和整体验收未完成。"
+    },
+    {
+      "id": "GO-AC-008",
+      "source_columns": {
+        "必须遵循的验收原则": "每条启用需求映射AC、GT、真实测试文件与命令；批准oracle后记录RED/GREEN并跑真实full回归；不能用本稿表格代替测试证据"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SCP-001",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求与边界": "核心为受管词集SERP/feature、趋势、新闻观测、域名/URL比较、品牌基础分析、证据导出",
+        "验收": "每个上线域有合格source adapter与真实闭环；未覆盖明示"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SCP-002",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求与边界": "公开、授权、供应商估算及研究模型分域；授权数据仅在批准用途和租户内使用",
+        "验收": "搜索/缓存/报告/导出/归并均通过跨租户与字段负向测试"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_isolated_database_http",
+          "test": "tests.test_google_api.DomainHTTPTests.test_cross_tenant_export_and_frozen_manifest_do_not_leak / tests.test_google_projection.ProjectionDatabaseTests.test_tenant_asset_and_hidden_detail_isolation",
+          "log": "state/google-prd-v1-20261104/phase26/api-isolation-export-tests.log",
+          "scope": "投影/导出以 tenant_id + 当前 grant 隔离；跨租户 valid key/grant 不能列出或读取 tenant one export，隐藏 detail 与字段/用途负向已覆盖。仍是隔离 fixture，不是搜索/缓存/报告/导出/归并全链路真实数据回归。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地投影/导出隔离已覆盖；仍缺公开/授权/供应商估算/研究模型全域真实数据、缓存/报告/归并跨租户与字段负向全集和生产验收。"
+    },
+    {
+      "id": "GO-SCP-003",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求与边界": "Organic、paid、local、news、shopping、AIO、AI Mode与生成API分别建surface/channel",
+        "验收": "同URL可在多个surface出现，单独计数，不产生一个“Google总排名”"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit",
+          "test": "tests.test_google_projection.ObservationContractTests.test_same_url_stays_separate_across_surfaces_and_no_google_total_rank",
+          "log": "state/google-prd-v1-20261104/phase25/surface-projection-tests.log",
+          "scope": "QueryVariant 保留 surface/channel，同 URL 可在 organic/paid 独立出现；paid 不产生 organic position，投影 header 不存在跨 surface Google 总排名。仍是合成观测，不是全部真实 surface/source 验收。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地 surface/channel 身份与跨 surface 不合并已覆盖；仍缺真实 organic/local/news/shopping/AIO/AI Mode/生成 API source 样本、同 URL 多 surface 生产验证与全 surface API/图表/导出口径。"
+    },
+    {
+      "id": "GO-SCP-004",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求与边界": "区分SERP摘要/Google News索引与出版者正文；正文另按网站来源准入",
+        "验收": "结果页标题摘要不标article full text；不伪造body补质量"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit",
+          "test": "tests.test_google_projection.ObservationContractTests.test_snippet_and_news_index_never_claim_publisher_article_body / tests.test_google_domain.MetricOracleTests.test_publisher_article_occurrences_do_not_enter_organic_rank",
+          "log": "state/google-prd-v1-20261104/phase25/surface-projection-tests.log",
+          "scope": "SERP item 显式 serp_snippet/news_index/publisher_article 语义；publisher_article 必须携带实际来源，摘要不能标全文，且不进入 organic rank。仍是合成样本，不是出版者正文采集或真实 News adapter。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地类型语义与排名隔离已实现；仍缺真实出版者正文来源准入、正文质量验收、真实 Google News/SERP 样本与生产导出检查。"
+    },
+    {
+      "id": "GO-SCP-005",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求与边界": "所有connector有用途/存储/聚合/embedding/展示/再分发矩阵，逐字段执行",
+        "验收": "未批准能力在capabilities与任务准入同时阻断，不能只靠文档提醒"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_isolated_database_http",
+          "test": "tests.test_google_api.DomainHTTPTests.test_unapproved_capability_is_absent_and_admission_fails_for_same_use",
+          "log": "state/google-prd-v1-20261104/phase25/scope-p0-tests.log",
+          "scope": "capabilities 字段用途与 authorize 使用同一 FieldRight 交集，未批准 redistribute 在能力输出缺失且任务准入同样失败。仍是隔离 fixture/HTTP，不是全部 connector 矩阵或真实平台任务。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地能力展示与准入同源已验证；仍缺逐 connector/逐字段存储、聚合、embedding、展示、再分发矩阵的完整登记与真实任务准入验收。"
+    },
+    {
+      "id": "GO-SCP-006",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求与边界": "供应商SEO难度/流量/广告花费、Trends指数、官方圆整量和私有实际值分开",
+        "验收": "接口、图表、CSV不丢性质/来源；不混筛为精确真值"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_and_service_fixture",
+          "test": "tests.test_google_domain.MetricOracleTests.test_metric_export_retains_provenance_nature_scale_and_additivity / tests.test_google_metrics_sources.MetricsSourceTests.test_keyword_metrics_preserve_provenance_and_fail_closed",
+          "log": "state/google-prd-v1-20261104/phase26/scope-contracts-tests.log",
+          "scope": "MetricValue 无损输出 provenance/nature/scale/additivity/quality flags/scope；provider_estimated+rounded 明确限制，不冒充精确私有实际值。仍是合成指标与 fixture adapter，不是全 API/图表/CSV 出口或真实供应商源。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地指标性质与部分 API 输出已保留；仍缺所有图表/CSV/报告/归并出口检查、真实供应商 SEO/流量/花费/Trends/官方圆整/私有实际值样本和混合筛选负向验收。"
+    },
+    {
+      "id": "GO-SCP-007",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求与边界": "不含发布网页、自动改站、提交索引、投放/调价、改商家、回复/删评、批量创建账号",
+        "验收": "OAuth scopes与代码路径只覆盖批准读取，不把Indexing写操作加入本项目"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_runtime_contract",
+          "test": "tests.test_google_runtime.GoogleRuntimeTests.test_write_capable_oauth_scopes_cannot_wire_approved_adapters / tests.test_google_ads.AdsServiceTests.test_arbitrary_queries_methods_fields_and_proxy_modes_are_not_forwarded / tests.test_google_merchant.MerchantServiceTests.test_raw_source_proxy_and_scope_switches_fail_before_read / tests.test_google_api.DomainHTTPTests.test_production_handler_patch_delete_use_the_domain_envelope_without_writes",
+          "log": "state/google-prd-v1-20261104/phase26/scope-contracts-tests.log",
+          "scope": "GSC/GA4/Ads/Merchant runtime 必须显式声明白名单 read-only OAuth scope；Indexing/webmasters/Ads/content/business.manage/cloud-platform 等写能力或未知 scope 拒绝接线。Ads/Merchant 不转发任意方法/GAQL/query，HTTP mutation 不代源写入。仍是 fixture，不证明真实 OAuth 授权码或 provider code path。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地 OAuth 白名单和禁止源写路径已实现；仍缺真实 OAuth consent/scope 返回核验、所有外部 SDK 客户端最小 scope 审计和生产账号反例。"
+    },
+    {
+      "id": "GO-SCP-008",
+      "source_columns": {
+        "等级": "应当/P1",
+        "需求与边界": "GA4/Ads/Merchant、URL诊断、AI Mode重复采样、Local按数据域独立扩展",
+        "验收": "单域未通过不影响其他已准入能力，也不被总体通过掩盖"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SRC-001",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "每adapter登记source/version、实际端点、coverage、准入、刷新/缓存、计费单位、允许用途和保留期限",
+        "验收": "任一必需字段unknown则对应能力planned；不能凭厂商首页开生产"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.RightsTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_registry / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "控制面来源/资产/Key授权、部分元数据入口、鉴权与分页；不证明数据接口、异步分析、真实来源/平台或生产已接通。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-SRC-002",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "许可独立覆盖raw/派生/聚合/embedding/model input/内部展示/导出/再分发；Semrush未经书面许可缓存不得超过1个月，G-C31",
+        "验收": "过期raw与派生分别按合同处置；不假定删raw后聚合永久可留"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.RightsTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-SRC-003",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "Ads Developer Policies G-O62禁止scraping Google Search或购买scraped data等用例；本产品SERP采购＋Ads组合须明确适用范围和获准路径",
+        "验收": "平台/产品负责人取得结论前Ads域不与该组合开放；技术分库/分租户不视为自动合规证明"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_policy_gate",
+          "test": "tests.test_google_ads / tests.test_google_ads_http / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase13/ads-contracts.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest tests.test_google_ads tests.test_google_ads_http tests.test_google_runtime -v",
+          "scope": "本地契约要求独立 SERP+Ads 组合审批引用、可许可用途、内部 analysis/report-service 模式、显式 production approval，并拒绝任意代理与未批准读取；这不是 Google 政策结论。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未取得平台/产品负责人对 G-O62 组合路径的真实结论；本地分库、分租户、策略字段或 fixture 不证明合规，不能开放真实 Ads 域。"
+    },
+    {
+      "id": "GO-SRC-004",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "Keyword Planning按2026 Cloud project access/OAuth/customer设计；独立代理商/广告主按适用主体绑定自身Cloud Platform账号/project及Ads access，不借共享平台项目规避准入；禁止只包装/重暴露源能力的二次API代理，G-O62",
+        "验收": "Explorer拒绝；Basic/Standard及permissible use通过；主体B借主体A项目/未获准纯代理返回use_not_permitted；合法内部分析与获准报告服务分别确认，不新建或改凭据"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_policy_gate",
+          "test": "tests.test_google_ads / tests.test_google_ads_http / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase13/ads-contracts.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest tests.test_google_ads tests.test_google_ads_http tests.test_google_runtime -v",
+          "scope": "typed Ads binding 覆盖 tenant、caller、business subject、Cloud project、OAuth subject、customer、API version；Basic/Standard 可通过，Explorer/Test/unknown、主体不匹配、未批准模板/范围和纯代理在 adapter 读取前失败关闭。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未连接或验收真实 2026 Cloud project/OAuth/customer POC，未验证真实代理商/广告主准入、凭据路径或 Ads API 权限；不能声称真实准入完成。"
+    },
+    {
+      "id": "GO-SRC-005",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "公开SERP坐标/语言/设备/登录态/通道及缓存年龄可读；不以IP国家假定精确location",
+        "验收": "200条双源/人工比对的条件匹配，差异可解释；失败不得伪装空排名"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_isolated_database_contract",
+          "test": "tests.test_google_domain + tests.test_google_projection",
+          "log": "state/google-prd-v1-20261104/phase27/source-scope-privacy-tests.log",
+          "scope": "location precision/basis 受约束、IP 国家不能推精确位置；query variant 保留坐标/语言/设备/登录态/通道，缓存年龄和原观察时间随投影及导出可读；失败状态不当空排名。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "缺真实 SERP 两来源至少 200 条条件/人工比对、真实位置来源与差异解释、生产失败负向验收；本地夹具不构成真实验收。"
+    },
+    {
+      "id": "GO-SRC-006",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "Trends API Alpha、供应商和网页导入分别命名scale；没有源不伪造时序",
+        "验收": "相同term/topic跨窗口/批次可比性验证，不能线性拼接不同0～100尺度"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SRC-007",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "Google News RSS只作为无SLA条件adapter，保留RSS入口/版本/窗口；失败可降级到其他已准入新闻源",
+        "验收": "样本去重/源链接与时间验证；入口失效不把“无新闻”发告警"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SRC-008",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "官方隐私匿名、低量、圆整、TopN、抽样、模型估计、cache和截断单独记录",
+        "验收": "API/CSV/报告保留状态；空值不补0，不反推被保护query"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_isolated_database_contract",
+          "test": "tests.test_google_domain + tests.test_google_projection + tests.test_google_search_console + tests.test_google_analytics + tests.test_google_metrics_sources + tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase27/full-regression-final.log",
+          "scope": "typed limitations 分离匿名/低量/圆整/TopN/抽样/模型估计/cache/截断，SERP API/CSV/JSONL 与确定性报告保留固定版本限制状态；GSC/GA4/Trends 合同保留各自隐私/阈值/抽样元数据，null 不填零，不推保护 query。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "真实官方/供应商返回的隐私、低量、TopN、抽样、模型、缓存与截断元数据对接及全量 API/CSV/报告逐项验证未完成；当前只证明本地固定版本夹具。"
+    },
+    {
+      "id": "GO-SRC-009",
+      "remaining": "仅证明本地配额/并发/重试契约；未接入真实 GSC/GA4/Ads/Merchant 配额头、真实 project/property/CID 共享耗额、供应商多消费者降级或生产调度，不代表真实限流 SLO。",
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_isolated_database_contract",
+          "test": "tests.test_google_quota",
+          "log": "state/google-prd-v1-20261104/phase15/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "本地 PostgreSQL 原子配额桶覆盖 service/cloud_project/property/CID/vendor_right；多资源全有或全无、共享 property 外部耗额、账号轮换不增配额、并发不超卖、request_id 幂等与冲突、缺失配置 not_covered，以及 429/503 Retry-After+指数退避+抖动。",
+          "exit_code": 0
+        }
+      ],
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "源限流按服务、Cloud project、property、CID及供应商权利分别排队；GA4 token不是LLM token",
+        "验收": "配额/重试负例；共享property其他消费者耗额也会降级；不通过多账号绕限"
+      }
+    },
+    {
+      "id": "GO-SRC-010",
+      "source_columns": {
+        "等级": "必须/P1条件",
+        "需求": "Places/GBP与供应商Local数据逐字段经过存储/用途/对外返回门禁",
+        "验收": "未获准只提供capability/ID/源端链接，不进入Whale全文索引、向量、报告或通用API"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_local / tests.test_google_local_http / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase16/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "Local 字段门禁按 local_grid_definition/local_observation/place_reference/review_insight 分别要求 source/asset grant/use/retention；缺少独立批准 adapter 时 not_covered；place raw-store 能力必须与 grant use 一致，评论仅返回聚合主题而非原始评论。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未接入真实 Places/GBP/供应商 Local，未验证逐字段 contract、地图 tiles/归属、原始评论 retention、embedding/导出/再分发门禁或生产禁用状态。"
+    },
+    {
+      "id": "GO-DAT-001",
+      "source_columns": {
+        "等级": "必须/P0",
+        "必须要求": "MetricValue的来源/性质/范围/状态与数值一起无损存取",
+        "验收": "写入→快照→批读→JSONL往返，0/null/rounded/estimate正确"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricContractTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-DAT-002",
+      "source_columns": {
+        "等级": "必须/P0",
+        "必须要求": "排名、item、feature、citation按run完整保留关联/顺序，源rank与派生organic rank分列",
+        "验收": "200套多block/重复URL/AIO样本逐项对照"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-DAT-003",
+      "source_columns": {
+        "等级": "必须/P0",
+        "必须要求": "Trend scale/窗口/term-topic/partial/breakout、Ads close variants与圆整明确",
+        "验收": "切窗/改geo/换源不可无提示拼接；同合并量不复制累加"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        },
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_ads / tests.test_google_ads_http",
+          "log": "state/google-prd-v1-20261104/phase13/ads-contracts.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest tests.test_google_ads tests.test_google_ads_http tests.test_google_runtime -v",
+          "scope": "Ads close variant 以 explicit requested queries/returned text/group 绑定，同组按组合/月份仅贡献一次并标记 non-additive；窗口换算拒绝跨月/越界拼接。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-DAT-004",
+      "source_columns": {
+        "等级": "必须/P0",
+        "必须要求": "时间保留source timezone和period；GSC日期通常America/Los_Angeles，GA4为property、Ads为customer配置",
+        "验收": "DST、23/25h日、周/月边界、Trends粒度时区有金标；无真实发布时间不造值"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_analytics / tests.test_google_api / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase12/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "覆盖 GSC source timezone 与 GA4 property report_timezone 的 typed fixture 契约，日期区间保持左闭右开；period 不按服务器本地时区重解释。",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_ads / tests.test_google_ads_http",
+          "log": "state/google-prd-v1-20261104/phase13/ads-contracts.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest tests.test_google_ads tests.test_google_ads_http tests.test_google_runtime -v",
+          "scope": "Ads 输出要求显式 IANA customer/source timezone，date/month 与左闭右开窗口按该时区校验，不按服务器时区重解释。",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_merchant / tests.test_google_merchant_http",
+          "log": "state/google-prd-v1-20261104/phase14/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "Merchant 报表要求显式 IANA merchant/source timezone，日期窗口按该时区左闭右开校验，不按服务器时区重解释。",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_typed_fixture_and_isolated_postgresql",
+          "test": "tests.test_google_gsc_revisions / tests.test_google_search_console",
+          "log": "state/google-prd-v1-20261104/phase22/gsc-revisions-tests.log",
+          "command": "TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' .venv/bin/python -m unittest tests.test_google_gsc_revisions tests.test_google_search_console -v",
+          "scope": "合成 GSC 小时分区使用显式 IANA 时区/UTC hour_start；DST 重复小时分开身份，不存在小时拒绝，逐行时间绑定。不是全域时区金标或真实 23/25 小时样本。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "GSC 本地小时 DST 边界有合成测试；真实 23/25 小时日、周/月边界、GA4/Ads/Merchant/Trends 全域时区金标与真实端到端验收仍未完成。"
+    },
+    {
+      "id": "GO-DAT-005",
+      "source_columns": {
+        "等级": "必须/P0",
+        "必须要求": "源语言、查询语言、结果语言、检测语言分列；中台统一检测/翻译/NER/主题与情感",
+        "验收": "语言能力只对真实字段声明；检测失败unknown，不按市场猜"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-DAT-006",
+      "source_columns": {
+        "等级": "必须/P0",
+        "必须要求": "SERP摘要、AI回答、文章正文、评论与数值报表采用不同质量profile",
+        "验收": "GEN-14例外需平台批准；不复制title伪正文，不给表格填假语言"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-DAT-007",
+      "source_columns": {
+        "等级": "必须/P0",
+        "必须要求": "GSC top rows/anonymous/provisional、GA4抽样/threshold/(other)/approx distinct均保留元数据",
+        "验收": "分页完成不宣称统计完整；subjectToThresholding不直接推导已删行"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_analytics / tests.test_google_api / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase12/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "覆盖 GSC top_rows/privacy/statistical_completeness 与 GA4 samplingMetadata、subjectToThresholding、dataLossFromOtherRow 元数据；分页和 row_count 不声明统计完整，thresholded 值保持 null，不反推删行。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "GSC anonymous/provisional 真实样本、GA4 approx distinct/HLL++/真实 threshold 与 (other) 行、BigQuery 差异及生产验收仍未完成。"
+    },
+    {
+      "id": "GO-DAT-008",
+      "source_columns": {
+        "等级": "必须/P0",
+        "必须要求": "金额保存micros/原币种，汇率/日期/来源另列；币种/归因窗不兼容禁止加总",
+        "验收": "分币种准确往返，转换不覆盖原值，负修订不丢"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_ads / tests.test_google_ads_http",
+          "log": "state/google-prd-v1-20261104/phase13/ads-contracts.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest tests.test_google_ads tests.test_google_ads_http tests.test_google_runtime -v",
+          "scope": "Ads money 字段固定 integer micros + 显式 currency + revision；metric scope 改币种/归因/revision 会拒绝，负值仅允许 revision_delta，HTTP 输出不转 major 覆盖原值。",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_merchant / tests.test_google_merchant_http",
+          "log": "state/google-prd-v1-20261104/phase14/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "Merchant cost_micros/sales_micros 保持 integer micros 与显式 currency；负值仅允许 revision_delta；币种/revision/维度 scope 不匹配拒绝。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未实现真实多币种往返、汇率/日期/来源转换、真实 Ads 资产验收或不兼容币种/归因窗聚合；本地契约不证明完整金额治理。"
+    },
+    {
+      "id": "GO-DAT-009",
+      "source_columns": {
+        "等级": "必须/P1",
+        "必须要求": "许可内视觉/OCR/AI文本加工由中台统一执行，cache hash包含method与license version",
+        "验收": "相同素材同方法只一次加工；不具权利时不生成向量或模型输入"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-DAT-010",
+      "source_columns": {
+        "等级": "必须/P0",
+        "必须要求": "来源hash、解析/品牌/指标版本与expiry随报告传递；不可重放有原因",
+        "验收": "过期/撤权后旧manifest不能继续返回受限内容/数字"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_evidence.EvidenceTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api export tests",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "同步100行以内冻结导出、manifest/hash、幂等、字段/格式/公式注入、期限/撤权/篡改负例；不证明异步任务、大导出、真实Whale读回、生产清理或用户E2E。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api analysis/export tests",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "冻结manifest上的本地任务状态机、幂等、queued/worker/取消/过期、aggregate/export用途负例；worker未部署，不证明真实异步大任务、崩溃恢复、真实Whale数据或生产SLO。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api report/watchlist/monitor tests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "报告携带source hash、source/license/parser/API版本、grant版本和expiry，并在撤权/到期/篡改时失败关闭；没有生产对象存储或真实Whale验收。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ID-001",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "query、topic、variant、run、URL、domain、report-grain、place/review独立namespace；无原生ID时用可公开复算的版本化hash算法",
+        "验收": "空格/Unicode/IDN/query string/跨源原生ID碰撞测试；品牌别名不覆盖query原文"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.IdentityTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ID-002",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "网站内容对象与搜索occurrence分离；URL跨query/location/rank出现不覆盖上下文",
+        "验收": "同URL在10query×2位置×多surface保留全部run/item；对象可去重，观察不丢"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-ID-003",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "同query variant重复运行用新观测；稳定重试复用原事件键/时间/payload；source缓存返回不是独立新鲜观测",
+        "验收": "100次相同重试不重复业务事实；真新观察同数值也可读回"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_ingest.IngestSpoolTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ID-004",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "report ID含asset、report template、grain、period及scope；源修订新revision，原期间保留",
+        "验收": "同日fresh→final/迟到回补不重复加总，不原位覆盖历史审计"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.IdentityTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_typed_fixture_and_isolated_postgresql",
+          "test": "tests.test_google_gsc_revisions / tests.test_google_search_console",
+          "log": "state/google-prd-v1-20261104/phase22/gsc-revisions-tests.log",
+          "command": "TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' .venv/bin/python -m unittest tests.test_google_gsc_revisions tests.test_google_search_console -v",
+          "scope": "GSC tenant/source/property/template/grain/filter/day/hour/table 固定分区身份；final 不回退 preliminary、迟到修订只选当前版本，原审计不覆盖，proof 后补不伪造新 source revision。真实来源、Whale 历史版本与其他报表域仍缺。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ID-005",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "public与私有同URL/实体归并须保留私有事实权限；source_name/Dataset名字不视为隔离保证",
+        "验收": "同对象公开和两个组织GSC/GA4/Ads值的读取/搜索/缓存/导出均负向通过"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ID-006",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "从榜消失、未进深度、deleted、暂时无权、源失败、保留到期区分",
+        "验收": "不把未出现URL当网页已删除；不把新闻列表消失当撤稿"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ID-007",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "删除/撤回/到期传播至源缓存、Whale、域投影、索引、向量、报告、导出与备份恢复流程",
+        "验收": "tombstone重放/灾备后不复活受限数据，必要审计只留获准元信息"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ING-001",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "source请求→解析→稳定事件→bulk受理→终态receipt→独立读回；queued不等于完成",
+        "验收": "30任务/≥1,000事件含失败与0结果，可按事件逐级对账"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_ingest.IngestSpoolTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ING-002",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "validation_raw、agent、平台/任务/能力与Key准入一致；生产登记另批",
+        "验收": "dry-run/错Dataset/错platform/能力空占位被拒；不新建生产Key"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_and_isolated_postgresql",
+          "test": "tests.test_google_ingest.IngestSpoolTests.test_validation_raw_admission_rejects_wrong_scope_and_empty_placeholders / tests.test_google_ingest.IngestSpoolTests.test_production_admission_is_separate_and_creates_no_key",
+          "log": "state/google-prd-v1-20261104/phase24/ingest-p0-tests.log",
+          "command": "TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' .venv/bin/python -m unittest tests.test_google_ingest -v",
+          "scope": "validation_raw 本地准入检查绑定 permit 的 Dataset/platform/agent/credential/task/capability/mode/class；dry-run、错 scope、空能力占位、未授权任务和生产准入失败关闭，且不创建生产 Key。仍是夹具 permit/delivery 与隔离数据库，不是真实 Whale Key/平台注册或生产登记。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地准入/逐项重试合同已实现；仍缺真实 Whale validation_raw 环境、平台 Key/Agent/Dataset/任务登记、真实 bulk 400/failed_item 响应样本、终态回执与独立读回及生产连续验收。"
+    },
+    {
+      "id": "GO-ING-003",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "POST /v1/documents/bulk可能部分入队；400不是整批事务回滚，failed_item不是全坏项清单",
+        "验收": "混好坏批次重试无丢失/重复；保留原received_at/record key/payload"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_ingest.IngestSpoolTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_typed_fixture_and_isolated_postgresql",
+          "test": "tests.test_google_ingest.IngestSpoolTests.test_mixed_bulk_400_is_not_atomic_rollback_and_failed_item_is_per_row",
+          "log": "state/google-prd-v1-20261104/phase24/ingest-p0-tests.log",
+          "command": "TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' .venv/bin/python -m unittest tests.test_google_ingest -v",
+          "scope": "bulk 响应必须逐项对应提交行；混好坏批次中好项可 queued/accepted/duplicate，failed_item 仅重试所属行，原 received_at/payload hash/字段保留。长度或类型不匹配整体失败关闭。仍是本地隔离数据库合同，不是真实 Whale /v1/documents/bulk 400 响应。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地准入/逐项重试合同已实现；仍缺真实 Whale validation_raw 环境、平台 Key/Agent/Dataset/任务登记、真实 bulk 400/failed_item 响应样本、终态回执与独立读回及生产连续验收。"
+    },
+    {
+      "id": "GO-ING-004",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "mode=scheduled observation/backfill/snapshot/live；X-Ingest-Class显式normal/realtime/backfill分批；acquisition_type不替代header/任务授权",
+        "验收": "三类准入独立、历史任务不走实时额度；自主推送不伪造task ID"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_ingest.IngestSpoolTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ING-005",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "429/503按Retry-After+抖动退避；许可内spool≤2GB/24h建议，超过优先停历史/低优先任务",
+        "验收": "重启可恢复，过期内容不继续重放；源额度不足不切成未批准通道"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_ingest.IngestSpoolTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_isolated_database_contract",
+          "test": "tests.test_google_quota",
+          "log": "state/google-prd-v1-20261104/phase15/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "本地 PostgreSQL 原子配额桶覆盖 service/cloud_project/property/CID/vendor_right；多资源全有或全无、共享 property 外部耗额、账号轮换不增配额、并发不超卖、request_id 幂等与冲突、缺失配置 not_covered，以及 429/503 Retry-After+指数退避+抖动。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-ING-006",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "每消息provided_capabilities与字段一致；parser保留unknown类型，不能把缺字段当feature不存在",
+        "验收": "空HTML、改DOM、结果type新增触发质量告警；低置信不进正式排名"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit",
+          "test": "tests.test_google_parser_quality",
+          "log": "state/google-prd-v1-20261104/phase20/full-regression-final.log",
+          "scope": "本地parser质量门绑定source/parser版本，拒绝超出provided_capabilities的字段；空HTML、DOM变化和新结果类型告警，新类型保留unknown而不当absent；低置信/空HTML不进正式排名。不是真实HTML parser、DOM历史或低置信金标。"
+        },
+        {
+          "type": "synthetic_typed_fixture_and_isolated_postgresql",
+          "test": "tests.test_google_projection / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase23/targeted-tests.log",
+          "command": "TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' .venv/bin/python -m unittest tests.test_google_metrics_revisions tests.test_google_projection -v",
+          "scope": "ParserQualityGate 绑定正式 ObservationProjection：gate 结果进入投影 header/hash，空 HTML、低于阈值 confidence、缺 typed ParsedMessage 或未配置 gate 却携带 metadata 均写入前失败关闭；运行时六个 parser 配置项必须齐全。仍是合成 parser message/隔离数据库，不是真实 parser/DOM 历史/人工金标。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地 parser 质量门已进入正式投影写入路径；仍缺真实 parser adapter、DOM 快照历史、空HTML/漂移连续告警、结果类型升级重放、人工低置信样本和生产连续验收。"
+    },
+    {
+      "id": "GO-ING-007",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "小时账区分source attempts、billable units、parsed、sent、accepted、terminal、readable、rights-expired；计数单位明确",
+        "验收": "不把1任务的10结果与10receipt直接判重复；失败真实费用仍入账"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit",
+          "test": "tests.test_google_ingest_ledger",
+          "log": "state/google-prd-v1-20261104/phase18/full-regression-final.log",
+          "scope": "持久UTC小时账按源阶段和显式单位聚合request/result/event/receipt/document，并接入spool投递/回执/读回/到期；缺失阶段保持unknown，不把10结果与10回执合并；不是真实供应商小时账单或失败计费证据。"
+        }
+      ],
+      "remaining": "真实供应商attempts/billable units/失败计费、生产真实平台回执与独立读回数据、生产调度部署和连续小时对账尚未完成。"
+    },
+    {
+      "id": "GO-ING-008",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "run记scheduled/requested/source observed/received times，缓存与重试分离；漏点不补造历史",
+        "验收": "相同缓存不得被报告成独立2次新鲜rank/AI样本；晚运行记late/missed"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit",
+          "test": "tests.test_google_ingest_ledger",
+          "log": "state/google-prd-v1-20261104/phase18/full-regression-final.log",
+          "scope": "持久UTC计划点/运行记录保存scheduled/requested/source observed/received；spool投递transition与源run分离，cache与retry不算fresh样本，late只在宽限期后标记，missed仅在显式close时标记；不是真实源运行或生产调度。"
+        }
+      ],
+      "remaining": "真实计划点、供应商缓存/重试语义、生产调度和连续小时对账尚未完成；旧spool记录不回填。"
+    },
+    {
+      "id": "GO-ING-009",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "GSC fresh/final按日或小时回补；bulk按site/url表分别核导出/日志，最终按分区/版本替换",
+        "验收": "ExportLog只成功、部分表完成/漏日重试放弃能被检测；不重复累计修订"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_and_isolated_postgresql",
+          "test": "tests.test_google_gsc_revisions / tests.test_google_search_console",
+          "log": "state/google-prd-v1-20261104/phase22/gsc-revisions-tests.log",
+          "command": "TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' .venv/bin/python -m unittest tests.test_google_gsc_revisions tests.test_google_search_console -v",
+          "scope": "GSC 按日/小时分区修订审计；fresh/final 只选当前版本不累加，两张 bulk 表逐表校验成功日志与分区证据，漏日/重试放弃显式记录。只保存审计元数据与哈希，不保存第二份原始报表；未接真实 GSC/BQ/ExportLog、Whale 或计划调度。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地分区修订/核验账已实现，缺真实 GSC fresh/final 回补调度、两表 BigQuery 与 ExportLog 读取、源 revision 映射、源费用、Whale 原始事实/独立读回、真实漏日恢复和生产连续验收。"
+    },
+    {
+      "id": "GO-ING-010",
+      "source_columns": {
+        "等级": "必须/P1",
+        "需求": "GA4 intraday/final、Ads conversion lag、Merchant report按真实可得窗口重读",
+        "验收": "preliminary/final分开；重读条件/修订费和查询扫描量可见"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_and_isolated_postgresql",
+          "test": "tests.test_google_metrics_revisions",
+          "log": "state/google-prd-v1-20261104/phase23/metric-revisions-tests.log",
+          "command": "TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' .venv/bin/python -m unittest tests.test_google_metrics_revisions -v",
+          "scope": "GA4 intraday/final、Ads current/conversion_adjusted、Merchant current/revised 分区修订账：幂等、source revision 唯一、重读引用/间隔/窗口/预算失败关闭，preliminary/final 分列，费用与扫描量缺失保持 unknown 且不同 accounting basis/currency 不合计。只保存元数据/hash/会计，不保存第二份原始报表；未接真实 GA4/Ads/Merchant。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "本地修订账已实现；仍缺真实 GA4/Ads/Merchant adapter、源批准重读窗口与预算、真实 revision/fee/scan/timing、生产调度和连续对账验收。"
+    },
+    {
+      "id": "GO-ING-011",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "AIO二次展开/短效token任务优先，未展开不当无AIO；token不写普通日志",
+        "验收": "源特定超时/过期状态正确，失败不入品牌visibility分母"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit",
+          "test": "tests.test_google_aio",
+          "log": "state/google-prd-v1-20261104/phase17/full-regression-final.log",
+          "scope": "内存优先队列覆盖短效句柄脱敏、源特定超时/过期/失败状态、scope绑定和仅expanded可入visibility；不是真实AIO/AI Mode、供应商短效token、真实超时或生产队列。"
+        }
+      ],
+      "remaining": "真实AIO/AI Mode通道、供应商短效句柄生命周期、源特定超时、持久任务恢复、真实失败率和品牌visibility验收尚未完成；当前成果仅本地内存契约。"
+    },
+    {
+      "id": "GO-ING-012",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "不下载原视频/全网图片；默认外链，许可内截图/必要HTML≤0.25GB/日建议，加工≤60min/日",
+        "验收": "全页截图/HTML单独批准与expiry，预算100%停止新资产，不影响事实文本入库"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit",
+          "test": "tests.test_google_asset_budget",
+          "log": "state/google-prd-v1-20261104/phase19/full-regression-final.log",
+          "scope": "本地日预算仅允许显式批准的viewport/full-page截图和必要HTML，拒绝原视频/全网图片；0.25GB与60分钟原子预留、80%告警、100%只停资产，全页需独立批准/expiry。不是实际抓取、默认外链接线或真实资产存储。"
+        }
+      ],
+      "remaining": "默认外链、真实采集开关、对象存储/TTL、实际截图/HTML抓取、生产预算持久化和事实文本继续入库联调尚未完成。"
+    },
+    {
+      "id": "GEN-01",
+      "source_columns": {
+        "Google特定落实": "6.3分域mode与三类header",
+        "验收": "GO-ING-004、GT-05"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-02",
+      "source_columns": {
+        "Google特定落实": "URL/query/topic/variant/run/asset/report身份分离",
+        "验收": "GO-ID-001～005、GT-01"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-03",
+      "source_columns": {
+        "Google特定落实": "观测年龄/计划点/报表可得与发布时间分开",
+        "验收": "7.2、GT-07"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-04",
+      "source_columns": {
+        "Google特定落实": "日内SERP、Trends/报表回补、事件键含UTC",
+        "验收": "GO-ING-008～010、GT-03"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-05",
+      "source_columns": {
+        "Google特定落实": "源时区/报表期间；无真发布时间不造值",
+        "验收": "GO-DAT-004、GT-02"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-06",
+      "source_columns": {
+        "Google特定落实": "查询/源/检测语言独立，平台检测",
+        "验收": "GO-DAT-005、GT-08"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-07",
+      "source_columns": {
+        "Google特定落实": "链接标题不宣称body/rank/AI/趋势数值能力",
+        "验收": "GO-ING-006、GT-05"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-08",
+      "source_columns": {
+        "Google特定落实": "Local review及商家reply仅条件域；父对象/评论/回复分列，样本上限明确",
+        "验收": "5.3.7、GO-SRC-010、GT-13"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-09",
+      "source_columns": {
+        "Google特定落实": "默认外链、许可内副本0.25GB/day",
+        "验收": "GO-ING-012、GT-12"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-10",
+      "source_columns": {
+        "Google特定落实": "中台统一OCR/翻译/NER/情感；不具用途不得embedding",
+        "验收": "GO-DAT-005/009、GT-08"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-11",
+      "source_columns": {
+        "Google特定落实": "source project/property/CID限流、Whale背压与spool",
+        "验收": "GO-SRC-009、GO-ING-005、GT-06"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-12",
+      "source_columns": {
+        "Google特定落实": "不依赖未登记Google登录池；OAuth/账号/project额度与停止/冷却登记",
+        "验收": "GO-SRC-004/009、GT-06/14"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-13",
+      "source_columns": {
+        "Google特定落实": "小时数据面账，静默超过计划3倍",
+        "验收": "GO-ING-007、GO-QA-006、GT-07"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-14",
+      "source_columns": {
+        "Google特定落实": "1,000样本和字段门槛；结构化/摘要质量profile先批准",
+        "验收": "GO-DAT-006、GO-QA-001～005、GT-07"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-15",
+      "source_columns": {
+        "Google特定落实": "请求/积分/token/字节/扫描量及日月双预算",
+        "验收": "7.4、GT-12"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-16",
+      "source_columns": {
+        "Google特定落实": "逐源用途/保留/聚合/再分发矩阵，Ads组合与Maps特殊限制",
+        "验收": "GO-SRC-001～004/010、GT-14"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-17",
+      "source_columns": {
+        "Google特定落实": "validation_raw与生产登记，私有独立观测隔离先验证",
+        "验收": "GO-ING-002、WHL-GO-01、GT-05"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GEN-18",
+      "source_columns": {
+        "Google特定落实": "停任务/在途对账/定向撤权/expiry与退役",
+        "验收": "GO-NFR-008、GT-14"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-001",
+      "source_columns": {
+        "方法/路径": "GET /capabilities",
+        "输入与输出要点": "source/service/entity/field/use/tenant→可得范围、准入、保存/分发/期限、原因",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_registry / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "控制面来源/资产/Key授权、部分元数据入口、鉴权与分页；不证明数据接口、异步分析、真实来源/平台或生产已接通。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-002",
+      "source_columns": {
+        "方法/路径": "GET /markets；GET /locations",
+        "输入与输出要点": "source、country、language→支持项/坐标精度，不假设源间location code通用",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_registry / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "控制面来源/资产/Key授权、部分元数据入口、鉴权与分页；不证明数据接口、异步分析、真实来源/平台或生产已接通。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-003",
+      "source_columns": {
+        "方法/路径": "GET /keywords；GET /keywords/{id}",
+        "输入与输出要点": "text/topic/intent/collection_version→原词、归一化、alias与指标引用",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-004",
+      "source_columns": {
+        "方法/路径": "GET /topics；GET /topics/{id}/relations",
+        "输入与输出要点": "source/topic/brand→关系、方法、confidence与证据",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_query_topics_and_relations_are_evidence_backed_not_a_fake_taxonomy",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "精确归一化查询作为topic candidate、共享URL/域名Jaccard关系、证据ID、窗口/权限/分页负例；没有批准主题taxonomy或品牌关系源。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-005",
+      "source_columns": {
+        "方法/路径": "GET /query-variants",
+        "输入与输出要点": "query/market/location/device/surface→配置与hash版本",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-006",
+      "source_columns": {
+        "方法/路径": "GET /observations；GET /observations/{id}",
+        "输入与输出要点": "variant、scheduled/observed windows、status→run、缓存/质量/费用",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-007",
+      "source_columns": {
+        "方法/路径": "GET /observations/{id}/items",
+        "输入与输出要点": "result_type/depth→顺序item、父block、URL与源rank",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-008",
+      "source_columns": {
+        "方法/路径": "GET /serp-history",
+        "输入与输出要点": "query/variant/target/source/window→rank变化、未入深度/失败/切源断点",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-009",
+      "source_columns": {
+        "方法/路径": "GET /serp-features",
+        "输入与输出要点": "feature/target/variant/window→出现、拥有、未知和证据",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-010",
+      "source_columns": {
+        "方法/路径": "GET /domains；GET /domains/{id}",
+        "输入与输出要点": "domain、cohort/scope→实体及可比聚合，不默认真实流量",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_domain_rankings_comparisons_and_pages_use_one_fixed_verified_cohort",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "固定窗口域名聚合、可比分母、无流量推断。 isolated fixture仅证明本地契约。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-011",
+      "source_columns": {
+        "方法/路径": "GET /domains/{id}/pages",
+        "输入与输出要点": "path/query/cohort→页面/URL份额、排名、feature与来源",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_domain_rankings_comparisons_and_pages_use_one_fixed_verified_cohort",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "精确目标URL页面聚合、排名/feature/来源边界及域名内分页。 isolated fixture仅证明本地契约。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-012",
+      "source_columns": {
+        "方法/路径": "GET /rankings",
+        "输入与输出要点": "universe/version、metric/surface/window→排名、覆盖与权重定义",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_domain_rankings_comparisons_and_pages_use_one_fixed_verified_cohort",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "固定观测universe的top3/top10、median rank、unique URL排名及覆盖。 isolated fixture仅证明本地契约。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-013",
+      "source_columns": {
+        "方法/路径": "GET /comparisons",
+        "输入与输出要点": "domains/brands、cohort、method→固定集合差异/中位/份额",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_domain_rankings_comparisons_and_pages_use_one_fixed_verified_cohort",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "2-10个显式域名的固定集合比较、分子分母与成对差异；不声称因果。 isolated fixture仅证明本地契约。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-014",
+      "source_columns": {
+        "方法/路径": "GET /keyword-metrics",
+        "输入与输出要点": "terms/close_variant_group/geo/network/source/date→圆整/估算量和广告竞争",
+        "阶段": "P0供应商/P1官方"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-015",
+      "source_columns": {
+        "方法/路径": "GET /trends/series",
+        "输入与输出要点": "term/topic、geo、window/granularity/scale_policy→时序、修订、低量状态",
+        "阶段": "P0条件"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-016",
+      "source_columns": {
+        "方法/路径": "GET /trends/related",
+        "输入与输出要点": "series/query、top/rising/window→列表、breakout、分母/来源",
+        "阶段": "P0"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-017",
+      "source_columns": {
+        "方法/路径": "GET /news/observations",
+        "输入与输出要点": "topic/query/market/window→列表occurrences、publisher/URL/时间",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_news_occurrences_and_event_candidates_do_not_invent_time_or_truth",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "显式news类型/来源的occurrence、publisher/URL/时间原样、分页和来源权限；真实新闻adapter/发布时区链未接通。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-018",
+      "source_columns": {
+        "方法/路径": "GET /news/events",
+        "输入与输出要点": "topic/cluster_version/window→事件簇、独立文章、转载与方法",
+        "阶段": "P0基础"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_news_occurrences_and_event_candidates_do_not_invent_time_or_truth",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "exact publisher URL或明确publisher+title的事件候选、独立URL/repost分账、heuristic标记；未做人工金标或真实聚类验收。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-019",
+      "source_columns": {
+        "方法/路径": "GET /articles/{id}",
+        "输入与输出要点": "fields/version→许可内正文或摘要、来源、rights、Whale引用",
+        "阶段": "P0条件"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_domain_rankings_comparisons_and_pages_use_one_fixed_verified_cohort",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "许可内article summary、固定version、evidence与时间字段；body明确not_covered，未伪造正文。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-020",
+      "source_columns": {
+        "方法/路径": "GET /ai/answers；GET /ai/answers/{id}",
+        "输入与输出要点": "prompt/variant/channel/window→回答/可见性状态、配置、许可内证据",
+        "阶段": "P0 AIO/P1 Mode"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_ai_answers_keep_text_uncovered_and_citations_explicit",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "AIO/AI Mode feature observation、presence、citation、evidence；typed projection无answer text时明确not_covered。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-021",
+      "source_columns": {
+        "方法/路径": "GET /ai/citations",
+        "输入与输出要点": "answer/domain/brand/surface→可见引用、URL关系与证据",
+        "阶段": "P0基础"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_ai_answers_keep_text_uncovered_and_citations_explicit",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "显式AI citation URL occurrence、domain、answer/evidence关系与分页；真实AIO/Mode来源和金标未接通。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-022",
+      "source_columns": {
+        "方法/路径": "GET /ai/visibility",
+        "输入与输出要点": "prompt cohort、brand set、channel/window→mention/citation/SoV/位置与有效分母",
+        "阶段": "P0描述/P1重复"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_ai_answers_keep_text_uncovered_and_citations_explicit",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "prompt同义为精确query、presence/引用数量和brand-set内SoV分母；mention因无answer text明确not_covered。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-023",
+      "source_columns": {
+        "方法/路径": "GET /local/capabilities",
+        "输入与输出要点": "source/use/asset→地图网格、评论和展示能力准入，不返回受限内容",
+        "阶段": "P0信息/P1扩展"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_registry / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "控制面来源/资产/Key授权、部分元数据入口、鉴权与分页；不证明数据接口、异步分析、真实来源/平台或生产已接通。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-024",
+      "source_columns": {
+        "方法/路径": "GET /local/grids；GET /local/grids/{id}/observations",
+        "输入与输出要点": "grid/version/window→获准供应商逐点结果、缺测与成本",
+        "阶段": "P1条件"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_local / tests.test_google_local_http / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase16/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "本地 typed contract 覆盖显式 grid/version/query/variant/center/point/excluded point、分页 observations、observed/missing/failed/excluded 状态、depth/rank/缺测/费用；未观测不伪装为空排名。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未接入真实 Places/GBP/供应商 Local 网格、真实点采、地图许可或生产调度。"
+    },
+    {
+      "id": "GO-API-025",
+      "source_columns": {
+        "方法/路径": "GET /places/{id}/reference",
+        "输入与输出要点": "获准place ID/必要链接/来源与用途状态",
+        "阶段": "P1条件"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_local / tests.test_google_local_http / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase16/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "Place reference typed contract 仅返回 place_id/provider namespace/必要 source URL/显示与 raw-store 标志和限制；adapter 声称 raw_store 但 grant 未许可时失败关闭。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未连接真实 Places/GBP，未验证 Google place_id 例外存储、地图展示归属或真实许可。"
+    },
+    {
+      "id": "GO-API-026",
+      "source_columns": {
+        "方法/路径": "GET /local/review-insights",
+        "输入与输出要点": "独立获准source/rights/place/sample→主题/比例/证据；默认disabled",
+        "阶段": "P1条件"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_local / tests.test_google_local_http / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase16/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "独立批准 review insight typed contract 固定 place/sample/eligible denominator/sorting/theme evidence；默认无 adapter 即 not_covered，不返回原始评论库。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未连接真实评论来源，未验证样本偏差、语言/排序、比例统计、20案例人工复核或默认 disabled 生产配置。"
+    },
+    {
+      "id": "GO-API-027",
+      "source_columns": {
+        "方法/路径": "GET /search-console/reports",
+        "输入与输出要点": "asset/template/date/dataState/aggregation→top_rows或bulk同grain数据、隐私/完整性",
+        "阶段": "P0条件"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_search_console / tests.test_google_api / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase11/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "Search Console 报告 typed fixture 契约：asset/template/date/dataState/aggregation、top_rows/bulk 同 grain、source timezone、隐私/统计完整性、分页游标、grant/到期/撤权/SHA dataset 匹配；top rows 不得升级为统计完整。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "仍只有本地 GSC fixture 契约，未连接真实授权 property/API、真实 dataState/aggregation 金标、全部隐私/临时数据样本或生产验收。"
+    },
+    {
+      "id": "GO-API-029",
+      "remaining": "未连接真实 GA4 Data API/property；未验证 30 模板、真实 token/并发耗额、抽样/阈值样本、迟到修订、BQ 差异或生产用户流程。",
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_analytics / tests.test_google_api / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase12/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "GA4 typed fixture 报告契约：property/template/period/report_timezone/dimensions/metrics、row_count、sampling metadata、subjectToThresholding、dataLossFromOtherRow、schema restrictions、property quota、冻结 evidence ID 与快照分页。",
+          "exit_code": 0
+        }
+      ],
+      "source_columns": {
+        "方法/路径": "GET /analytics/reports",
+        "输入与输出要点": "property/template/date/scope→GA4报告、metadata和token",
+        "阶段": "P1"
+      }
+    },
+    {
+      "id": "GO-API-030",
+      "source_columns": {
+        "方法/路径": "GET /analytics/reconciliations",
+        "输入与输出要点": "property/report/BQ compatible scope→差异分解，不强制零差",
+        "阶段": "P1"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_analytics / tests.test_google_api / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase12/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "GA4 API/BigQuery typed fixture 对账契约：显式 API/BigQuery scope、exact/tolerance/explained/unexplained/not_comparable 状态，真实非零 delta 原样保留，不强制零差，不做用户级跨源拼接。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未连接真实 BigQuery 事件导出/GA4 Data API；未验证 30 个真实身份/归因/币种/时区/consent/modeling/迟到用例及独立分析员复算。"
+    },
+    {
+      "id": "GO-API-028",
+      "source_columns": {
+        "方法/路径": "GET /search-console/diagnostics",
+        "输入与输出要点": "authorized property/sample URL→索引版本、时间、问题与读取配额",
+        "阶段": "P1"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_search_console / tests.test_google_api / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase11/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "Search Console URL 诊断 typed fixture 契约：授权 property 下 URL、索引/覆盖/抓取时间/问题与配额状态保留未知值；property 外 URL 在调用 adapter 前返回 403。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未连接真实授权 property/URL Inspection API，未验证 Google 实际错误、配额耗尽、撤权共享和真实索引响应；不是生产验收。"
+    },
+    {
+      "id": "GO-API-031",
+      "source_columns": {
+        "方法/路径": "GET /ads/keyword-plans",
+        "输入与输出要点": "仅获准内部分析/报告模式，approved plan/geo/network/window→许可内规划结果；主体项目准入绑定，不做任意源方法代理",
+        "阶段": "P1条件"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_ads / tests.test_google_ads_http / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase13/ads-contracts.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest tests.test_google_ads tests.test_google_ads_http tests.test_google_runtime -v",
+          "scope": "只读 approved managed plan：显式 plan/customer/geo/network/language/currency/timezone/window，Basic/Standard + 双批准 + SERP+Ads 组合引用，拒绝 GAQL/query/method/fields、Explorer、错主体/项目/OAuth/customer 和未批准范围；分页绑定输出快照。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未连接真实 Google Ads Keyword Planning API 或真实 approved plan；历史 4 年、真实 close variant/阈值与生产 POC 未验收。"
+    },
+    {
+      "id": "GO-API-032",
+      "source_columns": {
+        "方法/路径": "GET /ads/reports",
+        "输入与输出要点": "仅获准主体/报告服务，customer/template/window/attribution/currency→许可内实绩/修订；跨主体共享准入与纯代理负例拒绝",
+        "阶段": "P1条件"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_ads / tests.test_google_ads_http / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase13/ads-contracts.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest tests.test_google_ads tests.test_google_ads_http tests.test_google_runtime -v",
+          "scope": "只读 approved managed report：customer/template/window/timezone/geo/network/language/currency/attribution 全绑定，保留 micros、fractional conversions、snapshot/revision delta、partial coverage 与 provider 503；读取前后重验权利/策略/绑定/期限。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未连接真实 Google Ads 报表资产；未验收真实跨主体共享准入、CID 配额、真实修订回放或生产报告服务。"
+    },
+    {
+      "id": "GO-API-033",
+      "source_columns": {
+        "方法/路径": "GET /merchant/reports",
+        "输入与输出要点": "authorized merchant/template/version/window→批准报表与字段",
+        "阶段": "P1条件"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_merchant / tests.test_google_merchant_http / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase14/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只读 Merchant fixture：source/API version、merchant asset/access、template/report version、IAM 时区与左闭右开窗口显式绑定；策略未批准、主体/资产/模板/版本/范围不匹配均在 adapter 读取前失败关闭；拒绝 method/query/fields/Content API 风格维度和写入。",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "未证明真实 Merchant API 当前报表方法、端点或字段存在；未连接真实 merchant 资产、真实 product/date 数据、配额或生产 POC；Content API 明确不作为后备。"
+    },
+    {
+      "id": "GO-API-034",
+      "source_columns": {
+        "方法/路径": "GET /insights/brands",
+        "输入与输出要点": "brand/version/cohort/window→需求、搜索/新闻/AI分轨与证据",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_domain_rankings_comparisons_and_pages_use_one_fixed_verified_cohort",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "search/news/AI三轨分离、无需求源时不生成组合品牌分数。 isolated fixture仅证明本地契约。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-035",
+      "source_columns": {
+        "方法/路径": "GET /insights/opportunities",
+        "输入与输出要点": "keyword/topic/target/cohort/method→解释性机会评分、成本与不可判定项",
+        "阶段": "P0基础/P1深化"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_domain_rankings_comparisons_and_pages_use_one_fixed_verified_cohort",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "observed-rank-gap机会分数、样本/分母/interval限制；CPC/成本和因果未覆盖。 isolated fixture仅证明本地契约。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-036",
+      "source_columns": {
+        "方法/路径": "GET /insights/anomalies",
+        "输入与输出要点": "monitor/window/rule/model→变化、基线、数据/业务类别与证据",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_domain_rankings_comparisons_and_pages_use_one_fixed_verified_cohort",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "显式split的top10变化候选、基线/当前/证据及data/business分类。 isolated fixture仅证明本地契约。"
+        }
+      ],
+      "remaining": "只有本地固定cohort/独立reader夹具/HTTP契约证据；真实Whale读回、批准主题/品牌口径、金标、生产接入和对应验收仍需完成。"
+    },
+    {
+      "id": "GO-API-037",
+      "source_columns": {
+        "方法/路径": "GET /metric-definitions；GET /evidence/{id}",
+        "输入与输出要点": "metric/version、evidence/manifest→公式、分母、可加性、许可内原证据",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.test_evidence_id_resolves_one_licensed_pinned_observation",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "本地稳定 evidence_id、固定 source/projection/hash、独立reader复核、当前grant/用途/期限、指标定义和可加性；reader为夹具，不证明真实Whale读回、生产数据或用户E2E。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-038",
+      "source_columns": {
+        "方法/路径": "POST/GET/PATCH /monitors及/{id}",
+        "输入与输出要点": "词/prompt/域/池、source、频率/预算/规则；If-Match版本变更",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api report/watchlist/monitor tests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "本地版本化监测配置、Key隔离、Idempotency、If-Match、默认暂停和无调度器边界；没有生产调度、真实source、100规则回放或用户E2E。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-039",
+      "source_columns": {
+        "方法/路径": "POST/GET /watchlists；DELETE /watchlists/{id}/items/{entity_id}",
+        "输入与输出要点": "收藏/移出，不删除源事实",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api report/watchlist/monitor tests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "本地Key隔离收藏/移出、幂等创建、源事实不删除和分页关闭边界；没有工作台收藏流程、生产数据或用户E2E。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-040",
+      "source_columns": {
+        "方法/路径": "POST /analysis-jobs；GET /analysis-jobs/{id}",
+        "输入与输出要点": "manifest、query/method versions→异步分析/部分失败/取消",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api analysis worker tests",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "冻结manifest任务状态机、幂等、queued/running/取消/过期、aggregate用途、外部worker扫描、heartbeat CAS、进度和过期租约恢复负例；worker未部署，不证明生产调度、崩溃恢复演练、真实Whale数据或SLO。"
+        }
+      ],
+      "remaining": "本地状态机、外部分析worker与租约恢复已实现；生产部署、真实数据/批准、分布式故障演练和SLO未完成。"
+    },
+    {
+      "id": "GO-API-041",
+      "source_columns": {
+        "方法/路径": "POST /exports；GET /exports/{id}",
+        "输入与输出要点": "fields/format/manifest→许可内冻结结果，生成/下载复核",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api export tests",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "同步和异步分块冻结导出、自动转队列、CSV/JSONL、逐块/总hash、幂等、进度、租约恢复、取消、期限、字段/格式/公式注入、撤权/篡改负例；不证明真实百万行、对象存储、生产调度或用户E2E。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api analysis/export tests",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "item导出完成后可作为冻结分析manifest；只证明本地隔离边界，不证明真实数据或生产SLO。"
+        }
+      ],
+      "remaining": "本地同步/异步导出基础已实现；真实reader/批准、百万行负载、对象存储/流式下载、生产调度、报告链和整体验收未完成。"
+    },
+    {
+      "id": "GO-API-042",
+      "source_columns": {
+        "方法/路径": "POST /live-queries；GET /live-queries/{id}",
+        "输入与输出要点": "approved source/variant/max units→按需观察、预算/配额/结果状态",
+        "阶段": "P1条件"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-043",
+      "source_columns": {
+        "方法/路径": "POST /reports；GET /reports/{id}",
+        "输入与输出要点": "approved query/manifest→确定性/AI报告、证据、反例与限制",
+        "阶段": "P0确定性/P2 AI"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_deterministic_report_carries_evidence_versions_and_counterexamples; test_report_fails_closed_on_source_failure_revocation_and_expiry",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "确定性报告固定 manifest/版本/hash、结论/反例/限制/行动；报告列表只返回签名分页元数据，详情重新核验权限、manifest 与 hash，同一报告 50 次重放 hash 一致；无 AI 报告、真实 source/reader 或生产验收。",
+          "log": "state/google-prd-v1-20261104/phase10/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "local_browser_fixture",
+          "test": "tests.test_reliability.ReliabilityUITests.test_google_research_workspace_is_composed_readonly",
+          "scope": "Google 研究页的产出列表、报告详情、空/错/过期态及 1440/390/320px 本地 fixture；不是生产页面、真实租户数据或用户 E2E。",
+          "screenshots": [
+            "state/google-prd-v1-20261104/phase10/research-desktop.png",
+            "state/google-prd-v1-20261104/phase10/research-390.png",
+            "state/google-prd-v1-20261104/phase10/research-320.png"
+          ]
+        }
+      ],
+      "remaining": "确定性报告与只读工作台基础已实现；AI 报告质量/安全、真实来源与独立读回、生产部署和用户 E2E 未完成。"
+    },
+    {
+      "id": "GO-API-044",
+      "source_columns": {
+        "方法/路径": "GET /changes；POST/GET/DELETE /subscriptions及/{id}",
+        "输入与输出要点": "域观察/告警至少一次投递，原始内容仍走Whale变更",
+        "阶段": "P1"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-045",
+      "source_columns": {
+        "方法/路径": "GET /quality；GET /usage",
+        "输入与输出要点": "管理角色读计划覆盖/缓存/错误/资源/费用/源额度",
+        "阶段": "P0"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.test_manager_usage_is_local_and_never_invents_provider_cost",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "本地manager角色门禁、租户控制面job/export/report/monitor/watchlist计数与API限流；provider源额度、费用、币种结算明确not_covered，不伪造账单或成本。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-046",
+      "source_columns": {
+        "方法/路径": "GET /connections",
+        "输入与输出要点": "获准资产、service/project reference、role/scope、expiry/status；不返回token",
+        "阶段": "P0条件"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_registry / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "控制面来源/资产/Key授权、部分元数据入口、鉴权与分页；不证明数据接口、异步分析、真实来源/平台或生产已接通。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-100",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "data/meta/errors；meta含request/query_id、data_as_of、source_observed_at、generated_at、quality/coverage、版本、manifest/不可复算原因、rights expiry",
+        "验收": "正常/部分/失败契约；元数据不掩盖字段stale/unknown/expired"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_registry / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "控制面来源/资产/Key授权、部分元数据入口、鉴权与分页；不证明数据接口、异步分析、真实来源/平台或生产已接通。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-101",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "Bearer绑定租户、组织、资产、字段/用途/expiry；公开和私有独立授权；报告与缓存继承限制",
+        "验收": "同URL两个租户、越grant、游标/报告/导出/过期下载全部负向通过"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-102",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "limit默认20最大100；游标绑定过滤/排序/source/权限版本；普通分页不是冻结快照",
+        "验收": "并发新数据不破坏同manifest；撤权后旧游标失效"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_evidence.CursorTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "limit 边界、签名游标绑定租户/过滤/排序/source/权限维度，篡改、换 Key 和 rebind 被拒绝。",
+          "log": "state/google-prd-v1-20261104/phase10/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_metadata_pagination_cursor_is_tenant_and_filter_bound; test_export_and_job_list_cursors_do_not_repeat_the_boundary_item; test_live_queries_are_queued_until_an_external_worker_runs; test_subscriptions_are_key_scoped_paused_and_do_not_send; test_watchlists_are_key_scoped_idempotent_and_remove_only_membership; test_monitor_configuration_is_versioned_paused_and_never_starts_a_scheduler",
+          "log": "state/google-prd-v1-20261104/phase10/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "元数据、导出、分析任务、报告、实时查询、订阅、监测和收藏列表严格使用 `<` 游标边界，翻页不重复上一页末项；游标继续绑定租户、过滤和权限版本。普通分页仍不是冻结快照。"
+        }
+      ],
+      "remaining": "本地所有已实现列表的游标边界和范围绑定已覆盖；真实来源/Whale 读回、生产并发、全部计划端点及端到端撤权仍待验收。"
+    },
+    {
+      "id": "GO-API-103",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "RFC3339、UTC存储、IANA业务时区，区间左闭右开；源report日期不被UTC机械改日",
+        "验收": "DST/跨月/日界线、源PT/客户时区结果可复算"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_registry / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "控制面来源/资产/Key授权、部分元数据入口、鉴权与分页；不证明数据接口、异步分析、真实来源/平台或生产已接通。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-104",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "预期>3s分析与大导出走queued/running/partial/succeeded/failed/canceled/expired",
+        "验收": "超时/取消/许可到期不继续计成功或返回全部数据"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api async export/job tests",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "本地queued/running/partial_result/succeeded/failed/canceled/expired状态、超过同步页自动转异步、进度、取消、期限和租约恢复；没有>3秒真实负载计时、百万行压力、生产worker或SLO验收。"
+        }
+      ],
+      "remaining": "本地异步状态机已覆盖；真实耗时阈值、百万行负载、生产调度/对象存储、故障演练和SLO未完成。"
+    },
+    {
+      "id": "GO-API-105",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "创建监测/分析/导出/按需任务支持Idempotency-Key建议24h；同键异载荷409",
+        "验收": "100并发同键仅1任务；逻辑不重计费，源真实重试费保留"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api analysis/export tests",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "冻结manifest上的本地任务状态机、幂等、queued/worker/取消/过期、aggregate/export用途负例；worker未部署，不证明真实异步大任务、崩溃恢复、真实Whale数据或生产SLO。"
+        }
+      ],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-106",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "起始每租户读5rps/并发2为H；live默认关闭，批准后≤50任务/day、每任务≤100billable units",
+        "验收": "越限429含Retry-After；不能经多租户耗尽同property/CID/source资产"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-107",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "错误码至少invalid_argument/not_authorized/use_not_permitted/not_covered/unsupported/source_error/quota_exceeded/privacy_suppressed/incompatible_scope/partial_result/outside_observed_depth/ingest_pending/expired",
+        "验收": "retryable、source和非敏感原因明确；404/空/不支持/失败/0不同"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_registry / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0,
+          "scope": "控制面来源/资产/Key授权、部分元数据入口、鉴权与分页；不证明数据接口、异步分析、真实来源/平台或生产已接通。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-API-108",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "CSV/JSONL导出保留原值/性质/scope/状态/版本/expiry；复杂观测优先JSONL；建议链接≤7d且不超源expiry",
+        "验收": "100万行异步对账；无受限字段夹入公开导出；下载时重新检查"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_async_export_chunks_recover_lease_and_download_frozen_content; test_async_export_chunk_tamper_and_source_failure_fail_closed; test_domain_metric_matches_jsonl_and_csv_recomputation",
+          "log": "state/google-prd-v1-20261104/phase10/full-regression-final.log",
+          "scope": "CSV/JSONL 分块保留原值、scope/hash/version/expiry；两者可基于同一冻结语义导出，下载逐块和 manifest 复核，小规模 API/JSONL/CSV 指标复算一致；不证明 100 万行对账、流式内存上限或生产性能。"
+        }
+      ],
+      "remaining": "本地分块、校验、CSV/JSONL 复算一致基础已实现；100 万行对账、真实 reader/批准、流式下载/对象存储和生产性能未完成。"
+    },
+    {
+      "id": "GO-API-109",
+      "source_columns": {
+        "等级": "应当/P1",
+        "需求": "域订阅event_id、签名/重放窗口、至少一次、最长24h退避；仅已获准目标",
+        "验收": "500/超时/重复/乱序演练，逻辑告警不重复；不自动向未授权外部发送"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-API-110",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "不兼容API升主版本、指标/解析语义版本化，源被强制移除时明确降级；旧口径不静默替换",
+        "验收": "回放旧报告不换分母；无法继续的源不伪造兼容字段"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-QA-001",
+      "source_columns": {
+        "需求/建议阈值": "GO-AC-002样本；原始ID/variant/run/source/权限/观测时间关键字段缺失0，未来源时间0；重复逻辑记录<1%",
+        "失败处理": "阻断相关域上线，不修字段默认值掩盖缺失"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-QA-002",
+      "source_columns": {
+        "需求/建议阈值": "URL/query上下文关联100%正确；人工对照有可匹配条件的200套SERP，top10 organic解析precision与recall各≥0.98",
+        "失败处理": "若源结果不同先分源差异与parser错误，不能把个性化差异当解析真值"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-QA-003",
+      "source_columns": {
+        "需求/建议阈值": "200个多feature金标中feature presence/ownership分类F1≥0.95；unknown类型不自动记absent",
+        "失败处理": "未支持类型显示unknown，parser升级重放并保留版本"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-QA-004",
+      "source_columns": {
+        "需求/建议阈值": "数值/单位/scale/币种/期间/scope转录准确率100%；Trends与Ads圆整/低量/匿名/合并组无丢失",
+        "失败处理": "不可解释差异阻断标准聚合"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-QA-005",
+      "source_columns": {
+        "需求/建议阈值": "GEN-14正文质量在真实article范围按通用要求执行；SERP/结构化报表/Trends单独批准profile；支持语言检测macro-F1≥0.95",
+        "失败处理": "正文缺失不伪造；不支持语言unknown，报表无需伪语言"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-QA-006",
+      "source_columns": {
+        "需求/建议阈值": "小时发送/受理/拒绝/终态/读回/过期账；静默>计划3倍告警；rows、runs、HTTP、积分分别统计",
+        "失败处理": "先核口径/rollup窗口/过滤，再判断丢失；历史任务成功不代替连续验证"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-QA-007",
+      "source_columns": {
+        "需求/建议阈值": "每source/field监测schema漂移、空值率、缓存年龄、depth下降、rights/expiry与分母变化",
+        "失败处理": "结构变化触发暂停依赖计算；不把源故障当品牌变化"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-QA-008",
+      "source_columns": {
+        "需求/建议阈值": "排名、时序、AI提及/引用与授权报告各抽100个输出，可按同manifest/版本/舍入独立重算",
+        "失败处理": "历史许可已过期则标不可重放；不能承诺超合同复算"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SLO-001",
+      "source_columns": {
+        "分域目标H": "批准的SERP日内/日更计划准时完成率≥99%，核心最近真实观测年龄P95≤7h、普通≤27h",
+        "验收口径": "核心4轮/日、普通1轮/日；缓存source time不能改为request time；失败和missed不剔除"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SLO-002",
+      "source_columns": {
+        "分域目标H": "可持久化源结果已取得→Whale可独立读回P95≤5min；计划点到发起P95≤15min",
+        "验收口径": "连续7天、≥200样本；无权/到期/截断/失败单列，不以HTTP accepted代替"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SLO-003",
+      "source_columns": {
+        "分域目标H": "News列表按6h轮询；对独立已知相关文章集，确证publish→首次捕获P95≤8h、受管查询样本召回≥0.90",
+        "验收口径": "只能对批准词与可知参考集报告，RSS无SLA入口失效纳入覆盖；不声称全网召回"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SLO-004",
+      "source_columns": {
+        "分域目标H": "Trends日更计划完成率≥99%；已确认源更新后≤24h捕获；partial与近7d修订记录完整",
+        "验收口径": "不承诺官方Alpha实时、绝对量或未获准的历史/配额"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SLO-005",
+      "source_columns": {
+        "分域目标H": "AI Mode日更计划完成率≥98%；P95观察年龄≤27h；AIO短效补拉按真实source窗口",
+        "验收口径": "successful/eligible/failed/未展开分别统计；一次日更不宣称稳定出现概率"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SLO-006",
+      "source_columns": {
+        "分域目标H": "GSC/GA4/Ads获准域计划完成率≥99%；新可用报表在下一批准轮询周期内取得；D-1/D-3/D-7等回补不漏计划",
+        "验收口径": "平台数据延迟与自方调度延迟分开，未final不承诺终值；源缺数据不补0"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SLO-007",
+      "source_columns": {
+        "分域目标H": "来源/云/媒体预算日月双上限；80%告警、100%停止新增可计费任务；已返回落库/回执优先",
+        "验收口径": "失败源调用计费、分页/二次请求/重试和订阅都可追；不自动涨预算"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-SLO-008",
+      "source_columns": {
+        "分域目标H": "S1约500万逻辑行30d、单租户5rps/并发2下，简单索引查询P95≤1.5s；复杂预计>3s转异步",
+        "验收口径": "真实测试数据/查询模板/资源与未命中缓存分别报告；百万行导出不堵同步读"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-001",
+      "source_columns": {
+        "定义H": "organic_position=指定run内目标URL或域名首次自然结果序号；保留全部occurrences",
+        "语义边界": "未进topN为outside_observed_depth，不填N+1或101；跨device/geo不混平均"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-002",
+      "source_columns": {
+        "定义H": "observed_topK_share=成功且满足深度的run中目标进前K的次数/有效run数",
+        "语义边界": "planned/completed/eligible/failed同时公开；不是Google用户真实曝光份额"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-003",
+      "source_columns": {
+        "定义H": "weighted_visibility=Σ固定query权重×获准CTR模型(position)/Σ权重",
+        "语义边界": "仅同cohort/market/device/surface；默认权重1或显式量权重；模型估计不是实际访问"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-004",
+      "source_columns": {
+        "定义H": "feature_presence/ownership_rate=有feature或目标拥有feature的有效run数/具检测能力的有效run数",
+        "语义边界": "没有检测能力不算absence；AIO是否出现与是否引用目标分开"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-005",
+      "source_columns": {
+        "定义H": "rank_change=可比前期位置−后期位置，正为改善",
+        "语义边界": "只对两边都见到/同源同scope结果；掉出深度另报censored transition，不虚构改变量"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-006",
+      "source_columns": {
+        "定义H": "volatility=固定cohort中预定义变化/进出深度/feature转移率",
+        "语义边界": "阈值、缺测、source切换分开；不是Google算法更新确定归因"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-007",
+      "source_columns": {
+        "定义H": "search_demand=源定义的月量/圆整量/估算量；close variants组唯一计",
+        "语义边界": "不能把重复组量分配每词后再总和；Trends index不与searches相加"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-008",
+      "source_columns": {
+        "定义H": "trend_change=(本期同尺度值−基期值)/基期值；基期>0且可比",
+        "语义边界": "低量0/缺失不算无限增长；同比要同季节粒度，窗缩放变化另校准"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-009",
+      "source_columns": {
+        "定义H": "brand_demand_share=固定品牌词组可去重需求/固定品牌词宇宙需求",
+        "语义边界": "keyword overlap/close variants交叉可控；否则只报告相对词集份额，不叫市场份额"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-010",
+      "source_columns": {
+        "定义H": "news_voice=count distinct eligible publisher article；occurrences另计",
+        "语义边界": "转载/近重复/事件簇分开；无全网分母不称全媒体占有率"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-011",
+      "source_columns": {
+        "定义H": "AI_mention_rate=至少1次显式品牌mention的有效回答数/已触发且完整可判定mention的AI回答数",
+        "语义边界": "AIO未触发不入该条件分母；同时返回feature触发率和计划覆盖；0有效回答返回null＋no_eligible_answers，不代表真实用户曝光"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-012",
+      "source_columns": {
+        "定义H": "AI_citation_rate=包含目标域/页可见引用的有效回答数/源具引用能力且引用结果完整可判定的AI回答数",
+        "语义边界": "与mention可有不同有效分母，分别返回；成功完整且无引用为真0；源未提供/未展开排除，0有效回答返回null＋no_eligible_answers"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-013",
+      "source_columns": {
+        "定义H": "AI_SoV=本品牌按回答去重mention数/同一有效回答集合内固定tracked brand集合按回答去重mention总数",
+        "语义边界": "多品牌回答可贡献多个mention；分母为0返回null＋no_tracked_mentions；集合版本变更产生断点，不和mention rate混用"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-014",
+      "source_columns": {
+        "定义H": "AI_first_mention_position=回答中全部已识别且消歧品牌（含未跟踪品牌）按首次出现去重排序，取目标品牌条件均值/中位",
+        "语义边界": "保留品牌识别版本；仅在提到目标的回答中聚合并同时返回mention rate；不出现不填末位，无合格样本为null，不称自然排名"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-015",
+      "source_columns": {
+        "定义H": "GSC_CTR=Σclicks/Σimpressions；position按同grain impressions加权",
+        "语义边界": "site/page、search type、filtered/anonymous/top_rows不可乱混；query分组和不等于总量"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-016",
+      "source_columns": {
+        "定义H": "GSC_BQ_position=site SUM(sum_top_position)/SUM(impressions)+1；URL用sum_position",
+        "语义边界": "BQ位置0基，API均值1基；不能平均已平均position；表grain单独"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.MetricOracleTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-MET-017",
+      "source_columns": {
+        "定义H": "qualified_opportunity=透明加权的可见性gap、可比需求、业务相关性、执行成本与证据confidence",
+        "语义边界": "评分和权重公开；缺因子标partial，不假定搜索量就是可实现销量"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-018",
+      "source_columns": {
+        "定义H": "local_top3_share=成功且深度≥3的点中目标进前3点数/有效点数",
+        "语义边界": "完成覆盖/排除水域/间距权重另列；点不是实际用户，非厂商SoLV同口径除非明确映射"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-019",
+      "source_columns": {
+        "定义H": "review_target_sentiment=独立获准样本中对目标可判定情感的分类比例",
+        "语义边界": "排序/截断/未知/语言单列；不得用官方5条相关评论估计全部消费者态度"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-020",
+      "remaining": "未连接真实 GA4 Data API/property；未验证 30 模板、真实 token/并发耗额、抽样/阈值样本、迟到修订、BQ 差异或生产用户流程。",
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_typed_fixture_contract",
+          "test": "tests.test_google_analytics / tests.test_google_api / tests.test_google_runtime",
+          "log": "state/google-prd-v1-20261104/phase12/full-regression-final.log",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "GA4 typed fixture 报告契约：property/template/period/report_timezone/dimensions/metrics、row_count、sampling metadata、subjectToThresholding、dataLossFromOtherRow、schema restrictions、property quota、冻结 evidence ID 与快照分页。",
+          "exit_code": 0
+        }
+      ],
+      "source_columns": {
+        "指标公式": "GA4 key_event_rate/users/sessions等采用源定义+scope/identity/attribution版本",
+        "验收": "distinct通常非可加，HLL++/threshold/modeling可能存在；不能把BQ重算值强装成Data API值"
+      }
+    },
+    {
+      "id": "GO-MET-021",
+      "source_columns": {
+        "定义H": "Ads CTR/CPC/CPM/CPA/ROAS按兼容窗口/币种/归因定义算；cost_micros÷1e6",
+        "语义边界": "conversions可小数；ROAS不是利润或因果增量；竞品spend estimate另指标"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-MET-022",
+      "source_columns": {
+        "定义H": "search_to_business_reconciliation=按获准粒度对GSC clicks、GA4 sessions/key events、Ads clicks等作差异分解",
+        "语义边界": "不假设一click一session，不做未授权用户级拼接；变化只能关联，不自动因果归因"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AI-001",
+      "source_columns": {
+        "等级": "必须/P2",
+        "必须要求": "数字只来自受管query/tool，保存query ID/参数、结果hash、scope、时点/expiry与metric version",
+        "验收": "100报告的数值可重算；模型自造数字或改分母必须拦截"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AI-002",
+      "source_columns": {
+        "等级": "必须/P2",
+        "必须要求": "事实、估计、相关解释、假设与行动建议分列；不宣称未经实验的算法/流量/收入因果",
+        "验收": "200条陈述金标，事实支持precision≥0.98、无证据数值0"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AI-003",
+      "source_columns": {
+        "等级": "必须/P2",
+        "必须要求": "只读最小许可数据，回答/网页内指令视为外部数据；不能改变权限/采购/导出或模型用途",
+        "验收": "prompt injection、跨租户、过期证据、改查询scope负例全通过"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AI-004",
+      "source_columns": {
+        "等级": "必须/P2",
+        "必须要求": "引用定位原文span/观测，不把一条引用当全部结论支持；无全文时不能声称读过",
+        "验收": "100引用案例、反例与来源限制正确；模型输出能回到确定性数据"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AI-005",
+      "source_columns": {
+        "等级": "必须/P2",
+        "必须要求": "LLM费用/延迟/数据用途单独预算，超额降为确定性报告；无合格输入则不生成",
+        "验收": "预算/断网/撤权/模型失败演练不返回伪结论，不隐式发给第三方模型"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-NFR-001",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "adapter并发/内存/磁盘、日月预算可配置；试点默认每adapter并发≤2、单进程内存≤1GB建议",
+        "验收": "负载前记录机器资源；80%内存/磁盘余量不足优先暂停加工/回填，不拖垮机器"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-NFR-002",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "request/run/event/query/manifest IDs贯通；源延迟、cache、配额、解析、rights、入库/回执/读回分段可观测",
+        "验收": "单个故障能定位阶段；日志不含OAuth/密码、短效token或未获准全文"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-NFR-003",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "费用按task/provider/unit/field/page/retry/subscription、Cloud scan/storage/egress分账",
+        "验收": "100任务与provider账单按原舍入对账；金额汇总含币种与计费周期"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-NFR-004",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "tenant/asset/source/use/field/retention联合授权；派生结果继承最严格限制",
+        "验收": "报告/缓存/manifest/导出/向量均负向测试；不同license不混成可外发总集"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_domain.RightsTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_evidence.EvidenceTests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "只证明本地函数/隔离边界；不证明域上线、真实源、Whale读回、金标、权限端到端或连续SLO。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_projection / tests.test_google_api",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "选定SERP事实的隔离重建/查询/HTTP和权限/期限/清除负例；Whale reader为夹具，不是实际平台读回、全链路删除或生产验收。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api export tests",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "同步与异步分块导出的字段/用途/期限、manifest、撤权/篡改负例；不证明真实百万行、生产reader或端到端SLO。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api analysis/export tests",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "scope": "分析/导出任务、worker租约、取消、进度和撤权负例；不证明真实平台、生产部署或端到端SLO。"
+        },
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api report/watchlist/monitor tests",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "报告同时复核aggregate/internal_display用途并继承当前grant/field期限；watchlist按Key隔离；没有所有缓存/向量/生产报告路径覆盖。",
+          "log": "state/google-prd-v1-20261104/phase9/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "只有条目部分本地函数/隔离数据库/HTTP证据；完整实现、真实批准、真实来源/平台、用户流程和对应生产验收仍需逐项完成。"
+    },
+    {
+      "id": "GO-NFR-005",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "最小OAuth scope与批准目标，秘密管理独立；不配置管理员密码给connector",
+        "验收": "日志/文档/快照无凭据；测试读取授权不构成改账号/token授权"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-NFR-006",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "不采未必需个人标识，不默认跨源用户级归并；API Services User Data Policy与服务专门条款逐源登记",
+        "验收": "字段清单/删除/用途测试；匿名/threshold不尝试重构"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-NFR-007",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "撤权/expiry/删除触发停止新采、在途处置、下游清除和重新查权",
+        "验收": "旧报告/旧下载URL/缓存/索引不能继续泄露；保留审计不夹带正文"
+      },
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_report_fails_closed_on_source_failure_revocation_and_expiry; test_deterministic_report_carries_evidence_versions_and_counterexamples",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "旧报告列表不回传 report result 正文；详情在撤权、过期、源失败或篡改后失败关闭并重新查权，50 次重放仍重新读取固定 manifest；没有生产备份、缓存、索引和恢复演练。",
+          "log": "state/google-prd-v1-20261104/phase10/full-regression-final.log",
+          "exit_code": 0
+        }
+      ],
+      "remaining": "旧报告读取时重新查权和失败关闭已覆盖；生产下游清除、备份/索引、在途停止与恢复演练未完成。"
+    },
+    {
+      "id": "GO-NFR-008",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "退役：停调度/live、处理在途、逐scope撤销、按TTL清理、归档批准证据与负责人",
+        "验收": "无悬挂任务/持续费用；不撤销共享无关Key，不擅自删除生产数据"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-NFR-009",
+      "source_columns": {
+        "等级": "必须/P0",
+        "需求": "域投影可从许可内Whale记录/版本/manifest重建；备份恢复前应用tombstones/expiry",
+        "验收": "全重建与增量重放一致；到期数据不复活，不能暗存第二原始库"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-NFR-010",
+      "source_columns": {
+        "等级": "应当/P0",
+        "需求": "建议RPO≤24h、RTO≤8h，仅限批准保留的数据；需平台实际备份能力确认",
+        "验收": "恢复演练/数据权限/费用重算；未演练不宣称已达标"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-01",
+      "source_columns": {
+        "缺口/确认项": "公开/私有/字段/资产/用途/到期隔离，canonical归并不泄露",
+        "验收与未满足处理": "同URL两个租户私有报表负向读/快照/搜索/导出；不通过则私有域不上线"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-02",
+      "source_columns": {
+        "缺口/确认项": "SERP完整run/item/有序列表、AI answer/citation与授权report正式schema/source注册",
+        "验收与未满足处理": "dry-run和独立读回；不借其他平台或伪正文通过质量；映射未定先只做POC"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-03",
+      "source_columns": {
+        "缺口/确认项": "同值新观测、rank/source/scale/scope/revision无损，事实和历史快照分工",
+        "验收与未满足处理": "写→读→JSONL往返/回放；discovery.rank不是自动时序库；不通过则相关聚合不上线"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-04",
+      "source_columns": {
+        "缺口/确认项": "TTL/rights expiry/撤权/删除传播至索引、向量、缓存、导出、备份",
+        "验收与未满足处理": "模拟一个月许可与共享canonical；不能只删除raw保留受限派生"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-05",
+      "source_columns": {
+        "缺口/确认项": "schema质量profile支持摘要/结构化报表/无发布时间/无自然语言记录",
+        "验收与未满足处理": "平台批准例外与字段阈值；GEN-14不靠假body/language绕过"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-06",
+      "source_columns": {
+        "缺口/确认项": "冻结manifest/版本保留、回补与批读/快照授权范围",
+        "验收与未满足处理": "验证scope过滤/历史TTL；不足缩短复算期限，不暗建原始真源"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-07",
+      "source_columns": {
+        "缺口/确认项": "真实receipt/任务/0结果/背压、小时账与窗口解释",
+        "验收与未满足处理": "1,000事件连续端到端；当前208receipt/0doc/46chunks差异调查，不凭表计数猜根因"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-08",
+      "source_columns": {
+        "缺口/确认项": "Dataset/source/collector登记、live能力与独立环境",
+        "验收与未满足处理": "existing source支持不推导新GA4/Ads/Maps平台已注册；production另批"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-09",
+      "source_columns": {
+        "缺口/确认项": "约500万30d逻辑行查询、物化投影与容量、分级embedding",
+        "验收与未满足处理": "依中台方案WP-1～WP-3出口与实际压缩测量；不足缩范围/停止媒体回填"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WHL-GO-10",
+      "source_columns": {
+        "缺口/确认项": "许可不允许持久化源的按需展示通道及审计最小化",
+        "验收与未满足处理": "不进通用索引/API；仅开放已核准用途；技术隔离不替代来源许可"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WP-GO-01",
+      "source_columns": {
+        "交付": "范围/来源/用途矩阵、schema/ID、OpenAPI、指标与oracle冻结",
+        "依赖": "D-01～08，核心POC",
+        "验收": "产品/平台/数据共同确认，未知字段不默认可得"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WP-GO-02",
+      "source_columns": {
+        "交付": "现有Google collector补齐、SERP/news/trends适配、事件spool/回执/源配额",
+        "依赖": "01、WHL-GO-02/03/05/07/08",
+        "验收": "GT-01～07，真实数据闭环"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WP-GO-03",
+      "source_columns": {
+        "交付": "关键词/域/URL/AI/事件关系、manifest、指标与基础分析",
+        "依赖": "02、合格source许可",
+        "验收": "GT-08～10，scope/分母/复算正确"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WP-GO-04",
+      "source_columns": {
+        "交付": "域API、工作台、监测、确定性报告和导出",
+        "依赖": "03",
+        "验收": "GT-11/15，5条关键用户流程"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WP-GO-05",
+      "source_columns": {
+        "交付": "授权GSC/Bulk、GA4/Ads/Merchant分域连接与对账",
+        "依赖": "用途/准入批准、WHL-GO-01/04/06",
+        "验收": "GT-03/04/14/16，未准入域不外发"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WP-GO-06",
+      "source_columns": {
+        "交付": "Local/网格/评论及AI重复/趋势预测扩展",
+        "依赖": "对应source许可与POC",
+        "验收": "GT-10/13/16，各模型/域独立通过"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WP-GO-07",
+      "source_columns": {
+        "交付": "费用/容量/资源/告警、删除/恢复/退役与全回归",
+        "依赖": "与02～06配套",
+        "验收": "GT-06/07/12/14，G1出口完整"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "WP-GO-08",
+      "source_columns": {
+        "交付": "AI研究报告与跨平台证据",
+        "依赖": "冻结查询/权限/证据成熟",
+        "验收": "GT-17及P2用户流程，无依据数字0"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-01",
+      "source_columns": {
+        "验证目标": "现有collector真实能力、数据面/回执、1,000样本与208/0/46口径",
+        "通过条件与失败降级": "注册/任务/事件/终态/读回解释一致；不通过维持testing，不恢复旧任务"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-02",
+      "source_columns": {
+        "验证目标": "SERP供应商/缓存/地理/设备/深度/feature与存储展示许可",
+        "通过条件与失败降级": "200套人工对照；符合目标用途；无许可的source不入主链"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-03",
+      "source_columns": {
+        "验证目标": "query/run/URL、同值新观察、私有隔离、正式schema/TTL",
+        "通过条件与失败降级": "完整无损/负向通过；失败的聚合/私有域阻断"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-04",
+      "source_columns": {
+        "验证目标": "Trends Alpha/供应商准入，term/topic、scale、批量、low volume/partial/历史",
+        "通过条件与失败降级": "官方准入不是默认；至少100series跨窗验证；无合格源则该域not_covered"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-05",
+      "source_columns": {
+        "验证目标": "News RSS/供应商、publisher URL、时间/摘要/正文/事件去重",
+        "通过条件与失败降级": "独立已知集7天召回/时延与1,000元数据金标；RSS失效按已准入备用源降级"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-06",
+      "source_columns": {
+        "验证目标": "AIO/AI Mode消费者通道、二次请求、引用/品牌、重复和缓存",
+        "通过条件与失败降级": "500回答金标，source-specific短窗、分母/许可正确；无UI数据不以生成API冒充"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-07",
+      "source_columns": {
+        "验证目标": "GSC OAuth/property、API top rows/fresh/BQ匿名/日表与历史可取范围",
+        "通过条件与失败降级": "≥3property、同grain对账，匿名字段null/empty真实schema确认；不能从匿名构造假query"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-08",
+      "source_columns": {
+        "验证目标": "GA4模板/配额token/抽样/threshold/(other)、BQ事件/报告差异",
+        "通过条件与失败降级": "30模板与真实metadata，迟到/时区/归因可解释；不通过不承诺合并经营报表"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-09",
+      "source_columns": {
+        "验证目标": "Ads Cloud project级别/OAuth/customer/permissible use、SERP组合政策及下游代理",
+        "通过条件与失败降级": "明确获准路径且Basic/Standard；独立代理商/广告主自身项目/准入绑定；GO-API-031/032主体不匹配、共享项目规避与纯代理负例通过；历史4年/close variants/micros/CID限流通过；未通过不启用相应Ads域"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-10",
+      "source_columns": {
+        "验证目标": "Local/Places/GBP逐源存储/聚合/embedding/转供、网格和评论样本",
+        "通过条件与失败降级": "官方来源与独立许可来源分开批准；无许可仅ID/按需允许展示，不留长期评论仓库"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-11",
+      "source_columns": {
+        "验证目标": "Merchant API当前报表、scope/字段/商品ID/日期",
+        "通过条件与失败降级": "仅只读且端点真实存在；Content API不作为后备，未获源则延期"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-12",
+      "source_columns": {
+        "验证目标": "费用、合批/分页/深度/重试/配额/存储/峰值",
+        "通过条件与失败降级": "实测替代7.3/7.4；预算内，否则缩词/设备/频率而不自动涨费"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-POC-13",
+      "source_columns": {
+        "验证目标": "撤权/到期/删除/备份/tombstone、恢复和schema重放",
+        "通过条件与失败降级": "旧报告/下载不泄露，历史不复活，许可不够则缩复算承诺"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-01",
+      "source_columns": {
+        "层": "单元/契约",
+        "需求/域": "GO-ID-001～006、GO-DAT-002/003",
+        "必测边界": "URL/query/topic/hash/close variants、同URL多query/位置/feature、重复URL与观察去重"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-02",
+      "source_columns": {
+        "层": "单元/契约",
+        "需求/域": "GO-DAT-004/008、GO-API-103",
+        "必测边界": "PT/UTC/property/customer时区、DST、日/月/周边界、micros/币种/decimal"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-03",
+      "source_columns": {
+        "层": "单元＋真实边界集成",
+        "需求/域": "GO-DAT-001/003/007、GO-ING-008～010",
+        "必测边界": "null/0/censored、scale/rounded、top rows/匿名、同值新观察、fresh/final/修订与BQ position"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-04",
+      "source_columns": {
+        "层": "授权报表集成",
+        "需求/域": "GO-SRC-004/008/009、GO-INS-007～009",
+        "必测边界": "GSC property/page grain、GA4 metadata/token/归因、Ads Cloud access/CID/close variants、Merchant当前API"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-05",
+      "source_columns": {
+        "层": "入库真实边界",
+        "需求/域": "GO-ING-001～004/006、WHL-GO-01～08",
+        "必测边界": "validation_raw/dry-run/错平台/Key、部分400/终态/独立读回、三类header/自主推送"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-06",
+      "source_columns": {
+        "层": "故障注入",
+        "需求/域": "GO-SRC-009、GO-ING-005/011、GO-API-104/105",
+        "必测边界": "429/503/超时/短效展开、幂等/spool/重启/取消/过期、源实际计费"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-07",
+      "source_columns": {
+        "层": "连续对账/时效",
+        "需求/域": "GO-QA-001～008、GO-SLO-001～007",
+        "必测边界": "7天计划、发布/观测/缓存年龄、receipt/row口径、rollup窗口、真零结果与源失败"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-08",
+      "source_columns": {
+        "层": "离线金标",
+        "需求/域": "GO-DAT-005/009、GO-INS-002～005",
+        "必测边界": "语言/品牌消歧、意图/事件/目标情感/引用，不支持语言/无全文/无许可降级"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-09",
+      "source_columns": {
+        "层": "指标单元/复算",
+        "需求/域": "GO-MET-001～022、GO-INS-001～008",
+        "必测边界": "非可加量、固定cohort、censored排名、AI分母/SoV、GSC/BQ换算、scope/expiry"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-10",
+      "source_columns": {
+        "层": "留出/回测",
+        "需求/域": "8.2/8.4、GO-INS-003/005",
+        "必测边界": "AI相关重复/聚类区间、趋势季节baseline、机会评分与估算分层误差，漂移停用"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-11",
+      "source_columns": {
+        "层": "API/导出契约与性能",
+        "需求/域": "GO-API-001～046/100～110、GO-SLO-008",
+        "必测边界": "逐端点正常/空/错/权限、游标/manifest、并发同键、百万行导出/三端一致"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-12",
+      "source_columns": {
+        "层": "负载/费用/资源",
+        "需求/域": "GO-ING-012、GO-NFR-001～003、7.3/7.4",
+        "必测边界": "高分页/深度/二次请求、各源计费unit、日月预算80/100%、Local执行日峰值、BQ扫描/低磁盘"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-13",
+      "source_columns": {
+        "层": "Local真实边界",
+        "需求/域": "GO-SRC-010、GO-INS-010、GO-MET-018/019",
+        "必测边界": "place ID与受限内容、相关5条不当全量、坐标网格/排除点/缺测/评论许可与期限"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-14",
+      "source_columns": {
+        "层": "权限/治理/恢复",
+        "需求/域": "GO-ID-005/007、GO-NFR-004～010、GO-SRC-001～004",
+        "必测边界": "两租户同URL、撤权/expiry/删除/向量/报告/下载/备份、派生期限、Ads组合/独立主体项目准入/纯代理与GBP转供禁用"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-15",
+      "source_columns": {
+        "层": "工作台E2E",
+        "需求/域": "GO-INS-001～007/011/012",
+        "必测边界": "11.3五条关键流程，键盘/空态/失效/无域/预算/部分失败/证据到期"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-16",
+      "source_columns": {
+        "层": "条件域验收",
+        "需求/域": "GO-POC-07～11、GO-INS-008～010",
+        "必测边界": "GA4/Ads/Merchant/Local独立准入，未有数据不出假0或套其他域通过"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GT-17",
+      "source_columns": {
+        "层": "AI/跨平台评测",
+        "需求/域": "GO-AI-001～005、GO-INS-012/013",
+        "必测边界": "无依据数字/改scope/因果误写/注入/越权、引用证据和跨平台误并"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-G1-01",
+      "source_columns": {
+        "必须交付": "source/许可/保存/展示/分发范围、schema/ID/quality profile冻结，真实样本可读",
+        "证据映射": "GO-POC-01～04、WHL-GO清单、GT-01/05/14"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-G1-02",
+      "source_columns": {
+        "必须交付": "事件身份/部分失败/源限额/终态/独立读回和连续小时账",
+        "证据映射": "GT-03/05～07、GO-POC-01/03"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-G1-03",
+      "source_columns": {
+        "必须交付": "SERP/feature/query/URL/scale/rounded/censored语义正确、scope/集合变更有断点",
+        "证据映射": "GT-01～03/09、GO-POC-02/04"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-G1-04",
+      "source_columns": {
+        "必须交付": "News去重/时间/摘要与全文、AI出现/提及/引用/失败/短窗分别正确",
+        "证据映射": "GT-06～10、GO-POC-05/06"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-G1-05",
+      "source_columns": {
+        "必须交付": "批准域质量/7天时效/召回/金标通过，不支持语言/无数据域有可用降级",
+        "证据映射": "GT-07/08、GO-AC-002～006"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-G1-06",
+      "source_columns": {
+        "必须交付": "API/工作台/监测/报告/CSV/JSONL一致，manifest复算与expiry可解释",
+        "证据映射": "GT-09/11/15，11.3流程"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-G1-07",
+      "source_columns": {
+        "必须交付": "S1费用/配额/资源在批准范围、峰值和低资源保护正确",
+        "证据映射": "GT-12、GO-POC-12"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-AC-G1-08",
+      "source_columns": {
+        "必须交付": "私有隔离/撤权/到期/清除/恢复/退役不泄露或复活，条件域未越准入",
+        "证据映射": "GT-14/16、GO-POC-03/13；若GSC属G1必达另含GO-POC-07"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "D-01",
+      "source_columns": {
+        "决策": "首试用户、市场、语言与任务",
+        "建议H": "品牌/SEO内部研究，英语、US/UK，有限词集",
+        "未批准前": "不外宣全网/全球/全语种能力"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "D-02",
+      "source_columns": {
+        "决策": "G1范围与必达条件域",
+        "建议H": "SERP/Trends/News/AIO基础闭环；GSC有≥3资产授权后纳入必达，否则明确public-only版",
+        "未批准前": "缺域不当通过；GA4/Ads/Local/Merchant后续独立准入"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "D-03",
+      "source_columns": {
+        "决策": "S1规模/日月预算与绩效目标",
+        "建议H": "1,000词核心100、2市场2设备；商业≤$50/day/≤$1,500滚动30d，订阅/Cloud另列",
+        "未批准前": "不采购/付费调用/自动增额或做大回填"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "D-04",
+      "source_columns": {
+        "决策": "source/provider、用途/保存/分发、Google Ads组合政策",
+        "建议H": "先取得匹配用途的合同/明确结论，不凭供应商API可达证明可用",
+        "未批准前": "未明source不开生产，Ads组合与GBP代理保持关闭"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "D-05",
+      "source_columns": {
+        "决策": "OAuth/Cloud project/资产/访问级别与金标oracle",
+        "建议H": "最小scope，3 GSC/GA4资产和获准Ads账户，真实角色验证",
+        "未批准前": "不创建/修改账号/token/project或以admin替代consumer验收"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "D-06",
+      "source_columns": {
+        "决策": "schema/Dataset/身份/manifest/保留与清除负责方",
+        "建议H": "私有独立受限观测；默认外链、期限服从最短许可",
+        "未批准前": "不迁移存量、不新建生产Key；无法复算期限明示"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "D-07",
+      "source_columns": {
+        "决策": "SLO、模型/金标阈值、资源与费用单位",
+        "建议H": "本稿建议先冻结再盲测，业务/平台共同验收",
+        "未批准前": "不在结果后改oracle、分母、剔失败或补0"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "D-08",
+      "source_columns": {
+        "决策": "项目owner、依赖、工作包顺序与真实测试/CI",
+        "建议H": "WP-GO-01先定契约，02～04核心闭环，07配套，其他按条件",
+        "未批准前": "不虚构排期/人日/工程测试已通过"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "D-09",
+      "source_columns": {
+        "决策": "AI重复、Local/评论、Merchant、预测和AI报告投入",
+        "建议H": "G2/G3独立验证，按业务场景决定采购与建设",
+        "未批准前": "只交已验证描述性研究，不宣传预测/归因或全量评论"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R01",
+      "source_columns": {
+        "真实约束/风险": "Google是多域，需求扩为全套营销/全网索引会失焦",
+        "处理": "固定用户问题/词集/市场，D-02按域验收"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R02",
+      "source_columns": {
+        "真实约束/风险": "SERP地理/个性化/缓存/DOM变更影响可比",
+        "处理": "明确variant与源时间；unknown/断点不补0"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R03",
+      "source_columns": {
+        "真实约束/风险": "Ads Developer Policies与scraped SERP组合、供应商缓存/再分发权不相容",
+        "处理": "G0核准具体用途/架构/来源，不认为分库就解除；未解决相关域关闭"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R04",
+      "source_columns": {
+        "真实约束/风险": "Trends Alpha不可普遍申请、网页缩放/低量、供应商绝对量是估算",
+        "处理": "分源scale/准入，校准与模型另验；无合格源则not_covered"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R05",
+      "source_columns": {
+        "真实约束/风险": "AIO/AI Mode随机性、展开/缓存、UI/API差异与未知底层模型",
+        "处理": "渠道分开，重复预注册、聚类区间，只说明观察范围"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R06",
+      "source_columns": {
+        "真实约束/风险": "GSC top rows/匿名/新近、GA4抽样/threshold/(other)/模型、报表grain混合",
+        "处理": "保留metadata，低维/事件对照解释，不强制零差异"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R07",
+      "source_columns": {
+        "真实约束/风险": "Places/GBP存储、聚合和转供限制，相关5条评论偏样本",
+        "处理": "默认不建长期仓库/通用转供，独立准入来源后才深层分析"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R08",
+      "source_columns": {
+        "真实约束/风险": "新闻RSS无保证、wrapper URL/摘要/转载误判",
+        "处理": "许可内备用源与元数据质量，全文另采，事件/转载金标"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R09",
+      "source_columns": {
+        "真实约束/风险": "计费单位/分页/深度/短效补拉/重试和BQ扫描令预算失真",
+        "处理": "实测单价和单位，日月双上限、执行日峰值与分域降级"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R10",
+      "source_columns": {
+        "真实约束/风险": "当前Google采集器心跳陈旧、标题链接能力有限；中台存储86.15%",
+        "处理": "先补真实闭环与中台WP-1～WP-3，不大回填或批量存截图"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R11",
+      "source_columns": {
+        "真实约束/风险": "同URL公开私有归并与expiry/缓存/备份漏清理",
+        "处理": "同对象跨租户负向测试、继承最严许可、tombstone恢复验证"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "R12",
+      "source_columns": {
+        "真实约束/风险": "旧文档自动摘要和新正文冲突，或已sunset服务被照抄",
+        "处理": "优先当前端点正文/变更、pin版本；Custom Search/Content API/旧Ads token路径不入新设计"
+      },
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-001",
+      "source_text": "GO-INS-001 搜索排名、feature与竞品组合（必须/P0）\n用户故事：作为SEO/研究员，我要比较固定词集在不同市场设备的排名与feature，找出可解释的变化。\n输入：2～20域名、100～1,000词、variant/cohort、日期/source；输出topK、分布、进出深度、URL切换、feature拥有、可比差异和数据质量。\n行动：保存对比、下钻SERP、加入监测、导出manifest；不默认输出真实竞品流量。\n验收：≥200套SERP/≥100词，独立解析与复算一致；SERP block/自然序号不混；失败/缓存/深度不同不能制造排名下降。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-002",
+      "source_text": "GO-INS-002 关键词、主题与内容机会（必须/P0基础，P1官方扩展）\n用户故事：作为内容负责人，我要把需求、意图、现有可见性和执行成本组合成待测试机会，而非只按搜索量排序。\n输出query/topic/close variants、意图、需求来源、SERP content pattern、内容gap与公开评分因子；可关联获准GSC页面表现。\nSEO难度与广告competition分列，估计CTR/可实现流量为模型，不承诺转化。\n验收：200候选/20业务任务，top10人工相关率≥0.80；1,000词意图macro-F1≥0.80；每候选≥3证据或明确不足；缺量不填0排末位。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-003",
+      "source_text": "GO-INS-003 品牌需求、趋势与季节性（必须/P0描述，P1预测）\n用户故事：作为品牌研究员，我要分辨需求增长、季节性和尺度变化，决定继续观察或发起验证。\n输出同尺度趋势、同比/环比、related/rising、低量、品牌词share与相关新闻/社交关联；词和topic不混。\n预测需≥24个月或源支持的足够季节周期、时间留出、与季节naive比较；源只有短历史则不提供长期预测。\n验收：≥100 series，切窗口/锚词/低量/partial/修订样本正确；所有增长可复算；预测未胜基线或区间未校准则只交历史分布。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-004",
+      "source_text": "GO-INS-004 新闻、事件与品牌叙事（必须/P0基础）\n用户故事：作为市场研究员，我要找出相关报道、独立来源与叙事差异，避免把转载扩散误当多方证实。\n输出事件簇/时间线、publisher多样性、转载/近重复、品牌目标情感、原文/摘要层级和反例；仅对已采集语料给声量。\n数据链接：News occurrence→publisher article→event cluster；相关文章与新闻索引分源处理。\n验收：≥1,000文章元数据、≥100事件簇，近重复precision≥0.95、事件纯度≥0.85、品牌相关precision≥0.90；无法取全文则结论明确仅基于title/snippet。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-005",
+      "source_text": "GO-INS-005 AI Overviews/AI Mode可见性与引用（必须/P0基础，P1深入）\n用户故事：作为品牌/内容团队，我要知道在已测问题上品牌如何被提及、哪些页被引用，以及是否值得测试内容更新。\n输出prompt/channel/market的mention、citation、SoV、first mention位置、目标情感、可见引用源/域、来源机会与稳定性；AIO/AI Mode分开。\n同一品牌被提及、域被引用、第三方讨论品牌、广告块出现为不同事件；API生成不冒充消费者UI，不推断隐藏fan-out。\n验收：≥500回答、≥100无提及/同名/只引用反例，mention precision≥0.95、recall≥0.90、citation URL precision≥0.98；分母和版权可用证据100%正确；随机性研究按8.2独立验收。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-006",
+      "source_text": "GO-INS-006 页面、域名与内容组合诊断（必须/P0描述，P1 GSC）\n用户故事：作为SEO负责人，我要发现同查询URL交替、内容空白和损失位置，生成具体诊断任务。\n输出固定cohort页面分布、URL切换、feature/source变化、获准的GSC query-page关系与抽样索引状态。\n“关键词蚕食”作为待核信号而非算法确定惩罚；未进前N不直接判页面失索引。\n验收：100真实案例/人工反例，URL归并与query上下文不丢；20个索引诊断仅使用授权property且注明索引版本/时点。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-007",
+      "source_text": "GO-INS-007 GSC授权搜索表现与机会（必须/P0条件）\n用户故事：作为站点所有者，我要分析可解释的搜索点击/曝光与query-page机会，避免top rows或新近数据误导。\n输出property/page/type/filter粒度、匿名缺口、fresh/final、Bulk/API区别和同scope CTR/position；AI仅Web合并量，不独造AI独立流量。\n验收：≥3property、30d/低维和高维模板；API top rows与低维总量/BQ差异逐项解释，匿名query不生成假词；BQ0基position换算正确；无授权组织不可读。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-008",
+      "source_text": "GO-INS-008 GA4、GSC与Ads经营对账（必须/P1条件）\n用户故事：作为增长分析员，我要理解搜索可见性变化是否伴随站点访问/关键事件变化，以及各系统差异来自哪里。\n输出授权聚合趋势、date/timezone/scope/attribution对齐、采样/threshold/(other)/HLL++/consent/modeling/迟到差异说明。\nAds域须先通过GO-SRC-003；只做获准粒度链接，不跨源重识别用户，也不强行使clicks=sessions。\n验收：≥30报表用例包含不同身份/归因/币种/时区与BQ；所有未解释差异有状态，不自动更改定义消除差异；20案例经独立分析员复算。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-009",
+      "source_text": "GO-INS-009 广告、Shopping与商业机会（应当/P1条件）\n用户故事：作为获准广告/电商分析员，我要区分公开广告/商品呈现、关键词规划估算和自己账户实绩。\n输出SERP sponsor/Shopping item素材/落地页、许可内竞品估算、授权Ads/Merchant报表、归因/币种/数据日；不把竞品持续投放解释成盈利。\n验收：100广告/商品样本及20授权报表，sponsored/merchant identity与currency准确；旧Content API不入新实现；零转化与无权限/隐私/未覆盖不同。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-010",
+      "source_text": "GO-INS-010 本地地理网格与商家研究（应当/P1条件）\n用户故事：作为多门店负责人，我要在固定位置与词集比较本地发现能力，并知道缺测和预算。\n输出网格中心/点/间距/排除区、point-level rank、top3 share、同期竞品与范围；官方Place按获准方式归属展示。\n评论主题与响应速度仅在独立来源/用途允许后启用；不是用官方5条相关评论代表所有消费者。默认不提供通用GBP数据代理。\n验收：10网格、≥250点观测、失败/水域排除/深度不足负例；point与账单units一致，1,250点执行日峰值限额正确；未准入不存/不发受限字段。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-011",
+      "source_text": "GO-INS-011 异常、提醒与监测闭环（必须/P0站内，P1订阅）\n保存词库/prompt/品牌/域/地点、集合版本、source/预算、rank/feature/需求/新闻/AI规则、baseline、冷却和升级。\n区分业务异常、数据源故障、授权过期、parser漂移和样本扩张；每条带触发值、分母、scope、证据和下一步验证。\n验收：100规则回放含乱序/重复/迟到/切源，逻辑触发一致；派生值可用后站内告警P95≤5min；失败不触发“品牌消失”，重大升级不被冷却吞掉。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    },
+    {
+      "id": "GO-INS-012",
+      "source_text": "GO-INS-012 自助探索、报告与证据导出（必须/P0，AI为P2）\n聚合值≤3次操作下钻至query配置、run、item/answer/report row、源与定义；保留筛选条件返回。\n保存对比/研究问题/manifest；API/页面/CSV/JSONL一致，值/性质/scope/expiry不丢；报告包含结论、反例、限制、待验证行动。\n验收：100指标三端一致，50manifest重放一致或有合法expiry原因；撤权后旧报告不继续展示私有数字/证据；键盘、空态、未准入、过期与部分失败可操作。",
+      "status": "partial_local_contract",
+      "evidence": [
+        {
+          "type": "synthetic_unit_or_isolated_database",
+          "test": "tests.test_google_api.DomainHTTPTests.test_deterministic_report_carries_evidence_versions_and_counterexamples; test_domain_metric_matches_jsonl_and_csv_recomputation; test_evidence_id_resolves_one_licensed_pinned_observation",
+          "command": "DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' VALKEY_URL='redis://127.0.0.1:56404/0' TEST_DATABASE_URL='postgresql://ziheng@127.0.0.1:54404/postgres' TEST_REDIS_URL='redis://127.0.0.1:56404/0' .venv/bin/python -m unittest discover -s tests -v",
+          "scope": "报告确定性内容、50 次 manifest 重放、证据单条下钻、API/JSONL/CSV 指标复算一致和权限期限字段；只有夹具数据，不是 100 指标真实三端验收。",
+          "log": "state/google-prd-v1-20261104/phase10/full-regression-final.log",
+          "exit_code": 0
+        },
+        {
+          "type": "local_browser_fixture",
+          "test": "tests.test_reliability.ReliabilityUITests.test_google_research_workspace_is_composed_readonly",
+          "scope": "固定集比较、三次内证据/页面下钻、产出与报告、空态/未准入/过期/部分失败、Tab 键盘切换、390/320px 无横向溢出；ego(lite) Space 84 / Page p1，本地只读 fixture，非生产验收。",
+          "screenshots": [
+            "state/google-prd-v1-20261104/phase10/research-desktop.png",
+            "state/google-prd-v1-20261104/phase10/research-390.png",
+            "state/google-prd-v1-20261104/phase10/research-320.png",
+            "state/google-prd-v1-20261104/phase10/research-error-390.png"
+          ]
+        }
+      ],
+      "remaining": "本地 API/CSV/JSONL 复算、50 次 manifest 重放、工作台和证据下钻已覆盖；100 指标真实三端一致、真实来源/独立读回、生产 E2E 和连续 SLO 未完成。"
+    },
+    {
+      "id": "GO-INS-013",
+      "source_text": "GO-INS-013 跨平台需求与内容证据（应当/P2）\n关联Google查询/新闻/AI引用中的Reddit、TikTok、Instagram、YouTube和网站实体，分平台显示语言、时间、样本和指标定义。\nquery增长、社交讨论和AI引用仅作为关联线索；身份匹配有证据，不把同名跨平台自动并为一人；转化增量需另行实验。\n验收：30跨平台案例、同名/转载/相似素材反例；每个数字与链接有出处；无法识别因果时明确不可归因。",
+      "status": "unverified",
+      "evidence": [],
+      "remaining": "实现、对应真实边界、逐项验收及批准证据尚未齐备。"
+    }
+  ],
+  "additional_mandatory_gates": [
+    "11.3 五条关键用户流程及 G2 Local 流程",
+    "11.4 每阶段证据包",
+    "8.2 独立重复采样与聚类区间",
+    "8.4 模型用途、留出、校准与漂移",
+    "7.3/7.4 S1容量、费用、配额与执行日峰值",
+    "4.4 逐个候选实际端点与版本POC",
+    "5.1/5.3/5.6 全部实体/字段/必填约束",
+    "GO-AC-002 真实结构样本与双人金标",
+    "GO-AC-004 连续7天与至少200有效P95样本",
+    "依赖的中台方案第5节 GEN-01..18 原文及平台出口"
+  ],
+  "notes": [
+    "此账用于防止缩范围；条目状态不是验收证明。",
+    "表格之外的正文、公式、阈值和各实体仍在冻结全文中，不能因不在编号列表而省略。",
+    "来源不支持或无许可是未覆盖，不是实现完成。"
+  ]
+}

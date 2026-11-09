@@ -18,6 +18,9 @@ def settings_payload(store, config):
 
 
 def post(handler):
+    from .product_http import handle as product_handle
+    if product_handle(handler, 'POST'):
+        return True
     from .whale_serp_http import handle
     if handle(handler, 'POST'):
         return True
@@ -44,7 +47,7 @@ def post(handler):
             store.save_settings(payload, handler.config)
             handler.send_json(settings_payload(store, handler.config))
         else:
-            task = store.create_task(payload, handler.config)
+            task = store.create_task(payload, handler.config, idempotency_key=handler.headers.get('Idempotency-Key'))
             if task['status'] == 'active':
                 handler.queue.enqueue(task['campaign_id'], priority=True)
             handler.send_json(task, 201)
@@ -57,17 +60,26 @@ def post(handler):
 
 
 def get(handler):
+    from .product_http import handle as product_handle
+    if product_handle(handler, 'GET'):
+        return True
     from .whale_serp_http import handle
     if handle(handler, 'GET'):
         return True
     parsed = urlparse(handler.path)
     routes = ('/api/collector-settings', '/api/serp/tasks', '/api/serp/results', '/api/serp/browse-requests', '/api/serp/stats', '/api/serp/export')
-    if parsed.path not in routes:
+    progress = re.fullmatch(r'/api/serp/tasks/([0-9a-f-]+)/progress', parsed.path)
+    if parsed.path not in routes and not progress:
         return False
     store = ConsoleStore(handler.config.database_url)
     f = {k: v[-1] for k, v in parse_qs(parsed.query).items()}
     try:
-        if parsed.path == '/api/collector-settings':
+        if progress:
+            data = store.collection_progress(progress.group(1))
+            if data is None:
+                handler.send_json({'error': '任务不存在'}, 404)
+                return True
+        elif parsed.path == '/api/collector-settings':
             data = settings_payload(store, handler.config)
         elif parsed.path == '/api/serp/tasks':
             data = store.tasks(**{k: v for k, v in f.items() if k in ('kind', 'status', 'q', 'offset', 'limit')})

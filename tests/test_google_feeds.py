@@ -23,6 +23,41 @@ TRENDS = b'''<rss xmlns:ht="https://trends.google.com/trending/rss"><channel><ti
 
 
 class GoogleFeedTests(unittest.TestCase):
+    def test_invalid_news_item_is_recorded_without_reindexing_later_occurrence(self):
+        from datetime import datetime,timezone
+        from realtime.google_data import normalize_request
+        feed=b'<rss><channel><item><title>Invalid</title><link>not-a-url</link></item><item><title>Valid</title><link>https://publisher.example/valid</link></item></channel></rss>'
+        parsed=parse_feed(feed,'google_news','q','US:en')
+        row=dict(request_id=str(uuid4()),source='google_news',query='q',page=1,classification='results',completed_at=datetime.now(timezone.utc),response=parsed)
+        result=normalize_request(row)
+        self.assertEqual(parsed['feed_item_count'],2)
+        self.assertEqual(result['occurrences'][0]['ordinal'],2)
+        self.assertEqual(result['invalid_records'][0]['ordinal'],1)
+        self.assertEqual(result['invalid_records'][0]['reason'],'invalid_feed_article_url')
+        legacy=copy.deepcopy(row);legacy['response'].pop('feed_observation_version')
+        self.assertEqual(normalize_request(legacy)['occurrences'][0]['ordinal'],1)
+
+    def test_trends_invalid_and_duplicate_reports_keep_source_positions(self):
+        from datetime import datetime,timezone
+        from realtime.google_data import normalize_request
+        feed=b'<rss xmlns:ht="urn:test"><channel><item><title>Topic</title><ht:news_item><ht:news_item_url>invalid</ht:news_item_url></ht:news_item><ht:news_item><ht:news_item_url>https://publisher.example/same</ht:news_item_url><ht:news_item_title>First</ht:news_item_title></ht:news_item><ht:news_item><ht:news_item_url>https://publisher.example/same</ht:news_item_url><ht:news_item_title>Second</ht:news_item_title></ht:news_item></item></channel></rss>'
+        parsed=parse_feed(feed,'google_trends','trending-now','US')
+        result=normalize_request(dict(request_id=str(uuid4()),source='google_trends',query='trending-now',page=1,classification='results',completed_at=datetime.now(timezone.utc),response=parsed))
+        self.assertEqual([x['child_ordinal'] for x in result['occurrences']],[2,3])
+        self.assertEqual(len({x['occurrence_id'] for x in result['occurrences']}),2)
+        self.assertEqual(len({x['url']['url_id'] for x in result['occurrences']}),1)
+        self.assertEqual(result['invalid_records'][0]['child_ordinal'],1)
+
+    def test_all_invalid_news_is_parse_error_not_successful_empty(self):
+        feed=b'<rss><channel><item><title>Invalid</title><link>invalid</link></item></channel></rss>'
+        d=self.discovery(content=feed);store=Mock();serp=Mock();serp.cached_feed.return_value=None
+        rows,errors=collect(d,store,serp,str(uuid4()),'google_news','q','US:en',3600)
+        self.assertEqual(rows,[]);self.assertTrue(errors)
+        self.assertEqual(serp.record.call_args.kwargs['classification'],'parse_error')
+        self.assertEqual(serp.record.call_args.kwargs['error_code'],'unusable_feed_items')
+        self.assertEqual(len(serp.record.call_args.kwargs['response']['feed_parse_issues']),1)
+        self.assertEqual(serp.cache_feed.call_args.args[2],120)
+
     def test_news_preserves_fields_and_unresolved_links_without_fetching_publisher(self):
         with patch('socket.getaddrinfo',side_effect=AssertionError('no publisher DNS')),patch('requests.Session.get',side_effect=AssertionError('no publisher HTTP')):
             d=parse_feed(NEWS,'google_news','research','US:en')
@@ -83,6 +118,37 @@ class GoogleFeedTests(unittest.TestCase):
 
 
 class GoogleFeedStoreTests(fixtures.SerpStoreIntegrationTests):
+    def test_invalid_feed_survives_store_and_lossless_exports_as_source_error(self):
+        from realtime.google_data import normalize_request
+        from realtime.google_data_export import export_public_data,verify_bundle
+        from pathlib import Path
+        import tempfile,json
+        from realtime.serp_console import ConsoleStore
+        from realtime.google_legacy import read_public_requests
+        ConsoleStore(self.dsn).initialize_console(Config(database_url=self.dsn))
+        feed=b'<rss><channel><item><title>Invalid retained</title><link>invalid</link></item></channel></rss>'
+        discovery=GoogleFeedTests().discovery(content=feed)
+        links,errors=collect(discovery,self.base,self.serp,str(self.cid),'google_news','q','US:en',3600)
+        self.assertEqual(links,[]);self.assertTrue(errors)
+        with self.base.connect() as db:
+            row=db.execute('SELECT request_id,source,query,page,classification,completed_at,response FROM serp_requests').fetchone()
+            self.assertEqual(db.execute('SELECT count(*) n FROM discovery_query_leases').fetchone()['n'],0)
+        self.assertEqual(row['classification'],'parse_error')
+        observation=normalize_request(row)
+        self.assertEqual(observation['availability'],'source_error')
+        self.assertEqual(len(observation['invalid_records']),1)
+        self.assertEqual(observation['invalid_records'][0]['source_value']['title'],'Invalid retained')
+        filters={'source':'google_news','classification':'parse_error'}
+        api=read_public_requests(self.dsn,filters,normalized=True)
+        self.assertEqual(len(api['requests']),1)
+        self.assertEqual(api['requests'][0]['invalid_records'],observation['invalid_records'])
+        with tempfile.TemporaryDirectory() as td:
+            target=Path(td)/'export'
+            manifest=export_public_data(self.dsn,target,filters=filters)
+            self.assertEqual(manifest['counts']['invalid_records'],1)
+            self.assertEqual(verify_bundle(target)['requests'],1)
+            self.assertEqual(json.loads((target/'requests.jsonl').read_text())['invalid_records'],observation['invalid_records'])
+
     def feed_event(self,source='google_news',content=NEWS):
         e=self.event();e.update(source=source,provider='google_rss',response=parse_feed(content,source,'q','US:en'),query='q')
         return e

@@ -1,0 +1,492 @@
+{
+  "title": "Google总需求字段差距与适配",
+  "date": "2026-11-09",
+  "primary_prd": "docs/google-prd-v1-source-2026-11-04.txt",
+  "primary_sha256": "3cbe48ddbdf990fbba5543a3d2cdfdd7c80d437c757f490f403244871b99b8e1",
+  "scope": "field audit; not a replacement for the 273-requirement acceptance ledger",
+  "sample": {
+    "requests": 51,
+    "successful_requests": 40,
+    "feature_blocks": 26,
+    "explicit_citation_urls": 0,
+    "generic_feature_target_urls": 59,
+    "feature_child_records": 12,
+    "separate_source_answers": 0
+  },
+  "matrix": [
+    {
+      "domain": "观测公共字段",
+      "prd_reference": "5.1 / 5.3.2 / GO-ING-008",
+      "fields": [
+        "entity_id",
+        "provider_namespace",
+        "source_ref",
+        "requested_at",
+        "received_at",
+        "observed_at",
+        "requested_item_limit",
+        "returned_item_count"
+      ],
+      "gap": "已有源值与可复算字段，本轮补独立映射和依据；observed_at 是本地接收或保存代理时点，不冒充源观测时间。",
+      "status": "本地适配完成，待发布"
+    },
+    {
+      "domain": "来源和解析版本",
+      "prd_reference": "5.1 / GO-DAT-010",
+      "fields": [
+        "source_api_version",
+        "source_parser_version",
+        "provider_version",
+        "field_schema_version"
+      ],
+      "gap": "OpenSERP 版本不是 Google API 版本；实际缺失的源 API/解析版本须由真实 adapter 登记，不造版本。",
+      "status": "部分有值，其余未记录"
+    },
+    {
+      "domain": "搜索环境",
+      "prd_reference": "GO-AC-001 / 5.3.1",
+      "fields": [
+        "device",
+        "location",
+        "location_precision",
+        "login_state",
+        "safe_search",
+        "query_language",
+        "result_language",
+        "detected_language"
+      ],
+      "gap": "请求语言不等于查询或结果检测语言；国家码不能推导设备、城市、坐标或登录态。",
+      "status": "本轮样本未知；部分需上游支持"
+    },
+    {
+      "domain": "缓存与数据完整性",
+      "prd_reference": "5.1 / GO-ID-003 / GO-ING-008",
+      "fields": [
+        "cache_hit",
+        "cache_age_seconds",
+        "cache_original_observed_at",
+        "is_partial",
+        "is_truncated"
+      ],
+      "gap": "原请求没有上游缓存字段时保持未知；任务关联的4次复用是另一层事实，不能写回原请求冒充上游新鲜度。",
+      "status": "补三态/缺失原因；源事实仍缺"
+    },
+    {
+      "domain": "SERP item/URL",
+      "prd_reference": "5.3.2 / GO-DAT-002 / GO-ID-002",
+      "fields": [
+        "native_id",
+        "provider_rank_group",
+        "provider_rank_absolute",
+        "organic_position",
+        "parent_block_id",
+        "display_url",
+        "redirect_url",
+        "canonical_url",
+        "registrable_domain",
+        "sponsored_label"
+      ],
+      "gap": "已映射已有原生ID、显示/跳转地址和源排名；canonical、注册域/PSL版本、付费标签缺证据时不推断。",
+      "status": "部分已有值，本轮补适配"
+    },
+    {
+      "domain": "SERP feature",
+      "prd_reference": "5.3.2 / GO-DAT-002 / GO-ING-006",
+      "fields": [
+        "feature_id",
+        "feature_type",
+        "block_order",
+        "presence",
+        "expanded_state",
+        "channel",
+        "target_urls",
+        "citation_urls",
+        "source_result_ids",
+        "matched_occurrence_ids",
+        "children"
+      ],
+      "gap": "样本26块：23 AI摘要、3相关问答；59普通链接不自动当引用；12问答子项没有独立答案字段。",
+      "status": "结构适配完成；展开/渠道/引用证据未覆盖"
+    },
+    {
+      "domain": "Web 可选内容",
+      "prd_reference": "5.3.2 / GO-DAT-005",
+      "fields": [
+        "author",
+        "sitelinks",
+        "source_published_at",
+        "result_language",
+        "detected_language",
+        "rating",
+        "reviews",
+        "thumbnail"
+      ],
+      "gap": "本轮作者/结果语言等未提供；不能访问正文或猜值填空，保留 source_fields 和缺失状态。",
+      "status": "映射可承载，但样本缺值"
+    },
+    {
+      "domain": "News 文章实体",
+      "prd_reference": "5.3.4 / GO-SCP-004",
+      "fields": [
+        "publisher_article_url",
+        "canonical_url",
+        "author",
+        "body",
+        "source_published_at",
+        "modified_at",
+        "article_language",
+        "publication_source"
+      ],
+      "gap": "179条News全部未解析Google包装链接；RSS原日期可验证，但出版者文章、作者/正文/修改时间需独立链路。",
+      "status": "真链接/文章字段仍缺，不能伪补"
+    },
+    {
+      "domain": "数值 Trends 与 RelatedQuery",
+      "prd_reference": "5.3.3 / GO-DAT-003",
+      "fields": [
+        "series_id",
+        "term_or_topic",
+        "requested_window",
+        "effective_window",
+        "granularity",
+        "timezone",
+        "scale_id",
+        "period_start",
+        "period_end",
+        "value",
+        "is_partial",
+        "revision",
+        "top_rising",
+        "breakout"
+      ],
+      "gap": "当前10个Trending Now话题及30报道，不提供指定词历史指数或区域兴趣；approx_traffic不替代series。",
+      "status": "需合格数值来源及对应适配"
+    },
+    {
+      "domain": "关键词量与商业估计",
+      "prd_reference": "5.3.3 / GO-SCP-006",
+      "fields": [
+        "requested_query",
+        "returned_text",
+        "close_variant_group",
+        "monthly_volume",
+        "competition",
+        "CPC",
+        "bid_percentiles",
+        "currency",
+        "micros"
+      ],
+      "gap": "搜索结果数/热度标记不是月搜索量、CPC或SEO难度。",
+      "status": "需获准来源/账号；未采集"
+    },
+    {
+      "domain": "AI Answer/Mention/Citation",
+      "prd_reference": "5.3.5 / GO-ING-011",
+      "fields": [
+        "answer_id",
+        "prompt_version",
+        "consumer_ui_generation_api",
+        "AIO_AI_Mode",
+        "observed_model",
+        "turn",
+        "repeat_group",
+        "expanded_state",
+        "mention_span",
+        "brand_id",
+        "alias_version",
+        "citation_order",
+        "matched_content_id"
+      ],
+      "gap": "已有模块文本不证明AI Mode、模型、品牌消歧或引用支持关系；未新增模型调用和二次展开。",
+      "status": "仅原始模块部分有值；完整域未接通"
+    },
+    {
+      "domain": "Search Console",
+      "prd_reference": "5.3.6 / GO-ING-009",
+      "fields": [
+        "property",
+        "day_hour",
+        "query_page_country_device",
+        "searchAppearance",
+        "clicks",
+        "impressions",
+        "CTR",
+        "position",
+        "anonymous_flag",
+        "top_rows_bulk",
+        "revision"
+      ],
+      "gap": "SERP排名不能推导自有站点展示/点击/CTR。",
+      "status": "需真实property授权与API/BQ对账"
+    },
+    {
+      "domain": "GA4",
+      "prd_reference": "5.3.6 / GO-DAT-007",
+      "fields": [
+        "property",
+        "dimensions",
+        "metrics",
+        "rowCount",
+        "samplingMetadatas",
+        "subjectToThresholding",
+        "dataLossFromOtherRow",
+        "quota",
+        "report_timezone",
+        "event_revision"
+      ],
+      "gap": "不能从搜索结果推导流量/用户/转化，更不能推导竞品真实GA4。",
+      "status": "需真实资产及报表/事件独立授权"
+    },
+    {
+      "domain": "Ads/Merchant",
+      "prd_reference": "5.3.6 / GO-DAT-008",
+      "fields": [
+        "customer_merchant_id",
+        "campaign_adgroup_criterion",
+        "segments",
+        "cost_micros",
+        "conversions",
+        "conversion_value",
+        "currency",
+        "attribution_window",
+        "product_report",
+        "revision"
+      ],
+      "gap": "保留金额单位、币种及小数转化；无真实经营数据，不造值。",
+      "status": "需项目/资产/用途与实际报表来源"
+    },
+    {
+      "domain": "Local/Review",
+      "prd_reference": "5.3.7 / GO-SRC-010",
+      "fields": [
+        "place_id",
+        "grid_coordinates",
+        "point_id",
+        "location_precision",
+        "local_rank",
+        "review_id",
+        "rating_text",
+        "reply",
+        "review_updated_at"
+      ],
+      "gap": "SERP本地卡片不等于地图网格、完整评论或GBP经营数据；不启用评论库。",
+      "status": "独立来源、资产与字段用途未准入"
+    },
+    {
+      "domain": "权限/留存/固定复算",
+      "prd_reference": "5.1 / GO-DAT-010 / GO-ID-007",
+      "fields": [
+        "tenant_id",
+        "asset_id",
+        "grant_id",
+        "license_id",
+        "license_version",
+        "allowed_uses",
+        "retention_deadline",
+        "redistribution_scope",
+        "input_manifest",
+        "cohort_version",
+        "rights_at_query",
+        "evidence_expires_at"
+      ],
+      "gap": "当前访问门和私有隔离保留；不凭旧公开数据推断新版用途、许可或正式Whale ReaderAdmission。",
+      "status": "框架部分存在；实际登记/生命周期未完成"
+    },
+    {
+      "domain": "平台终态和成本",
+      "prd_reference": "5.1 / GO-ING-001 / GO-ING-007",
+      "fields": [
+        "ingested_at",
+        "terminal_receipt",
+        "Whale_document_version",
+        "billable_units",
+        "cost",
+        "credit",
+        "currency_unit"
+      ],
+      "gap": "本轮读回的是既有单条固定版本，不替所有请求背书；无账单/终态字段就留未知。",
+      "status": "需每事件真实终态/独立读回/费用账"
+    }
+  ],
+  "run_field_coverage": {
+    "entity_id": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "entity_kind": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "provider_namespace": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "native_request_id": {
+      "provided": 34,
+      "eligible": 40
+    },
+    "source_ref": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "source_api_version": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "provider_version": {
+      "provided": 34,
+      "eligible": 40
+    },
+    "source_parser_version": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "field_schema_version": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "collection_method": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "observed_at": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "source_observed_at": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "scheduled_at": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "requested_at": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "received_at": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "ingested_at": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "requested_country": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "search_engine": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "requested_surface": {
+      "provided": 4,
+      "eligible": 40
+    },
+    "channel": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "requested_language": {
+      "provided": 39,
+      "eligible": 40
+    },
+    "source_language": {
+      "provided": 5,
+      "eligible": 40
+    },
+    "query_language": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "device": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "location": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "location_precision": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "login_state": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "safe_search": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "observed_page": {
+      "provided": 34,
+      "eligible": 40
+    },
+    "requested_offset": {
+      "provided": 34,
+      "eligible": 40
+    },
+    "requested_item_limit": {
+      "provided": 34,
+      "eligible": 40
+    },
+    "returned_item_count": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "returned_topic_count": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "stored_occurrence_count": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "stored_topic_count": {
+      "provided": 40,
+      "eligible": 40
+    },
+    "cache_hit": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "cache_age_seconds": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "cache_original_observed_at": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "is_partial": {
+      "provided": 4,
+      "eligible": 40
+    },
+    "is_truncated": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "source_timezone": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "billable_units": {
+      "provided": 0,
+      "eligible": 40
+    },
+    "cost": {
+      "provided": 0,
+      "eligible": 40
+    }
+  },
+  "production_deployed": false,
+  "deployment_update": {
+    "date": "2026-11-09",
+    "status": "prd-v1_projection_deployed_and_verified",
+    "report": "searchflow-reliability-optimization-2026-11-09.md",
+    "scope": "Existing-source projection only; missing external domains remain unimplemented"
+  }
+}

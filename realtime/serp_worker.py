@@ -60,6 +60,7 @@ def make_discovery(config: Config, store: CampaignStore, serp: SerpStore,
         if opts['web_region'] != 'US':
             discovery.locale += ':' + opts['web_region']
     discovery.task_options = opts
+    discovery.news_link_resolution = True
     discovery.serp_cache_reader = lambda key: serp.cached_feed(key, cid)
     discovery.serp_cache_writer = serp.cache_feed
     from .serp_console import ConsoleStore
@@ -91,6 +92,8 @@ def run_serp_campaign(campaign_id: str, config: Config | None = None,
         console = ConsoleStore(config.database_url)
         if not console.runnable(campaign_id):
             return
+        if console.once_retry_expired(campaign_id):
+            return
         campaign['serp_options'] = console.task_options(campaign_id)
         settings = console.settings(config)
         campaign['serp_options'] = {'web_region': settings['web_region'], 'web_language': settings['web_language'], **campaign['serp_options']}
@@ -107,6 +110,10 @@ def run_serp_campaign(campaign_id: str, config: Config | None = None,
         if 'google_web' in sources:
             store.reconcile_google_queries(campaign_id, queries, discovery.locale)
             results, errors = discovery.discover_many(queries, int(opts.get('web_pages') or config.google_web_max_pages))
+        if 'google_images' in sources:
+            from .google_images import collect_images
+            extra, failures = collect_images(discovery,store,serp,campaign_id,queries,config)
+            results.extend(extra); errors.extend(failures)
         if any(s in sources for s in ('google_news','google_trends')):
             from .google_feeds import collect_sources
             extra,failures = collect_sources(discovery,store,serp,campaign_id,queries,sources,config)
@@ -118,8 +125,11 @@ def run_serp_campaign(campaign_id: str, config: Config | None = None,
             counts = console.task_usage(campaign_id)
             if opts.get('max_successful_searches') and counts['successful'] >= opts['max_successful_searches']:
                 complete_once_task(console, campaign_id, 'max_successful_searches')
-            elif not errors:
+            elif not errors and console.collection_progress(campaign_id, public_only=False)['scope_complete']:
                 complete_once_task(console, campaign_id, 'scope_completed')
+            elif 'google_images' in sources and errors != ['images_busy'] and not opts.get('retry_window_seconds'):
+                with console.store.connect() as db:
+                    db.execute("UPDATE campaigns SET status='failed',last_error=%s,updated_at=now() WHERE id=%s AND status='active'", ('images_once_failed:'+','.join(errors)[:400],campaign_id))
     finally:
         discovery.close()
     if getattr(config,'whale_serp_enabled',False):
