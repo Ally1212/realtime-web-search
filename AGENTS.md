@@ -249,3 +249,27 @@
 - 全量1087测试/333子测试、冻结后台33/7、冻结worker65/4通过；四来源既有样本与新News样本JSON/JSONL/74列CSV一致，ZIP校验、权限和幂等通过。
 - 唯一新News任务非缓存成功10条、10/10解析、新增8 URL；最终requests39962/pages332768/公开分析39934/旧outbox9。两次快照一致，所有自动开关false、活动客户任务/lease/监测0。未新上传，ego Space52已清理。
 - 回退备份在采集机独立后台 state/final-release-20261109/backup/；发布报告 docs/searchflow-final-release-2026-11-09.md。历史News未批量补链，单次样本不代表长期稳定性。
+
+## 对外API与全量数据排查（2026-11-10）
+
+- 只读核验全库39962请求/811206次出现，标准化无丢行/ID碰撞/关联孤儿；177条线上矩阵请求、89项隔离测试/10子测试。公开39951、本客户11，分析39934恰好排除公开图片17，私有投影0。没有新搜索、上传、部署或生产修复。
+- 确认未修复：排名分析带format=csv或json会400；网页curl缺站点访问头；字段目录漏9项图片字段；历史service_error筛选400；country=US误空、us命中。浏览器跨域预检501，无CORS；后端两层Key鉴权实测成功。不能宣称所有API已全部验收。
+- News公开552055次中552000仍包装链接，仅55解析；私有91中81包装、10解析。六次Web URL被明确脱敏，图片缩略图全缺、作者/canonical均未知；Trends仍仅热点RSS，研究域not_covered。默认7/14列CSV不等价完整74列；快照最早优先并受限额，列表最新优先。
+- 最终所有自动开关false、活动任务/lease/监测0，数据基线不变。详细报告docs/customer-api-data-audit-2026-11-10.md，证据state/api-data-audit-20261110/。
+
+## 客户增量订阅与交付修复（2026-11-10）
+
+- 五项审计缺陷已上线：排名显式JSON/CSV、两层Key示例、图片字段目录、service_error筛选及国家大小写。客户拉取订阅位于/v1/data/subscriptions，区别于研究域订阅；默认暂停，支持occurrences/new_urls、幂等、确认账本、迟到提交、完整下载与文件校验、历史批次重读与阻塞批次丢弃。events是增量项，requests保留完整上下文；new_urls不是全历史首次贡献。
+- 网站API工具新增数据订阅；保留一个“示例：已有网页数据（暂停）”，已领取并确认4个本人旧Web请求/18个事件，最终active=false。不启动采集；客户端需定时拉取，Webhook未连接。新闻补链为独立证据表与限量可暂停工具，原始响应不改；生产只做离线预览，历史55万条未在线回填。
+- 后台10文件与静态页哈希验收，web.py/serp_page.py/serp_console.py/google_http.py不变；仅专属后台web/prd重启，采集机五容器未重启。首次缺依赖预检查失败后自动回退；后补同版本解析器依赖与网页列表修复，已上线。后台回退state/subscriptions-20261110-v2/backup，应用机state/subscriptions-20261110。
+- 前后原始requests39962/pages332768/公开分析39934/旧outbox9一致；自动采集、正文、上传、领取false，监测/活动任务/lease0。报告docs/data-subscriptions-release-2026-11-10.md，合同docs/data-subscriptions-2026-11-10.md，证据state/subscriptions-20261110/。未提交Git，未扩大CORS。
+
+- 最终回归1098 passed / 333 subtests / 0 skipped，固定候选包40 passed / 3 subtests；CSV/JSONL/manifest逐项及SHA256一致。ego Space58与本地预览服务已清理。
+
+## 订阅进度、新闻补链与七天巡检（2026-11-10 第二轮）
+
+- 已上线 start_mode=now/history；API默认history兼容旧调用，网页默认now，创建仍暂停。now用已存匹配request快照排除历史，后提交的旧时间戳请求仍交付。新增status精确待处理请求、最近确认、分页batches及网页重新下载；大批量去重/确认改为批量SQL。新增“示例：从现在开始（暂停）”，与旧示例均active=false。
+- 新闻补链增加attempts/next_retry_at、deferred跨请求继续及显式unresolved重试/最长24小时退避。生产限2条真实Google RPC解析，2/2 resolved、4次HTTP、0出版社请求；仅sf独立证据表，不改原SERP或URL贡献，不代表55万条完成。
+- 后台仅5模块与静态页更新，回退分别在两机state/subscription-next-20261110；保护文件和原五采集容器不变。全量1108 passed/333 subtests；真实冻结包28 passed；隔离1万events分3批无重复或丢失（非生产吞吐）。线上起点/进度/历史下载SHA256/401/404/390px通过。
+- 只读searchflow-delivery-integrity.timer每15分钟检查旧已确认4请求/18URL归档、确认账本、JSONL/CSV摘要与存储增长；固定截止2026-11-17T03:05:18.436923Z，进程重启不重置。到期记录completed或completed_with_issues后停用自己的timer。目前运行中，不能称七天通过，也不代表端到端新采集或网站可用性SLA。状态在采集机/home/azureuser/projects/google-workbench-backend/state/subscription-next-20261110/soak.json。
+- 原始requests39962/pages332768/分析39934/outbox9及所有关闭开关不变，活动任务/监测/lease0；未提交Git。详情docs/data-subscriptions-next-release-2026-11-10.md。

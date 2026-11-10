@@ -32,11 +32,13 @@ $('operatorForm').onsubmit=async e=>{e.preventDefault();const key=$('operatorKey
 $('disconnectOperator').onclick=()=>{operatorKey='';sessionStorage.removeItem('searchflowOperator');$('operatorStatus').textContent='未连接管理权限';notice('已断开管理权限')};
 for(const id of ['analysisRegion','monitorRegion','apiRegion']){$(id).innerHTML+=(['US','GB','SG','HK','TW','CN','JP','DE','FR','IN','AU','CA','BR','KR'].map(x=>`<option value="${x}">${esc(regionNames[x]||x)}</option>`).join(''));}
 $('apiExample').textContent=`curl '${location.origin}/v1/search' \
+  -H 'X-SearchFlow-Access-Key: $SEARCHFLOW_ACCESS_KEY' \
   -H 'Authorization: Bearer $SEARCHFLOW_API_KEY' \
   -H 'Idempotency-Key: your-unique-search-1' \
   -H 'Content-Type: application/json' \
   -d '{"query":"solar energy","region":"US","language":"en"}'`;
 $('apiPollExample').textContent=`curl '${location.origin}/v1/jobs/TASK_ID' \
+  -H 'X-SearchFlow-Access-Key: $SEARCHFLOW_ACCESS_KEY' \
   -H 'Authorization: Bearer $SEARCHFLOW_API_KEY'`;
 async function productApi(path,payload,extra={},secret=productKey){const r=await fetch(path,{method:payload===undefined?'GET':'POST',headers:{'Authorization':'Bearer '+secret,...(payload===undefined?{}:{'Content-Type':'application/json'}),...extra},...(payload===undefined?{}:{body:JSON.stringify(payload)})});const d=await r.json();if(!r.ok)throw Error(d.error||'请求失败 '+r.status);return d;}
 function productEmpty(text){return `<p class="product-empty">${esc(text)}</p>`;}
@@ -85,3 +87,8 @@ def extend(page):
     page=page.replace("'每 10 秒刷新 / 最近读取 '+new Date()", "(current==='analysis'?'报告按需更新 / 页面检查 ':'每 10 秒刷新 / 最近读取 ')+new Date()")
     from .workbench_ui import extend as refine_ui
     return refine_ui(page)
+
+# Keep subscription controls within the existing API workspace.
+from .subscription_ui import SECTIONS as SUBSCRIPTION_SECTIONS, JS as SUBSCRIPTION_JS
+SECTIONS = SECTIONS.replace('<div class="panel"><h2>最近搜索任务</h2>', SUBSCRIPTION_SECTIONS + '<div class="panel"><h2>最近搜索任务</h2>')
+JS += SUBSCRIPTION_JS

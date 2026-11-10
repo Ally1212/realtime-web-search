@@ -202,7 +202,9 @@ def field_catalog():
                               'serp_features': [dict(type='unknown')]}))
     return dict(version=VERSION, default_field_contract='prd-v1',
                 field_contracts=['legacy', 'prd-v1'],
-                request_fields=list(sample), occurrence_fields=list(sample['occurrences'][0]),
+                request_fields=list(sample), occurrence_fields=list(dict.fromkeys([*sample['occurrences'][0],
+                    'image_url', 'source_page_url', 'thumbnail_url', 'width', 'height',
+                    'upstream_rank', 'observed_order', 'rank_basis', 'media_downloaded'])),
                 enhanced_run_fields=list(sample['field_adaptation']['run']),
                 enhanced_item_fields=list(sample['field_adaptation']['items'][0]),
                 feature_fields=list(sample['field_adaptation']['features'][0]),

@@ -16,6 +16,9 @@ def parameters(query):
 def handle(handler, method, path, query, store, account):
     if not path.startswith(('/v1/data/', '/v1/analytics/')):
         return False
+    from .customer_subscriptions import handle as subscription_handle
+    if subscription_handle(handler, method, path, query, store, account):
+        return True
     if method != 'GET':
         raise ProductError('method_not_allowed', '数据接口仅支持 GET', 405)
     p = parameters(query)
@@ -26,8 +29,14 @@ def handle(handler, method, path, query, store, account):
         result = field_catalog()
     elif path == '/v1/data/requests':
         result = data.requests(p)
-    elif match := re.fullmatch(r'/v1/data/requests/([^/]+)(?:/(items|topics|features|export))?', path):
+    elif match := re.fullmatch(r'/v1/data/requests/([^/]+)(?:/(items|topics|features|export|news-links))?', path):
         rid, section = match.groups()
+        if section == 'news-links':
+            record = data.request(rid, p)
+            with store.base.connect() as db:
+                rows = db.execute('SELECT occurrence_id,wrapper,evidence,observed_at,attempts,next_retry_at FROM sf_news_link_enrichments WHERE request_id=%s ORDER BY occurrence_id', (record['request_id'],)).fetchall()
+            handler.send_json(dict(request_id=record['request_id'], enrichments=rows, original_record_unchanged=True))
+            return True
         if section == 'export':
             from .customer_export import export_record
             fmt = p.pop('format', 'jsonl')
@@ -51,6 +60,7 @@ def handle(handler, method, path, query, store, account):
         scope = p.pop('scope', 'public')
         if scope != 'public':
             raise ProductError('unsupported_scope', '此接口与网站分析一致，仅分析公开历史；私有数据请使用 /v1/data/quality 或监测报告')
+        fmt = p.pop('format', 'json')
         allowed = {'days', 'source', 'region', 'language'}
         if path == '/v1/analytics/summary':
             call = lambda: overview_summary(store.base, **p)
@@ -65,7 +75,6 @@ def handle(handler, method, path, query, store, account):
             call = lambda: store.history_analysis(**values)
         else:
             raise ProductError('not_found', '接口不存在', 404)
-        fmt = p.pop('format', 'json')
         if set(p) - allowed or fmt not in ('json', 'csv'):
             raise ProductError('invalid_parameter', '分析筛选或格式无效')
         result = call()

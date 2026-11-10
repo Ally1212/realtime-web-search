@@ -169,6 +169,9 @@ def capability_payload():
                      'job_data_url': '/v1/jobs/{id}/data', 'snapshot_export_url': '/v1/data/export',
                      'scopes': ['own', 'public', 'accessible'], 'full_export': ['csv', 'jsonl', 'zip'],
                      'quality_url': '/v1/data/quality', 'analytics_scope': 'public_history',
+                     'subscriptions': {'url': '/v1/data/subscriptions', 'delivery': 'pull_with_ack',
+                                       'default_active': False, 'collection_enabled_by_subscription': False,
+                                       'modes': ['occurrences', 'new_urls'], 'webhook': 'not_connected'},
                      'source_admission': 'legacy_saved_data_not_formal_whale_reader'},
     }
 
@@ -181,6 +184,10 @@ class ProductStore:
         with self.base.connect() as db:
             db.execute('SELECT pg_advisory_xact_lock(20261027,1)')
             db.execute(SCHEMA)
+            from .customer_subscriptions import SCHEMA as subscription_schema
+            db.execute(subscription_schema)
+            from .news_backfill import SCHEMA as news_enrichment_schema
+            db.execute(news_enrichment_schema)
             from .analytics import initialize_projection
             initialize_projection(db)
             db.execute("INSERT INTO sf_platform_months(month,accepted) SELECT quota_month,count(*) FROM sf_jobs GROUP BY quota_month ON CONFLICT(month) DO UPDATE SET accepted=greatest(sf_platform_months.accepted,EXCLUDED.accepted)")

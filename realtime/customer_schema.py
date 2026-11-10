@@ -60,6 +60,22 @@ def extend_openapi(doc):
         return {method: operation}
 
     paths = doc['paths']
+    paths['/v1/data/subscriptions'] = {**op('客户数据订阅列表'), **op('创建默认暂停的拉取订阅', method='post', description='name、filters、mode(occurrences/new_urls)、interval_seconds(60–604800)。Idempotency-Key 必填。只读取已有数据，不启动采集。start_mode=now排除创建快照已存记录，history补领历史；API默认history以保持兼容，网页默认now。')}
+    paths['/v1/data/subscriptions']['post']['parameters'] = [{'name': 'Idempotency-Key', 'in': 'header', 'required': True, 'schema': {'type': 'string', 'minLength': 1, 'maxLength': 100}}]
+    paths['/v1/data/subscriptions']['post']['requestBody'] = {'required': True, 'content': {'application/json': {'schema': {'type': 'object', 'required': ['name'], 'additionalProperties': False, 'properties': {
+        'name': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+        'start_mode': {'type': 'string', 'enum': ['now', 'history'], 'default': 'history'},
+        'filters': {'type': 'object', 'properties': {p['name']: p['schema'] for p in filters if p['name'] not in ('field_contract', 'new_only')}, 'additionalProperties': False},
+        'mode': {'type': 'string', 'enum': ['occurrences', 'new_urls'], 'default': 'occurrences'},
+        'interval_seconds': {'type': 'integer', 'minimum': 60, 'maximum': 604800, 'default': 3600}}}}}}
+    for action in ('pause', 'resume', 'pull'):
+        paths['/v1/data/subscriptions/{id}/' + action] = op('订阅 ' + action, method='post', params=[param('limit', 'integer', minimum=1, maximum=50)] if action == 'pull' else [], description='POST 空对象。pull 保存待确认批次；重试返回相同批次。events 是交付项，requests 保留完整上下文。确认后推进；迟到入库记录仍会被发现。')
+    paths['/v1/data/subscriptions/{id}/status'] = op('订阅进度与精确待处理请求数', description='按当前数据权限计数，含未确认批次；交付历史统计区分请求与事件。生成时间反映一次只读快照。')
+    paths['/v1/data/subscriptions/{id}/batches'] = op('分页交付记录', params=[param('limit', 'integer', minimum=1, maximum=50, default=20), param('cursor')], description='轻量元数据，不载入完整历史payload；下载重检当前数据权限。')
+    paths['/v1/data/subscriptions/{id}/batches/{batch_id}'] = op('重读历史或待确认批次与 SHA256')
+    paths['/v1/data/subscriptions/{id}/batches/{batch_id}/export'] = op('完整批次下载', binary=True, params=[param('format', enum=['csv', 'jsonl', 'manifest'], default='jsonl')], description='manifest 包含两个导出文件的字节数与 SHA256。每个请求一行，包含完整 request JSON 与 events JSON；不是 74 列结果表。批次 SHA256 校验对象为 payload 的规范 JSON，文件 SHA256 另行计算。')
+    paths['/v1/data/subscriptions/{id}/batches/{batch_id}/discard'] = op('丢弃待确认批次但不推进进度', method='post', description='POST 空对象；用于权限变更等阻塞恢复。重拉仍可能重复，event_id 不变。')
+    paths['/v1/data/subscriptions/{id}/batches/{batch_id}/ack'] = op('校验并确认批次收货', method='post', description='POST {"sha256":"批次摘要"}；幂等确认。')
     paths['/v1/data/fields'] = op('字段目录、字段版本与数据范围')
     paths['/v1/data/requests'] = op('查询本人或公开的完整历史数据', params=filters + [param('limit', 'integer', minimum=1, maximum=50, default=20), param('cursor')],
                                            schema={'$ref': '#/components/schemas/DataPage'})
@@ -72,6 +88,7 @@ def extend_openapi(doc):
                                  params=filters + [param('format', enum=['zip', 'csv', 'jsonl'], default='zip'),
                                                    param('max_requests', 'integer', minimum=1, maximum=10000, default=1000)],
                                  description='ZIP 包含完整 CSV、JSONL、出现记录及校验清单。超过请求上限明确标记截断；超过大小上限失败，不发布部分文件。每进程最多两个同步快照导出。')
+    paths['/v1/data/requests/{id}/news-links'] = op('历史新闻独立补链证据', params=[detail_scope], description='保留包装链接、目标链接、状态、依据和解析时间；不改写原始请求与历史首次贡献。空列表表示没有补链证据。')
     paths['/v1/data/quality'] = op('总请求数与抽样字段完整率', params=[p for p in filters if p['name'] != 'field_contract'] + [param('sample_limit', 'integer', minimum=1, maximum=1000, default=100)],
                                   description='请求总量是全筛选统计；字段、链接去重与质量仅覆盖最新样本，不冒充历史首次贡献。')
     paths['/v1/data/delivery'] = op('公开历史 Whale 交付证明', description='缓存证明有过期状态；不发起平台上传或独立读回，不含客户私有交付。')

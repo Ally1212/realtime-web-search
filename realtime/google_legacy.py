@@ -15,7 +15,7 @@ from .google_data import DATA_VERSION, news_time, normalize_request
 
 SOURCES = frozenset({'google_web', 'google_news', 'google_trends', 'google_images'})
 CLASSIFICATIONS = frozenset({'results','empty','error','timeout','unknown','captcha',
-                            'rate_limited','http_error','parse_error','transport_error'})
+                            'rate_limited','http_error','parse_error','transport_error','service_error'})
 LIMITATIONS = [
     '旧库直接读取；Whale 旧上传样本核查见交付状态，尚未完成正式观测投影。',
     'News 列表顺序不是 Google 自然排名；新闻结果不代表完整媒体报道数量。',
@@ -186,7 +186,11 @@ def _filters(parameters):
         if value:
             if len(value) > 80:
                 raise DomainError('invalid_argument', 'Filter too long')
+            if key == 'country':
+                value = value.lower()
             expr = "NULLIF(r.response->'search_parameters'->>%s,'')"
+            if key == 'country':
+                expr = 'lower(' + expr + ')'
             where.append(expr + (' IS NULL' if value == 'unknown' else '=%s'))
             args.append(field)
             if value != 'unknown': args.append(value)
