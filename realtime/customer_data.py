@@ -194,13 +194,14 @@ class CustomerDataStore:
 
 
 def field_catalog():
+    from .data_capability_schema import fields as capability_fields
     from .customer_export import FULL_COLUMNS
     # Derive schema keys from the real adapter, without returning fixture facts.
     sample = project(dict(request_id='00000000-0000-0000-0000-000000000000', source='google_web',
                           query='', page=1, classification='empty', completed_at=None, response={
                               'organic_results': [dict(link='https://example.com/')],
                               'serp_features': [dict(type='unknown')]}))
-    return dict(version=VERSION, default_field_contract='prd-v1',
+    return dict(version=VERSION, data_capabilities=capability_fields(), default_field_contract='prd-v1',
                 field_contracts=['legacy', 'prd-v1'],
                 request_fields=list(sample), occurrence_fields=list(dict.fromkeys([*sample['occurrences'][0],
                     'image_url', 'source_page_url', 'thumbnail_url', 'width', 'height',

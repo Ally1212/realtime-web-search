@@ -1,5 +1,28 @@
 # AGENTS.md
 
+## 真实数据主题分析（2026-11-10，最新）
+
+- 本次主题分析已完成55/55，129处证据逐字校验，独立复算和ZIP校验通过。助手校准6条并补4处漏标，备注明确非用户人工复核，其余49条仍待逐条复核。模型合计草案1次+标注6次。中间未去重草案已留本地审计后删除，最终109原记录仍保留。
+
+- 已按用户要求直接使用现有Google News查询 `sodium ion battery research` 的2个真实已存请求；109条原始occurrence逐条与客户数据接口深比较一致。
+- 修正仅分析适配器的News身份：相同完整已保存文本只计一次，防止同文媒体直链/Google跳转链接重复统计。原109条及URL全留档，54重复排除，统计分母55个不同文本，不能称55篇唯一文章。其他来源身份及VOC原生评论不改变，旧分析快照不自动改写。
+- 新数据集 `02f5a0e1d7d6494a641aaf3228db58b8727dff31b81da32642dffd3d8808881b`；标签依据真实可见文本校准，不把署名当作出版者独立核验。仅部署insights_source.py、重启独立insights；备份 `state/insights-real-analysis-20261110/backup/`。94 passed、5 subtests、0 skipped。详情 `docs/searchflow-insights-real-analysis-2026-11-10.md`。
+
+## 数据分析同站整合（2026-11-10，最新）
+
+- 入口现为同一工作台 `/#insights`、左侧“数据分析”，复用原导航/组件/会话；旧 `/insights` 仅302到正式HTTPS新入口。没有iframe，默认数据概览，AI/标签/导入/历史选择折叠保留。`insights_ui.extend()` 委托新 `insights_embed.py`。
+- 只读真实已存Web/News/Trends/Images，保存标题/摘要/查询参数/原始occurrence、request/occurrence ID与响应hash；采集完成时间依据request.completed_at，不以出版日期替代。Google包装链接不当作已知出版者域名。原文CSV保留source_fields。
+- 最新20请求样本242条与18个有内容原请求逐条深比较一致，另2请求无文本；128已知网站、153含摘要。不是全库统计。相关回归93 passed、5 subtests，四来源及桌面/320/390px验证。本轮0新搜索、0模型调用，原库计数及采集/正文/上传/领取关闭状态不变。
+- 仅更新独立insights模块、static/index.html和gateway重定向，只重启insights/reload gateway；两机备份 `state/insights-integration-20261110/backup/`。详见 `docs/searchflow-insights-integration-2026-11-10.md`。
+
+## 文本洞察 / VOC（2026-11-10，首次版本历史）
+
+- 已上线 `/insights`，首页左侧“文本洞察”；沿用前置访问门及客户 Bearer。独立 `insights*.py` 服务只监听采集机回环 18098，Compose 项目 `google-workbench-backend` 新增 insights；SQLite 在该项目 `state/text-insights-data/`，不运行旧 PostgreSQL 迁移或采集协调器。
+- 只读已有公开/本客户搜索标题与摘要，支持 JSON/JSONL/多行 CSV 导入评论；搜索内容与真实 VOC 分模式。AI 标签草案必须人工确认，标注逐字证据校验，Python 统计、人工复核、独立调用台账、可校验完整报告包。未接通新的 Amazon/Reddit/X 抓取器，不把搜索摘要冒充用户评论。
+- 已按用户指定配置 Responses 兼容服务和 `elastic-code`；私密配置在采集机项目 `private/insights-model.json`，600，禁止输出/提交。每数据集需显式允许外部处理；每批10条、每次8000输出token、每任务最多500调用、每空间UTC日预留1000；不自动重试、不承诺金额。人工结果不覆盖，同版本完成标注复用，含空标注。
+- 正式真实历史样本8条/11标签/12处证据/1条人工复核，草案和标注各一次模型调用，重复执行0调用。相关隔离回归90 passed、5 subtests、0 skipped；双层401、正式320/390px、下载校验及原服务未重建均核验。发布前后原始请求39962、pages332768、投影39934、Whale outbox9、启用监测0及采集/正文/上传/领取false一致。
+- 两机备份在各项目 `state/text-insights-20261110/backup/`；网页只发布新静态页/一个导航和gateway路由，原后端只新增模块与ingress路由，没有覆盖线上web.py/serp_page.py。文档 `docs/searchflow-text-insights-2026-11-10.md`。本轮本地PostgreSQL、预览HTTP及ego任务空间101已清理；未提交Git。
+
 ## 工作台迁移完成（2026-10-22）
 
 - 新网页已部署至 `azureuser@20.150.145.162`（dev-server），目录 `/home/azureuser/projects/google-workbench`；目标公网入口 `http://20.150.145.162:8093`，用户明确不加登录保护。
@@ -273,3 +296,265 @@
 - 后台仅5模块与静态页更新，回退分别在两机state/subscription-next-20261110；保护文件和原五采集容器不变。全量1108 passed/333 subtests；真实冻结包28 passed；隔离1万events分3批无重复或丢失（非生产吞吐）。线上起点/进度/历史下载SHA256/401/404/390px通过。
 - 只读searchflow-delivery-integrity.timer每15分钟检查旧已确认4请求/18URL归档、确认账本、JSONL/CSV摘要与存储增长；固定截止2026-11-17T03:05:18.436923Z，进程重启不重置。到期记录completed或completed_with_issues后停用自己的timer。目前运行中，不能称七天通过，也不代表端到端新采集或网站可用性SLA。状态在采集机/home/azureuser/projects/google-workbench-backend/state/subscription-next-20261110/soak.json。
 - 原始requests39962/pages332768/分析39934/outbox9及所有关闭开关不变，活动任务/监测/lease0；未提交Git。详情docs/data-subscriptions-next-release-2026-11-10.md。
+
+## 最新数据能力建设方向（2026-11-10，用户确认）
+
+- 本轮主需求为 `docs/google-data-capabilities-requirements-2026-11-10.md`，结合原总PRD及最新实际能力持续维护。先完善新数据获取、完整保存、去重/版本和完整交付；优先实现历史热度曲线、关键词搜索量、Google AIO及AI Mode完整回答。历史曲线指新任务获取源历史序列，不是旧库回填。
+- 暂不处理现有历史数据，不批量补旧新闻链接、不改旧响应/历史贡献；暂不新增数据分析、预测、评分或AI研究报告，已有业务功能保留。三项之外按总PRD维护完整数据域缺口及后续条件域，不把有接口框架等同于真实接通。
+- 每完成一项数据能力，必须同步主客户API、OpenAPI、capabilities、字段目录、任务/进度/错误、完整查询/JSONL/CSV/ZIP、适用订阅、示例和测试。网页可用而客户API缺失不算完成；旧四来源、鉴权及客户隔离保持兼容。新域路线和端点以需求文档为提案，实施前核对现有合同并冻结。
+- 每域分别贯通真实来源→任务→原始响应/标准事实→去重与修订→API/导出/订阅→适用平台终态及独立读回。相对热度不冒充搜索量，生成模型API不冒充Google消费者AI回答，普通链接不冒充引用，片段不冒充完整；未知/低量/失败/缓存/部分数据明确标记。
+- 状态分开记录本地实现、隔离测试、真实来源验证、上线、API验收与平台读回。来源/凭据/用途/费用依赖准确登记；不凭样本或代码存在宣称全域完成。每功能完成后更新需求状态与证据。
+- 当前请求是整理需求，不自动新增真实搜索、采购或账号配置，不恢复持续采集、正文、自动上传/领取或监测。后续按已有明确授权和具体范围推进，不重复询问已授权事项；保护生产冻结差异文件，不运行旧迁移，不重写历史事实。
+
+## 新数据能力合同第一阶段（2026-11-10）
+
+- 新增内部 `data_capability_contract.py`：四个新能力严格参数、独立哈希、来源到期与费用门禁；不挂客户路由、不自动准入来源、不使用旧搜索额度。请求哈希不作为观测去重键，重复输入映射保留。
+- 测试4 passed/23 subtests；真实适配器、持久化/原子额度、全部数据交付链路仍待实现，不能宣称已接通。合同/依赖/回退见 docs/data-capability-contract-2026-11-10.md。生产无改动，自动开关保持原授权边界。
+
+## 新数据能力任务与预算第二阶段（2026-11-10）
+
+- 本地新增 `data_capability_jobs.py`，显式初始化独立 sf_capability_* 表；并发幂等、独立货币日/月预算与预留、单次lease、终态结算、取消和过期对账。执行前重新检查准入；费用不明时不自动重试或退款，实际超额账单须可信操作员对账。预算按创建UTC窗口归属，不声称供应商按调用日账单。
+- 请求原词/prompt现在保留空白，避免静默改写真实条件；country仍按合同规范大写。新增与旧客户API/订阅/产品隔离回归52 passed/33 subtests/0 skipped，独立PostgreSQL已用于真实事务/并发验证。
+- 尚无真实适配器、事实持久化与完整客户接口/导出/订阅；result_ref仅内部存储接口，不宣称全链路成功，不能直接开放。没有部署、来源调用、生产数据库或开关变更。合同 docs/data-capability-contract-2026-11-10.md 更新状态/费用/恢复语义。
+
+## 新数据能力事实与导出第三阶段（2026-11-10）
+
+- 本地新增 data_capability_facts/store/export：四能力的标准事实合同、sf_capability_* 独立观测与可重建子记录、同事件重试/同值新观测/显式修订与尺度隔离、当前权限/到期、缓存原观测关联。保存与结算同一事务；基础队列现拒绝凭任意 result_ref 成功。尚无源适配器/实际执行器和主客户路由，不可宣称新域已接通。
+- 完整单观测JSON/JSONL/CSV/ZIP/manifest，payload_hash与snapshot_hash、逐文件摘要/数量和父子重建校验；长回答、CSV公式/大单元格、损坏/篡改、投影重建与原事实损坏拒绝。source cache未知不显示miss；本地cache年龄源时钟超前为null；源舍入0不冒充true_zero。
+- 最终相关隔离回归77 passed/85 subtests/0 skipped；JUnit与模块哈希在state/data-capabilities-20261110，合同及缺口见docs/data-capability-facts-2026-11-10.md。所有样本为合成fixture，不冒充真实源验收。没有部署、付费调用、平台写入或生产开关变化；主API/订阅/网页/真实源/平台/七天规模仍待完成。
+
+
+## 新数据能力客户 API 第四阶段（2026-11-10）
+
+- 本地接入四能力客户 API、只读费用上限预览、任务/真实状态/取消、观测与父子分页查询、完整导出；同步 OpenAPI 1.2.0、capabilities、fields 和调用示例。沿用访问门与客户 Bearer，独立预算、租户与当前来源权限；签名游标绑定条件/租户/版本。未配置来源返回409，无活执行器返回503，不接受无人执行的202。
+- 新runtime只能显式挂载，默认无初始化/线程/来源调用；新域订阅仍not_connected。API的四能力端到端测试使用明确标记的合成执行线程，不计真实来源样本。完整独立 PostgreSQL/Redis 回归1164 passed/426 subtests/0 skipped，证据state/data-capabilities-20261110/api-regression；两套本轮测试数据库均已停止。
+- 详见docs/data-capability-api-2026-11-10.md；本阶段未部署，保护文件web.py/serp_page.py未改。真实来源/许可/预算、实际执行器、订阅/网页、平台读回与真实规模/七天验收仍待完成；不能宣称整体接通或上线。
+
+
+## 新数据能力订阅第五阶段（2026-11-10，本地候选）
+
+- 主/v1/data/subscriptions新增显式domain=data/mode=observations分流，保留旧默认；默认暂停、now/history基线ID、每批完整单观测、新观测/修订事件、领取重试、校验确认后推进、丢弃不推进、进度与签名历史分页。只读已有新域事实，不启动采集/供给，不因缓存关联生成新观测事件。
+- 新域批次五格式及内外独立摘要校验，确认前后下载相同；读取/确认/进度/历史均检查当前来源许可和参数政策，过期410，跨租户404；撤权仍允许拥有者暂停/丢弃。OpenAPI1.3.0/capabilities/fields及示例同步，见docs/data-capability-subscriptions-2026-11-10.md。
+- 未部署/真实源调用或平台写入；不改web.py/serp_page.py或生产开关。实际来源/许可/预算、执行器、网页、平台读回及真实规模/七天目标仍未完成。
+
+- 第五阶段最终隔离回归 **1174 passed / 430 subtests passed / 0 skipped**（127.89秒）；命令及XML在state/data-capabilities-20261110/subscription-regression-final，源码/文档/OpenAPI摘要在subscription-manifest.json。本轮四套独立PostgreSQL/Redis均已核验退出，HTTP/fixture线程已关闭。未发布或变更生产。
+
+
+### 本地第六阶段：数据能力工作台（2026-11-10）
+
+- 新增“数据任务”：四能力参数、来源/预算预览与显式提交、任务进度/取消、独立观测与子记录、完整五格式下载、默认暂停的新域订阅及人工校验确认；复用现有客户鉴权。基础源曲线不跨尺度、不连接未知/时间断档。
+- 完整隔离回归1176 passed/430 subtests/0 skipped；最终画布及组合页面专项3 passed。ego lite验证四域、下载独立校验、批次确认前后相同、连接切换隔离、提交响应丢失后的幂等重试、来源/执行器/过期门禁及320/390px。仅合成fixture，详见docs/data-capability-ui-2026-11-10.md。
+- 本地候选未部署，web.py/serp_page.py未改，无真实来源/平台调用或生产变化。本轮HTTP/worker/数据库/Redis及ego空间已清理。真实来源/许可/预算、实际执行器和启动挂载、平台各域读回、真实规模/七天验收仍待完成。
+
+
+### 本地第七阶段：来源执行器与费用不确定恢复（2026-11-10）
+
+- 新增data_capability_executor.py：显式初始化/启停、四能力可信适配器接口、持久来源账号/资产共享串行配额与间隔、调用前准入/取消复查、事务外调用、实际费用及完整事实原子保存。来源无关的单次执行基础，不附真实供应商适配器，不自动挂载生产。
+- 未知结果/费用、无效事实、撤权返回、超账单/过期/存储失败保留预留并转待对账；暂停同scope派发和新任务准入，不自动重试扣费。崩溃后不重发旧来源请求；事实已提交时可修复调度账本。在途取消仍记实际费用，异常文本不进入事件/调度账本。
+- 完整隔离回归1191 passed/444 subtests/0 skipped；最终账本/冷却恢复专项15 passed/14 subtests/0 skipped（与全量重叠）。真实客户HTTP下四能力通过合成适配器执行、保存和隔离查询；停机/账号待对账拒绝新任务503。四套本轮PostgreSQL/Redis和测试线程已核验退出。详见docs/data-capability-executor-2026-11-10.md与state/data-capabilities-20261110/executor-manifest.json。
+- 无部署/外部调用/生产变化，web.py/serp_page.py未改。真实来源/许可/凭据/预算、实际适配器（含传输/分页展开/安全重试和批量失败范围）、正式服务挂载、平台各域映射读回、真实规模和七天验收仍待完成。
+
+
+### 本地第八阶段：明确来源的历史曲线适配候选（2026-11-10）
+
+- 按官方文档新增data_capability_serpapi.py：SerpApi google_trends/TIMESERIES参数映射、固定HTTPS/TLS/无跳转、流式16MiB/头部64KiB与libcurl总期限；默认禁用，无凭据/来源批准/账单核对器不得作为实际来源启用。不是Trending Now或关键词量，不宣称已采购或接通。
+- 显式日/周标签与UTC epoch交叉核验、原生query_index映射、独立响应尺度、partial及缺失查询保留成功值；源指数0不标true_zero，<1为阈值缺失。请求创建时间不冒充独立源观测时间；原文按显式许可保留/脱敏，其他格式或含糊时间不猜测。
+- 实际费用要求独立核对，校验币种/单位/安全证明引用；执行器兼容扩展先持久保存billing_evidence，再保存事实。未知收费不套用预览上界/免费值；秒/日期Retry-After及付费失败保留账本。当前未验证真实计费，无法解析的失败原文独立spool仍待补。
+- 完整隔离1209 passed/480 subtests/0 skipped；最终执行器/适配器/客户HTTP专项33 passed/50 subtests/0 skipped（与全量重叠）。均为合成供应商响应，无真实外部搜索/费用。三套本轮PostgreSQL/Redis和HTTP/worker线程已退出；ego空间76已finish并由SDK交还user-owned，保护用户页面未再关闭。详见docs/data-capability-serpapi-2026-11-10.md与state/data-capabilities-20261110/serpapi-manifest.json。
+- 未部署、未改生产数据/开关或web.py/serp_page.py。真实来源许可/Key/费用与预算、真实series/其他三能力适配、正式服务挂载、平台各域读回、真实规模和七天验收仍未完成。现有capabilities仍不宣告已配置。
+
+
+### 本地第九阶段：失败响应独立保存与交付（2026-11-10）
+
+- 新增显式启用的独立响应仓：来源调用前共享事务配额预留，完整且范围可核验的脱敏JSON在计费/解析之前保存；不可解析或范围不符只记明确未保留原因，不产生规范化观测或订阅。默认原文16MiB/共享128MiB/1000活跃记录/最长24小时；当前来源必须明确准许原响应保留，缺少许可或空间不得先调用。
+- 新增受现有双层鉴权保护的 `/v1/jobs/{id}/response` 与 `/response/export`，OpenAPI1.4.0/fields/capabilities同步。支持完整JSON/JSONL/CSV/ZIP/manifest、固定摘要及独立校验；跨租户拒绝，撤权/取消/过期/损坏拒绝交付，导出生成后再复查。已知付费解析失败保留实际账单及响应；未知账单仍待对账、暂停派发，不自动收费重试。
+- 完整隔离回归1223 passed / 488 subtests passed / 0 skipped（128.22秒）；执行器/供应商/响应仓专项46 passed / 58 subtests passed / 0 skipped（与全量重叠）。均为合成来源响应，本轮两套独立PostgreSQL/Redis及测试HTTP/worker已停止；未新建浏览器资源。
+- 未部署、未调用真实来源、未改生产开关或web.py/serp_page.py。配额仅应用逻辑原文字节，不是物理磁盘保障；自动清理调度、备份恢复后的墓碑重放及网页响应入口未完成。真实许可/Key/预算/账单、其他三能力适配、正式挂载、平台各域读回与规模/七天验收仍待完成。详见docs/data-capability-responses-2026-11-10.md及state/data-capabilities-20261110/response-manifest.json。
+
+
+### 本地第十阶段：来源响应网页入口（2026-11-10）
+
+- 既有数据任务详情新增主动读取来源响应及固定摘要五格式下载；显示保存/脱敏/未保留、范围/完整性/保留期与原始响应信封，不将响应存在当作解析成功或平台读回。API示例补充响应及固定版本ZIP，沿用双层鉴权占位符；复用既有品牌、组件和移动布局。
+- 任务/响应版本和连接绑定防止迟到读取覆盖新任务或迟到下载弹出文件；切换任务/断开连接清空旧数据，撤权/清除下载失败移除旧原文和下载按钮。超长JSON转义、换行并限制滚动区域；不增加来源重试或新分析功能。
+- ego lite空间79真实组合页面+候选执行器/客户HTTP/独立响应仓合成验证：付费解析失败、部分成功、未知账单；五种浏览器下载逐字节一致且独立ZIP校验通过；212931字符与恶意HTML仅作文本；任务/连接切换、跨租户空记录、撤权、禁用仓、清除；390/320px无溢出、按钮超过44px。浏览器无脚本错误/待请求，finish确认整个任务空间已关闭；本轮仅合成来源，无生产和外部调用。
+- 完整隔离回归1223 passed / 488 subtests passed / 0 skipped（132.58秒）；页面组合/JS与曲线专项3 passed；鉴权示例bash语法检查通过。本轮独立PostgreSQL/Redis及UI HTTP/worker/PostgreSQL已核验停止；证据在response-ui和response-ui-regression。
+- 候选未部署，web.py/serp_page.py未改，未恢复生产采集/正文/上传/监测。真实来源许可/Key/预算/账单、其他三能力适配、正式挂载、平台各域读回、真实规模/七天验收，以及备份恢复墓碑重放、物理磁盘和自动保留调度仍待完成；不以网页合成验证替代整体验收。详见docs/data-capability-response-ui-2026-11-10.md与state/data-capabilities-20261110/response-ui-manifest.json。
+
+
+### 本地第十一阶段：独立 AI Mode 来源候选与完整回答（2026-11-10）
+
+- 新增默认禁用的SerpApi google_ai_mode单轮适配器，限定US/GB、en、桌面/手机；不把AI Mode当AIO。完整回答按源结构原序连接并保留原块，provider Markdown仅作辅助；原生引用index精确关联，普通链接独立，模型/独立源时间未知，不猜测拒答。未知结构或未展开内容标partial；缺失/错误不生成空成功。
+- 复用共享HTTPS/期限/响应仓/实际费用与持久执行器；响应在解析前保存，未知费用隔离且不自动重试。共享脱敏移除短效token及其他字段内重复敏感值，显式错误范围冲突不保存完整原文。客户HTTP、原生子记录分页、五格式固定导出、独立校验、订阅和租户/撤权保护均经合成链路验证。
+- 来源最终隔离回归1237 passed / 535 subtests / 0 skipped（142.91秒）；专项60 passed / 105 subtests（15.06秒，与全量重叠）。随后网页组合/JS/曲线3项通过（0.13秒）。长回答阅读区限制420px并支持键盘；220046字符浏览器文本摘要与后端一致，五格式下载逐字节/ZIP独立校验通过。手机长状态文字换行，最终浏览器及清理证据见本阶段manifest。
+- 未部署、未真实来源调用/收费或Git提交，web.py/serp_page.py和生产开关未改。真实许可/Key/预算/账单、AIO与关键词量实际适配、正式挂载、各域平台固定版本读回、真实金标/规模/七天验收仍待完成；不以合成样本替代完整需求验收。详见docs/data-capability-serpapi-ai-2026-11-10.md和state/data-capabilities-20261110/ai-mode-manifest.json。
+
+
+### 本地第十二阶段：分阶段来源调用与响应/费用检查点（2026-11-10）
+
+- 为AIO二次展开补齐基础：最多8段共用原响应16MiB预留，阶段响应先落盘再继续调用，原生顺序/范围/完整性/脱敏状态独立；后段失败、超限或不可保留不覆盖首段。封存后沿用五格式与固定摘要，重启/过期执行可恢复封存，runtime只维护本人租户，不重发来源或产生成功事实。
+- 逐次before_call持久记录身份与费用上界，重查lease、账号许可所有权、当前准入/原文许可、取消/停止、剩余预算和共享间隔；重复阶段、前次费用未确认、许可/响应预留被清除均禁止下一次收费调用。最后一段计入后续任务最小间隔，旧执行不清除新账号所有者。
+- 逐次confirm_bill持久保存不可覆盖的独立凭据与已确认合计；总额须与全部已进入阶段一致。未知第二段保留首段费用、完整预留与账号隔离；过期待对账后的迟到已确认费用仍可保存，不解锁调用或成功事实。客户progress新增逐次进入、confirmed_call_cost/charges/basis，未知不是0、部分合计不是最终actual_cost；OpenAPI1.5.0/capabilities/fields/示例同步。
+- 最终全量隔离回归1257 passed / 558 subtests / 0 skipped（146.48秒）；专项80 passed / 128 subtests（18.38秒，与全量重叠）。本地实际客户HTTP验证两段日志、进度、五格式独立ZIP、未知账单隔离、清除后停止与租户/撤权保护；六套本轮PostgreSQL/Redis及测试HTTP/worker均核验退出，端口关闭，自己的空socket目录已删除；本轮无新浏览器资源。
+- 未部署、未真实来源调用/收费或Git提交，web.py/serp_page.py和生产开关未改。AIO供应商初始查询/token绑定/展开/标准化与关键词量实际适配仍待继续，不能把合成多段基础当AIO已接通。真实许可/Key/预算/账单、正式挂载、各域平台读回、真实金标/规模/七天验收仍未完成；物理磁盘、自动TTL调度、备份恢复墓碑重放等限制保留。详见docs/data-capability-source-calls-2026-11-10.md与state/data-capabilities-20261110/source-calls-manifest.json。
+
+
+### 本地第十三阶段：独立AIO两段来源候选（2026-11-10）
+
+- 新增默认禁用SerpApi AIO候选：原生google查询、严格范围校验、最多一次google_ai_overview短效token展开；不跟随响应URL、不借普通SERP或AI Mode冒充回答。US/GB、en、桌面/手机只是当前候选矩阵，不代表真实地区已验证。
+- 每段先保存脱敏响应再确认独立费用；7MiB单次/16MiB共享日志，未知费用保留预留和账号隔离。Retry-After立即持久冷却，部分成功保留剩余等待；预计无法进入窗口不谎称实际过期。展开失败/结构不符保留可验证首段与两段实际费用。
+- 共享结构核心保留全文顺序、原生块、显式引用与普通链接，扩展subtitle/expandable/comparison/top_stories及单对象snippet_links；通道/API/parser/范围保持独立。未出现、源错误、展开失败、保守本地窗口过期、未知结构明确区分，不从文字猜拒答。
+- 最终隔离回归1271 passed / 598 subtests / 0 skipped（167.66秒）；专项94 passed / 168 subtests（24.76秒，与全量重叠）。两套本轮PostgreSQL/Redis和测试HTTP/worker已停止、端口关闭、自己的空socket目录已删除；源码摘要及清理见state/data-capabilities-20261110/aio-manifest.json。均为合成供应商响应，本地客户HTTP覆盖五格式/独立ZIP、分页、订阅、费用未知隔离、租户与撤权。官方协议浏览器空间88已finish并核验移除。
+- 未部署、未真实来源调用/收费或Git提交，web.py/serp_page.py及生产开关未改。关键词量实际适配、真实许可/Key/预算/账单、正式挂载、平台各域固定版本读回、真实金标/规模/七天验收仍未完成；整体目标继续。详见docs/data-capability-serpapi-aio-2026-11-10.md。
+
+
+### 本地第十四阶段：Google Ads历史关键词量候选（2026-11-10）
+
+- 新增默认禁用Google Ads v26历史量适配器，固定TLS账号端点/单次POST；显式主体、OAuth client、project、customer/manager、权限/用途、地区/语言常量、客户币种及有期限核验记录。无凭据发现/OAuth刷新/自动挂载；scope为操作员已核验配置的承载结构，不能替代真实Google准入证明。
+- 发送精确去重词、保留每个原始输入映射；原生text/closeVariants合并为一个组，不平分或造逐词量。近似0不标真实0，null/缺失月份明确区分，原生int64保留十进制精度；广告竞争度、micros与币种独立。不能证明的近似映射或源结构拒绝规范化，脱敏源响应独立保存。
+- 均值实际窗口源不回显，statistic_window两边null加原因；不拿请求范围或返回月份子集推定。OpenAPI1.6.0/fields同步严格已知/未知分支，旧已知窗口合同保留；未迁移或重写旧事实。未知窗口/缺失仍partial，缺失源观测时间仍未知。
+- 来源每次调用前检查准入/预算/保留/取消、响应先保存再确认独立账单；不默认免费，未知费用隔离且不重试。已知HTTP错误保留实际费用与冷却；响应绑定明确依靠固定TLS端点、精确请求和request-id，不伪造查询回显。源没有逐词partial_failure，本轮不虚构可重试失败子集。
+- 最终全量隔离1282 passed / 641 subtests / 0 skipped（153.48秒）；专项105 passed / 211 subtests（28.68秒，与全量重叠）。本地客户HTTP分页、五格式/固定摘要/独立ZIP、订阅、费用未知/限流与租户/撤权通过；均为合成来源和准入，不算100真实关键词。两套独立PostgreSQL/Redis及测试HTTP/worker已停止、端口关闭、自己的空socket目录已删除；ego协议任务空间90已finish并核验不存在。
+- 未部署、未外部Ads调用/收费、未取得新凭据或Git提交；web.py/serp_page.py与生产开关未变。四能力现均有本地候选，但真实许可/Key/预算/账单/Ads身份权限、失败子集重试与计费去重、正式挂载、平台各域固定版本读回、真实金标/规模/七天验收仍未完成。详见docs/data-capability-google-ads-2026-11-10.md与state/data-capabilities-20261110/ads-manifest.json。
+
+
+### 本地第十五阶段：明确失败子集重试与独立计费（2026-11-10）
+
+- 新增GET/POST /v1/jobs/{id}/retry及GET /lineage；只读plan_hash固定父观测/摘要/输入映射，仅已结算、未取消的partial关键词量，明确source_error且无关联记录输入可显式派生。缺失、低量、近似0、已有成功记录/重复词不重发；已返回相同词但映射矛盾时保守拒绝。Google Ads未返回词不自动当失败。
+- 子任务重新准入、健康检查、独立预算/费用，父事实/ZIP/账单不改；独立sf_capability_retries保存关系。父观测唯一约束覆盖缓存复用别名，租户锁、子任务、事件、预留和关系同事务提交，失败全回滚；不同key不能对同一父观测另建收费重试，同key/计划/预算重放保持原任务。读取lineage复查父子权限与父事实保留期。
+- OpenAPI1.7.0/capabilities/fields/双层鉴权示例同步；最终隔离全量1292 passed / 653 subtests / 0 skipped（157.69秒），专项115 passed / 223 subtests（33.01秒，与全量重叠）。本地客户HTTP验证父导出不变、子费用独立、竞态去重、事务回滚、缓存别名、鉴权/租户/撤权、未知费用/状态/无执行器拒绝；595个OpenAPI本地引用解析及示例bash语法通过。
+- 本轮两套PostgreSQL/Redis及测试HTTP/worker已退出，端口关闭、自己的空socket目录已删除；无新浏览器资源、真实来源调用/收费、部署、旧迁移或Git提交，web.py/serp_page.py摘要与前阶段一致。
+- 未新增网页重试按钮；整批失败/取消子任务的安全续试、部分月份最小范围、源错误分类/指数退避/最大窗口及真实计费仍待继续。真实来源许可/Key/预算/Ads权限、正式挂载、各域平台固定版本读回、真实金标/规模/七天验收仍未完成，不将本地显式重试当全量可靠性验收。详见docs/data-capability-retry-2026-11-10.md与state/data-capabilities-20261110/retry-manifest.json。
+
+### 本地第十六阶段：失败子集重试网页（2026-11-10）
+
+- 新增data_capability_retry_ui.py，接入现有“数据任务”；仅已结算、未取消的关键词量partial任务可核验明确失败输入，重新预览来源、填新费用上限并确认后显式创建子任务。已有子任务只读找回；lineage显示原输入位置，可返回父任务。不重发成功/缺失/低量输入，不改父事实或账单，API仍1.7.0。
+- 状态绑定连接/选中任务/版本，迟到读写不覆盖其他任务；提交中禁用，保留幂等意图，未知写结果移除表单、只读核验。转义关键词/完整计划，API示例只含占位符，手机表格换行，按钮和确认区域至少44px，支持键盘。
+- 全量隔离1319 passed / 658 subtests / 0 skipped（162.65秒）；专项115 passed / 223 subtests（32.62秒，与全量重叠）；最终列宽微调后UI/JS/曲线3项通过。ego真实组合页合成验证19项功能、9项服务端持有确认的在途竞态、8项1440/390/320px布局与键盘检查；无未捕获脚本错误，示例bash语法通过。浏览器空间99已finish并核验移除，独立PostgreSQL/Redis及HTTP/worker均停止，端口关闭；他人任务空间未动。
+- 未部署、未外部源调用/收费、未改生产开关、未运行旧迁移/提交Git；web.py/serp_page.py摘要不变。不是自动重试或真实计费验收：整批失败/取消子任务续试、部分月份最小范围、真实错误分类/退避/最大窗口、真实许可/Key/预算/Ads权限、正式挂载、平台固定版本读回和真实金标/规模/七天仍待完成。详见docs/data-capability-retry-ui-2026-11-10.md与state/data-capabilities-20261110/retry-ui-manifest.json。
+
+### 本地第十七阶段：Google Ads有界来源重试（2026-11-10）
+
+- 新增data_capability_backoff.py，Ads适配器支持操作员批准的RetryPolicy，默认仍一次且来源禁用；策略存任务admission JSON，客户不可写，不新增表。未批准多次调用时worker不就绪、创建503；旧入队任务也阻断，执行/逐次调用检查冻结策略。
+- 仅已绑定完整JSON、只有error对象的429/503且独立账单确定时允许继续；部分/混合/缺失数据、解析/输运未知及费用未知不自动重发。最多8次，指数退避取max(Retry-After,有上限的指数延迟)，总窗口受墙钟+单调时钟/lease/OAuth/资产授权限制，每次phase/原响应/账单独立。累计确定费用加下一次上限不超预留；即便次数/预算/窗口终止，仍保存共享冷却。取消/停止/策略变化中止等待后续调用，未知账单隔离且重启不重放。
+- API1.8.0：preview当前策略，job/progress冻结source_retry_policy或null，原逐次费用/响应仓和完整导出保持。598个OpenAPI引用解析与示例bash语法通过；无浏览器资源、外部调用/收费、生产部署/开关变更、旧迁移或Git提交，web.py/serp_page.py保持保护摘要。
+- 本阶段只覆盖Ads整批临时错误；其他来源重试、部分月份最小范围、失败/取消子任务续试、等待状态进程恢复、真实费用/许可/Ads权限、正式挂载、平台读回和真实金标/规模/七天仍未完成。详见docs/data-capability-backoff-2026-11-10.md与state/data-capabilities-20261110/backoff-manifest.json；测试/清理最终记录由本阶段后续条目给出。
+
+最终隔离回归：1337 passed / 679 subtests / 0 skipped（175.88秒）；专项127 passed / 243 subtests（41.68秒，与全量重叠）。全量另覆盖新增累计剩余预算负例。598个OpenAPI本地引用、只读/不可由客户启用合同与示例bash语法通过。本轮六套PostgreSQL/Redis及测试HTTP/worker均已停止、端口关闭；自己的空socket与合成PG数据目录已清理，测试代码与日志保留。未创建浏览器资源、未部署或外部调用/收费，受保护的web.py/serp_page.py摘要未变。最终证据state/data-capabilities-20261110/backoff-manifest.json。
+
+### 本地第十八阶段：SerpApi分阶段来源重试（2026-11-10）
+
+- Trends/AI Mode显式策略使用query/query_retry_N逐次门禁与journal；AIO只重试失败search/expand，展开重试不重发成功搜索。SourceRetrySession跨阶段共享总调用数(≤8)、墙钟/单调时钟窗口、累计确定费用与原预留，成功阶段只重置连续失败退避。59秒token截止不延长；剩余次数/预算/窗口不足时保留已有inline部分回答。
+- 仅完整HTTP429/503、非空字符串error且无成功数据可重试；metadata若有必须Error，参数echo需一致。Processing/未知/Success矛盾、混合/partial/缺失数据、解析/输运未知或账单未知不自动再发。逐次实际费用和原响应独立；未知后次费用保留预留并隔离；已知前次费用在后续门禁拒绝时不归0、不误报未知。达到限制后仍保存共享冷却，token/凭据不进原文/phase/账单ref。
+- OpenAPI1.9.0：冻结策略、原进度/完整导出/订阅保持；null是无额外重试许可，AIO既有正常两阶段仍可用。598个本地引用与示例bash语法通过。无新表/旧迁移、浏览器资源、外部调用/收费、生产发布/开关变更或Git提交，保护文件不覆盖。
+- 真源准入/Key/预算/Ads权限/实际账单、真实series/关键词/回答金标、正式挂载、平台各域读回/规模/七天仍未完成；死进程等待恢复、失败/取消子任务续试、部分月份最小范围、完整清除/备份恢复继续登记。见docs/data-capability-native-backoff-2026-11-10.md与state/data-capabilities-20261110/native-backoff-manifest.json，最终测试/清理见后续条目。
+
+最终隔离回归1358 passed / 698 subtests / 0 skipped（186.99秒）；专项145 passed / 263 subtests（58.59秒，与全量重叠）。598个OpenAPI本地引用和两层鉴权示例bash语法通过。均为合成来源与账单，不算真实金标；两套本轮PostgreSQL/Redis及测试HTTP/worker均停止、端口关闭，自己的空socket与合成PG数据目录已清理。没有新浏览器资源、生产部署、真实调用/收费、旧迁移或Git提交；web.py/serp_page.py保持原保护摘要。源码冻结、测试及清理记录见state/data-capabilities-20261110/native-backoff-manifest.json。
+
+### 本地第十九阶段：响应仓清除与备份墓碑（2026-11-10）
+
+- 新 `data_capability_retention.py`：独立 `sf_capability_response_erasures` 保存首个不可变响应墓碑，无外键允许先于恢复行重放。清除/到期同事务删除 payload/metadata/snapshot_hash、归零容量；初始化补录已 erased/expired 行。begin/get 拒绝有墓碑的响应，现有迟到 save/checkpoint/后次来源门禁保持拒绝。任务、事实、预算和来源账本未改写。
+- 可信 `export/replay/tick`，不新增客户端删除或导入接口，不改 OpenAPI1.9.0。HMAC-SHA256、独立≥32字节密钥、严格完整结构/唯一身份，身份冲突整批回滚，幂等恢复；完整上限100000条/32MiB，超限失败不截断。tick写0600临时文件、fsync/原子替换/目录fsync后才提交清理，文件失败回滚。清理/重放只取身份/状态，不批量载入大原文。
+- 仅 `source_response_only` 本地候选：事实、任务参数、订阅/重试、平台及外部文件未清除；未启用自动timer/恢复启动门禁，未外部保管检查点。恢复必须先取独立保管的最新完整检查点并停服重放；旧有效签名不证明新鲜性，逻辑清除不等于PG/WAL/磁盘擦除。真源许可/Key/费用/金标、正式挂载、Whale各域读回/规模/七天仍未完成。无生产删除/部署、旧迁移、外部调用/收费、浏览器资源或Git提交，保护文件不覆盖。详见docs/data-capability-retention-2026-11-10.md，最终测试/清理记录见后续条目。
+
+第十九阶段最终隔离回归1364 passed / 698 subtests / 0 skipped / 0 failed（184.44秒）；专项24 passed / 12 subtests（4.00秒，与全量重叠）。三套本轮PG/Redis及测试HTTP/worker已停止、端口关闭，自己的空socket及合成PG目录已清理，日志保留。无浏览器资源、生产删除/部署、外部调用/收费或Git提交；web.py/serp_page.py保护摘要未变。最终源码、测试和清理记录state/data-capabilities-20261110/retention-manifest.json，完整GOV-04及真实验收仍未通过。
+
+### 本地第二十阶段：事实清除与导出发送前检查（2026-11-10）
+
+- 新 `data_capability_fact_retention.py`，独立 `sf_capability_fact_erasures`，可信逐观测清除与1–1000条TTL批次；清空观测payload/parameters/revision、事件原文和全部子投影，保留ID/摘要/关系/时间。已安装响应仓的关联副本及缓存别名响应同事务清除并记录响应墓碑。预算、实际费用、状态和来源账本不改写。
+- 详情/子记录/投影重建/缓存复用/既有事件再次完成/订阅重领与ACK拒绝墓碑（410，跨租户404）；列表、类型根记录、订阅待交付计数和历史排除。事件锁与行锁串行化完成/清除，读取共享锁，投影修复先取得更新锁；并发重复只记一次，失败回滚。无payload批量加载。
+- 任务、观测、订阅三条导出路径生成后复查当前权利、墓碑和固定版本，生成中清除返回结构化错误而不发送文件；真实本地双层鉴权HTTP覆盖五格式，未放宽60次/分钟限流。OpenAPI1.9.0错误/交付语义、capabilities和API文档同步，事实字段/摘要规则不变。
+- 仍非完整GOV-04：任务参数/重试计划/订阅筛选等未物理清除，事实墓碑无独立检查点/备份重放；发送前检查与socket发送非原子，严格传输屏障未完成；在途未关联任务、许可整域撤权清除、平台/外部文件及恢复门禁未完成。真源许可/费用/金标、正式挂载/平台各域读回/规模/七天继续缺失。无生产删除/部署、旧迁移、外部调用/收费、浏览器资源或Git提交，保护文件不覆盖。详见docs/data-capability-fact-retention-2026-11-10.md，最终测试和清理见后续记录。
+
+第二十阶段最终隔离回归1374 passed / 720 subtests / 0 skipped / 0 failed（192.76秒）；专项68 passed / 60 subtests（13.46秒，与全量重叠）。五套本轮PG/Redis及测试HTTP/worker已停止、端口关闭，自己的空socket和合成PG目录已删除；无浏览器资源，保护文件摘要未变。598个OpenAPI引用、清除合同和既有鉴权示例语法通过；历史第十八阶段OpenAPI原摘要保持，当前合同独立保存。未生产删除/部署、外部收费或Git提交；最终证据state/data-capabilities-20261110/fact-retention-manifest.json，真实全需求仍未完成。
+
+### 本地第二十一阶段：联合墓碑签名检查点与恢复互斥（2026-11-10）
+
+- 新 `data_capability_checkpoint.py`，可信DataErasureCheckpoint显式初始化独立重放审计表。事实/响应墓碑单一完整检查点，外/内层HMAC-SHA256、≥32字节独立密钥、唯一checkpoint_id及生成时间；响应仓已安装不得静默省略，无仓明确null。原响应单仓合同兼容，共用响应重放及原子0600/fsync发布器。
+- replay/replay_file强制独立固定SHA256，完整身份/范围/签名校验；文件有界读取，核对原字节，拒绝重复JSON键/非有限值/损坏UTF-8。联合事务先恢复更早响应墓碑，再清事实/投影/关联响应；缺失原行仍留墓碑，同事件换ID拒绝。重放回执绑定ID/hash但不跳过后来复活内容，冲突整批回滚，费用/状态不变。
+- 恢复独占锁30，complete/reuse取得任务行锁前先共享锁30，解锁后再检查墓碑；pg_locks实测等待与锁顺序。事实≤100000条、响应沿用≤100000/32MiB、外层正文≤64MiB，受影响租户事件ID/原文服务端流式扫描≤1000000行，不读payload或装pgcrypto，超限整笔失败。恢复须停候选网页/worker，不是在线无停机方案。
+- OpenAPI1.9.0无新客户恢复/删除接口，capabilities更新恢复前提，事实字段与现有鉴权/来源调用不变。独立最新hash外部保管、自动备份/启动门禁、任务/重试/筛选物理清除、严格发送屏障、整域撤权/在途清理、平台及外部文件仍未完成；真源许可/费用/金标、正式挂载/读回/规模/七天继续缺失。无生产恢复/删除/部署、旧迁移、外部调用/收费、浏览器资源或Git提交。详见docs/data-capability-checkpoint-2026-11-10.md，最终测试/清理见后续记录。
+
+第二十一阶段最终隔离回归1385 passed / 720 subtests / 0 skipped / 0 failed（195.37秒）；专项84 passed / 60 subtests（14.38秒，与全量重叠）。598个OpenAPI引用、独立固定摘要要求、无客户恢复端点及既有鉴权/字段/示例语法通过。三套本轮PG/Redis及测试HTTP/worker已停止、端口关闭，自己的空socket和合成PG目录已删除，日志保留；保护文件摘要未变。无浏览器资源、生产恢复/删除/部署、真实调用/收费或Git提交；最终源码、测试和清理记录state/data-capabilities-20261110/checkpoint-manifest.json。最新独立检查点保管/启动门禁及其他GOV-04、真源/读回/规模/七天仍未验收。
+
+### 本地第二十二阶段：任务查询内容与重试级联清除（2026-11-10）
+
+- 新 `data_capability_job_retention.py` 与独立job_erasure墓碑。可信闭包含共享观测别名及向下重试，≤1000任务/观测、查询有界、单事务回滚；清任务parameters、明文幂等键、对账自由文本、事件detail、retry plan及事实/响应，保留ID/摘要/账目/已结算终态。queued取消actual0释放预留；running/对账仅stop，未知费用仍hold，已知费用可返回后正常取消结算。后续事件/对账抑制自由文本。
+- 原幂等键和标记键不能重建旧任务。详情/进度/事实/关联/重试/响应/取消/导出410、跨租户404，列表排除；底层费用账本可安全读取空参数。创建/重试先共享恢复锁再租户/行锁，与清除/重放互斥一致。来源撤权但未清除的拥有者仍可取消支出。
+- 联合检查点v2增加任务墓碑（jobID/tenant/requestHash/keyDigest/time/reason），联合响应→任务→事实原子恢复，任务不存在先留标记；原键换ID/请求摘要/身份冲突回滚。有界任务元数据扫描、不读parameters；v1仍只事实/响应，任务计数存独立附表不改旧回执列。主OpenAPI1.9.0/fields/capabilities和606引用同步，无新客户删除/恢复接口。
+- 仍缺订阅名称/筛选等全部元数据清除、许可整域撤权/未关联任务扫描、严格发送屏障、独立最新检查点自动保管/启动门禁、平台/外部文件以及真实许可/费用/金标/正式挂载/读回/规模/七天。无生产清除/恢复/部署、旧迁移、外部调用/收费、浏览器资源或Git提交；保护文件不覆盖。详见docs/data-capability-job-erasure-2026-11-10.md，最终测试/清理见后续记录。
+
+第二十二阶段最终隔离回归1396 passed / 720 subtests / 0 skipped / 0 failed（203.84秒）；专项131 passed / 98 subtests（23.15秒，与全量重叠）。606个OpenAPI引用、字段/错误/鉴权合同与既有示例语法通过。三套本轮PG/Redis及测试HTTP/worker均停止、端口关闭，自己的空socket和合成PG目录已删除，日志保留；保护文件摘要不变。未创建浏览器资源，未生产删除/恢复/部署、外部调用/收费或Git提交。最终源码、测试和清理记录state/data-capabilities-20261110/job-erasure-manifest.json；GOV-04及真源/读回/规模/七天仍未整体验收。
+
+
+### 本地第二十三阶段：恢复启动门禁（2026-11-10）
+
+- 增加逐服务实例显式绑定的RestoreGate：进程默认关闭，只有本进程完成独立固定ID/SHA256匹配的v2联合重放并提交才放行。旧回执不自行放行，错误签名/文件/事务保持关闭；并发旧重放不能覆盖较新关闭，回执或任务附表丢失锁闭且需重新重放。
+- 新数据域HTTP/订阅/创建/读取/导出及worker启动/领取/付费阶段接入503 restore_required；旧搜索路由与双层鉴权保持。在途请求不可撤回，已知费用进入对账而不发布事实，未知费用继续保留；内部账目/恢复端口可用。未绑定实例保持原行为，必须每个进程启动前绑定，尚未正式装配部署。
+- 独立最新检查点自动保管、订阅元数据统一清除、严格发送屏障、整域撤权、平台副本及真实许可/费用/金标/正式读回/规模/七天仍未完成；不得把本轮称GOV-04全验收。详见docs/data-capability-restore-gate-2026-11-10.md，测试/清理见本阶段最终记录。无生产恢复/删除/部署、外部调用/收费或Git提交。
+
+第二十三阶段最终隔离回归 **1406 passed / 730 subtests / 0 skipped / 0 failed**（210.33秒）；专项 **141 passed / 108 subtests**（24.26秒，与全量重叠）。609个OpenAPI引用、503恢复状态/字段/双层鉴权合同通过。两套本轮PG/Redis及测试HTTP/worker均停止、端口关闭，自己的空socket与合成PG目录清理，日志保留；保护文件摘要不变。没有生产恢复/删除/部署、外部调用/收费、浏览器资源或Git提交。最终源码与清理证据 `state/data-capabilities-20261110/restore-gate-manifest.json`；GOV-04和真实全需求仍未完整验收。
+
+
+### 本地第二十四阶段：订阅元数据清除（2026-11-10）
+
+新增可信SubscriptionRetention，单事务清订阅名称/筛选/明文幂等键/批次/seen，暂停并保留独立事实与账目；首次墓碑不可变、并发幂等、失败回滚。原键/标记键不能重建，所有拥有者读取/控制/ACK/导出410，外租户404，列表排除。主OpenAPI/fields/capabilities说明范围；无新客户删除端点。
+
+订阅墓碑尚未纳入联合检查点，存在墓碑时v1/v2导出/重放明确409 scope拒绝，不冒充完整恢复；旧备份丢失墓碑仍待外部最新证明和下一版联合实现。正式挂载、独立保管、严格发送屏障、整域撤权、平台/真实来源/费用/金标/规模/七天继续未完成。详见docs/data-capability-subscription-erasure-2026-11-10.md，最终测试/清理见本阶段后续记录；未生产删除/恢复/部署、外部调用/收费或Git提交。
+
+第二十四阶段最终隔离回归 **1412 passed / 742 subtests / 0 skipped / 0 failed**（219.30秒）；专项 **147 passed / 120 subtests**（25.83秒，与全量重叠）。618个OpenAPI引用与订阅清除/恢复范围合同通过。两套本轮独立PG/Redis及测试HTTP/worker已停止，端口关闭，自己的空socket和合成PG目录清理，日志保留；保护文件摘要不变。没有生产删除/恢复/部署、真实调用/收费、浏览器资源或Git提交。证据 `state/data-capabilities-20261110/subscription-erasure-manifest.json`；订阅联合恢复及全需求仍未完成。
+
+
+### 本地第二十五阶段：订阅墓碑联合恢复v3（2026-11-10）
+
+联合检查点v3完整含订阅墓碑，与响应/任务/事实单事务重放；先落标记、再有界元数据扫描，原键换ID或租户/请求/键身份冲突整批回滚。清订阅内容/批次/seen，缺失原行预标记，重复恢复不跳过复活内容。新增独立订阅计数回执，不改旧表列；v1/v2保留原范围兼容，存在订阅墓碑时拒绝旧范围，不能冒充订阅恢复。
+
+逐进程门禁改为要求独立固定ID/hash的v3新重放，校验订阅计数附表，旧v2不能放行，丢失附表重新锁闭。主OpenAPI1.9.0、fields/capabilities更新。详见docs/data-capability-subscription-checkpoint-2026-11-10.md。独立最新证明自动保管/正式装配、严格发送屏障、整域撤权、平台和真实来源/费用/金标/读回/规模/七天继续未完成；无生产恢复/删除/部署、外部调用/收费或Git提交。测试和清理见本阶段最终记录。
+
+第二十五阶段最终隔离回归 **1419 passed / 749 subtests / 0 skipped / 0 failed**（208.01秒）；专项 **154 passed / 127 subtests**（28.32秒，与全量重叠）。618个OpenAPI引用与v3范围/恢复门禁/双层鉴权合同通过。三套本轮独立PG/Redis及测试HTTP/worker均停止，端口关闭，自己的空socket和合成PG目录清理，日志保留；web.py/serp_page.py保护摘要不变。没有生产恢复/删除/部署、外部调用/收费、浏览器资源或Git提交。最终证据 `state/data-capabilities-20261110/subscription-checkpoint-manifest.json`；GOV-04及真实全需求仍未完整验收。
+
+
+### 本地第二十六阶段：新域显式装配与启停（2026-11-10）
+
+新增CapabilityDeployment，统一service/grant/响应仓/执行器/runtime/v3门禁，拒绝错配/重复/占用。无导入或构造副作用，显式初始化→固定文件恢复→全部worker启动→既有鉴权server挂载；统一admission阻止部分启动期间领取，失败关闭并停止已启动worker。API也需running，重启恢复后尚未start不提前开放。
+
+停止先关准入再有界等待，保留挂载返回503，实际线程未退出不冒充停止、不允许重放/初始化/解绑；费用继续独立对账。仅解绑自己的挂载，不覆盖他人，重启须重新恢复。主OpenAPI1.9.0/capabilities更新，无新客户运维接口。详见docs/data-capability-deployment-2026-11-10.md。
+
+同进程候选尚未接正式serve/systemd，分进程监督/真实来源许可/Key/费用/金标/Whale读回/独立保管/严格发送/整域撤权/规模/七天仍待；无生产部署/恢复/删除、外部调用/收费或Git提交。测试和清理见本阶段最终记录。
+
+第二十六阶段最终隔离回归 **1427 passed / 753 subtests / 0 skipped / 0 failed**（206.57秒）；专项 **162 passed / 131 subtests**（31.61秒，与全量重叠）。618个OpenAPI引用、显式装配目录/无客户运维端点/双层鉴权合同通过。两套本轮独立PG/Redis及测试HTTP/worker已停止，端口关闭，自己的空socket和合成PG目录清理，日志保留；保护文件摘要不变。没有生产部署/恢复/删除、真实调用/收费、浏览器资源或Git提交。证据 `state/data-capabilities-20261110/deployment-manifest.json`；真实接通与全需求仍未完成。
+
+
+### 本地第二十七阶段：原生适配器与当前审批绑定（2026-11-10）
+
+新增NativeSourceRoute/NativeSources，精确绑定SerpApi Trends/AIO/AI Mode及Google Ads搜索量到同一部署/响应仓/API。每域一明确来源，无自动fallback/凭据发现/预算创建。每次重读租户审批JSON，校验许可/币种/计费单位/用途/原文保留/重试策略/时间和原生validator，拒绝错配/撤权及可执行配置；账单回调签名预检，不执行账单查询。
+
+任务及观测内部admission保留规范审批UUID引用和核验时间，公共合同校验成对/UUID/非未来；无凭据或完整审批文件持久化。主OpenAPI1.9.0/capabilities/fields同步，无新客户审批或密钥端点。详见docs/data-capability-native-bindings-2026-11-10.md。当前仍仅合成原生链路，组件不代替外部真实许可核验；真实来源/费用/金标、正式挂载/Whale读回/独立保管/撤权清理/严格发送/规模/七天未完成。未生产部署/删除/恢复、外部调用/收费或Git提交，最终测试和清理见本阶段后续记录。
+
+第二十七阶段最终隔离回归 **1432 passed / 774 subtests / 0 skipped / 0 failed**（210.59秒）；专项 **172 passed / 175 subtests**（32.67秒，与全量重叠）。618个OpenAPI引用、原生绑定/审批引用/双层鉴权合同通过。四套本轮独立PG/Redis及测试HTTP/worker均停止，端口关闭，自己的空socket和合成PG目录清理，日志保留；web.py/serp_page.py保护摘要不变。没有生产部署/恢复/删除、真实请求/收费、浏览器资源或Git提交。最终证据 `state/data-capabilities-20261110/native-bindings-manifest.json`；真实接通和全需求仍未完成。
+
+
+### 本地第二十八阶段：四域平台候选与固定读回oracle（2026-11-10）
+
+新增data_capability_delivery.py，完整观测候选保留四域父子/引用/顺序/修订/partial/raw状态，复用完整导出投影oracle核数量；tenant/source/observation固定身份，缓存别名不制造新事件。授权prepare与读回后重新检查当前权限/TTL/墓碑/门禁。非完整任务/账目/journal审计包，不补未保留原文。
+
+opt-in Consumer客户端复用既有document/version协议，流式限字节/超时/严格JSON，固定platform_payload与本地独立候选全量核对；当前metadata不能替代固定正文。readable、roundtrip与正式schema/终态分账，后两者明确false，不上传、不注册、不升格回执。主OpenAPI1.9.0/capabilities同步，旧读回客户端不改。详见docs/data-capability-platform-candidate-2026-11-10.md。
+
+仍为合成平台及本地隔离验证，Whale正式schema/权限/完整审计交付/真实上传终态读回、源许可/费用/金标、生产装配、独立保管、撤权/严格发送、规模与七天继续缺失；无生产写入/部署/恢复/删除、外部请求/收费或Git提交，最终测试/清理见本阶段后续记录。
+
+第二十八阶段最终隔离回归 **1441 passed / 805 subtests / 0 skipped / 0 failed**（323.18秒）；专项 **200 passed / 246 subtests**（32.89秒，与全量重叠）。618个OpenAPI引用与候选未接通/不升格回执/既有鉴权合同通过。本轮独立PG/Redis及测试HTTP/worker均停止，端口关闭，自己的空socket和合成PG目录清理，日志保留；保护文件摘要不变。没有生产写入/部署/恢复/删除、真实来源或Consumer请求/收费、浏览器资源或Git提交。最终证据 `state/data-capabilities-20261110/delivery-manifest.json`；Whale正式交付及真实全需求仍未完成。
+
+## 订阅页面交互优化（2026-11-10）
+
+- 已上线订阅历史/详情/领取/下载的选择版本保护，迟到响应不覆盖新选择，旧批次下载不误启用当前确认；真实SHA256元数据换行修复，320/390px真实详情无横向溢出。仅部署subscription_ui.py和static/index.html，网站后台web重启，采集五容器和四个保护源码不变。
+- 隔离相关回归30 passed，末次UI/客户端5 passed（重叠）；7种乱序JS场景，旧版本复现失败。正式暂停订阅历史重下载JSONL摘要不变，未领取/确认新批次，无新搜索。原始39962/pages332768/投影39934/outbox9及所有暂停开关前后完全一致。
+- 两机回退state/website-optimization-20261110，换行补丁前state/website-optimization-20261110-mobile；正式静态SHA256为5ae440e505d0fa5a5046ae43ec6ec9eb7689f7dde8162ba6d344d4fddbd3c724。浏览器130/本地8898/隔离PG与Redis已清理，未提交Git。详见docs/searchflow-subscription-ui-optimization-2026-11-10.md。
+
+## 最新授权：AI 内容夜间持续采集（2026-11-10）
+
+- 用户授权持续采集AI内容至2026-11-11新加坡09:00（UTC01:00）。已新建并启动独立scheduled任务a0d0ec51-9624-4b47-b73d-e57c02a05d9f，主查询“AI 人工智能最新进展”，20中英文关键词，Web+News/1页/US；不启用全站供给、正文或Whale。网站可查看运行中任务及结果。
+- 采集机searchflow-ai-deadline-20261111.timer已active/enabled、Persistent，截止只停止这个CID；脚本后台state/ai-overnight-20261110/stop-task.py，失败30秒重试，不得提前运行真正停止命令。启动快照4请求/3成功/8新URL，非最终统计。到期停止尚待实际发生，勿称完成。详情docs/ai-overnight-collection-2026-11-10.md，ego135保留任务页交用户。
+
+## AI数据Whale小样测试（2026-11-11）
+
+- 用户授权测试，实际Web/News各1条上传，各attempts1、queued，独立处理回执仍queued无persisted_at；Consumer降速复核两文档404、固定版本单项not_found（HTTP200信封不算成功）。不能称上传全流程正常，原因尚未知；未全量上传1385条。
+- 两测试job 3d051465-cc04-4c8e-86fb-7f301bc52192 / 5af9cb4b-8a07-4c0c-a723-a1e07f4d5f3f 已paused，uploads/claims最终false，总旧链接outbox现11 queued（原9+本次2），无新搜索。平台已接收不可撤回，后续可能继续异步处理。见docs/ai-whale-upload-test-2026-11-11.md；ego143已清理，无源码发布。

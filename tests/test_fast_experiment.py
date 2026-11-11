@@ -202,7 +202,8 @@ class PipelineTests(unittest.TestCase):
                                             ('success', 3, 0), ('failed', 1, 0), ('blocked', 1, 100)]])
                 rows = store.due_urls(10, 50)
                 self.assertEqual([r['state'] for r in rows], ['pending', 'failed'])
-                full, light = store.counts(), store.counts(detailed=False)
+                with patch('realtime.experiment_store.time.time', return_value=50):
+                    full, light = store.counts(), store.counts(detailed=False)
                 full.pop('by_family')
                 light.pop('by_family')
                 self.assertEqual(full, light)

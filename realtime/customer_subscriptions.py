@@ -318,6 +318,10 @@ def handle(handler, method, path, query, store, account):
     from .customer_http import parameters
     from .product_http import body
     p = parameters(query)
+    from .data_capability_subscriptions import dispatch
+    payload = body(handler, reject_duplicates=True) if path == '/v1/data/subscriptions' and method == 'POST' else None
+    if dispatch(handler, method, path, p, account, payload):
+        return True
     service = DataSubscriptions(store, account['id'])
     if path == '/v1/data/subscriptions':
         if p:
@@ -325,7 +329,7 @@ def handle(handler, method, path, query, store, account):
         if method == 'GET':
             result = service.list()
         elif method == 'POST':
-            result = service.create(body(handler), handler.headers.get('Idempotency-Key'))
+            result = service.create(payload, handler.headers.get('Idempotency-Key'))
         else:
             raise ProductError('method_not_allowed', '请使用 GET 或 POST', 405)
     elif m := re.fullmatch(r'/v1/data/subscriptions/([^/]+)/(status|batches)', path):

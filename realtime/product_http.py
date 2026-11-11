@@ -45,13 +45,19 @@ def secure(handler):
     return peer in ('127.0.0.1','::1') and (handler.headers.get('X-Forwarded-Proto')=='https' or not handler.headers.get('X-Forwarded-For'))
 
 
-def body(handler):
+def body(handler, *, reject_duplicates=False):
     try:length=int(handler.headers.get('Content-Length','0'))
     except ValueError:raise ProductError('invalid_body','无效的 Content-Length') from None
     if not 0<length<=65536:raise ProductError('invalid_body','JSON 请求大小必须为 1–65536 字节')
     if handler.headers.get('Content-Type','').split(';')[0]!='application/json':
         raise ProductError('invalid_body','请使用 application/json')
-    try:p=json.loads(handler.rfile.read(length))
+    def pairs(values):
+        result={}
+        for key,value in values:
+            if key in result:raise ValueError('duplicate JSON key')
+            result[key]=value
+        return result
+    try:p=json.loads(handler.rfile.read(length),object_pairs_hook=pairs if reject_duplicates else None)
     except (ValueError,UnicodeError):raise ProductError('invalid_body','JSON 格式无效') from None
     if not isinstance(p,dict):raise ProductError('invalid_body','请求必须是 JSON 对象')
     return p
@@ -66,7 +72,10 @@ def handle(handler, method):
     if not (path.startswith('/v1/') or path.startswith('/api/product/')):return False
     try:
         if path=='/v1/capabilities' and method=='GET':
-            handler.send_json(capability_payload());return True
+            from .data_capability_http import runtime_for
+            payload=capability_payload()
+            if runtime_for(handler):payload['data_capabilities']['availability']='tenant_dependent'
+            handler.send_json(payload);return True
         if path=='/v1/openapi.json' and method=='GET':
             handler.send_json(openapi());return True
         if os.getenv('SEARCHFLOW_PRODUCT_ENABLED')!='true':
@@ -94,6 +103,8 @@ def handle(handler, method):
             return True
         if path.startswith('/api/product/'):raise ProductError('not_found','接口不存在',404)
         account=store.authenticate(secret);aid=account['id']
+        from .data_capability_http import handle as capability_handle
+        if capability_handle(handler,method,path,parse_qs(parsed.query,keep_blank_values=True),account):return True
         from .customer_http import handle as customer_handle, parameters as query_parameters
         if customer_handle(handler, method, path, parse_qs(parsed.query, keep_blank_values=True), store, account):
             return True
@@ -107,6 +118,7 @@ def handle(handler, method):
         elif path=='/v1/usage' and method=='GET':result=store.usage(aid)
         elif path=='/v1/jobs' and method=='GET':
             from .customer_jobs import list_jobs
+            if params.pop('domain','search')!='search':raise ProductError('invalid_parameter','domain仅支持search/data')
             result=list_jobs(store,aid,params)
         elif path=='/v1/keys' and method=='GET':result={'keys':store.keys(aid)}
         elif path=='/v1/keys' and method=='POST':

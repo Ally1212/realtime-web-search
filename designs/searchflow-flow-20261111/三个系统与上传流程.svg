@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1120" viewBox="0 0 1440 1120" role="img" aria-labelledby="title desc">
+<title id="title">三个系统怎样串起来：SearchFlow采集与Whale上传流程</title><desc id="desc">网站发指令给采集后台，后台从Google读取搜索结果并存入自己的数据库。上传是另一条可选流程，后台把样本交给Whale接收队列，平台内部持久化后才能由读取接口验证。本轮两个样本接收成功，最终入库未确认，读回未找到。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10" fill="#2463dc"/></marker><marker id="amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10" fill="#a6660a"/></marker><style>text{font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#17243b}.muted{fill:#5d6c82}.small{font-size:18px}.body{font-size:22px}.head{font-size:28px;font-weight:700}.label{font-size:19px;font-weight:600}.blue{fill:#2463dc}.warn{fill:#935a08}.line{fill:none;stroke:#2463dc;stroke-width:3;marker-end:url(#arrow)}</style></defs>
+<rect width="1440" height="1120" fill="#f4f7fb"/>
+<text x="64" y="65" font-size="16" font-weight="700" letter-spacing="2" class="blue">SEARCHFLOW · 实际流程说明</text>
+<text x="64" y="116" font-size="38" font-weight="750">3 套系统，分两步：先采集，再选择是否上传</text>
+<text x="64" y="154" class="body muted">网站能看到数据，说明已保存在采集后台；不代表 Whale 已经收到或入库。</text>
+<!-- system boundary cards -->
+<rect x="64" y="200" width="305" height="555" rx="18" fill="white" stroke="#cdd8e7"/>
+<rect x="413" y="200" width="434" height="555" rx="18" fill="white" stroke="#2463dc" stroke-width="2"/>
+<rect x="891" y="200" width="485" height="555" rx="18" fill="white" stroke="#cdd8e7"/>
+<text x="88" y="243" class="label blue">系统 1 · 网站 / 操作台</text>
+<text x="437" y="243" class="label blue">系统 2 · 采集后台</text>
+<text x="915" y="243" class="label blue">系统 3 · Whale 数据平台</text>
+<text x="88" y="274" class="small muted">应用机 · 10.0.0.7</text><text x="437" y="274" class="small muted">采集机 · 10.0.0.11</text><text x="915" y="274" class="small muted">平台服务器 · 10.0.0.10</text>
+<text x="88" y="327" class="head">你在这里下指令</text>
+<text x="88" y="367" class="body">创建任务 / 暂停 / 查看</text><text x="88" y="404" class="body">筛选 / 分析 / 导出</text>
+<rect x="88" y="445" width="257" height="115" rx="12" fill="#eef4ff"/>
+<text x="106" y="480" class="label">你看到的 SearchFlow</text><text x="106" y="514" class="small muted">页面向后台取数据</text><text x="106" y="542" class="small muted">不必先从 Whale 读取</text>
+<text x="88" y="704" class="small muted">网站 = 遥控器 + 展示屏</text>
+<rect x="437" y="311" width="386" height="105" rx="12" fill="#eef4ff"/>
+<text x="457" y="348" class="head">执行搜索采集</text><text x="457" y="385" class="body">任务队列 → worker → 搜索来源</text>
+<rect x="437" y="445" width="386" height="115" rx="12" fill="#eaf6f0"/>
+<text x="457" y="480" class="head">自己的数据库</text><text x="457" y="516" class="body">保存标题、摘要、链接、采集时间</text><text x="457" y="544" class="small muted">昨晚新增 1,385 个历史去重 URL</text>
+<path d="M630 416V439" class="line"/>
+<rect x="437" y="604" width="386" height="88" rx="12" fill="#eef4ff"/>
+<text x="457" y="640" class="head">上传队列（可选）</text><text x="457" y="674" class="small muted">只有明确加入队列并允许上传才发送</text>
+<path d="M630 560V598" class="line"/>
+<text x="437" y="730" class="small muted">采集后台 = 干活的人 + 第一份数据仓库</text>
+<!-- website interactions -->
+<path d="M345 348H430" class="line"/><text x="377" y="327" class="small blue" text-anchor="middle">指令</text>
+<path d="M437 512H352" class="line"/><text x="390" y="491" class="small blue" text-anchor="middle">结果</text>
+<!-- Whale internal stages -->
+<rect x="915" y="311" width="437" height="105" rx="12" fill="#eef4ff"/>
+<text x="937" y="348" class="head">A. 上传接口接收</text><text x="937" y="385" class="body">返回 queued：已接收，等待后续处理</text>
+<rect x="915" y="458" width="437" height="105" rx="12" fill="#fff5e4" stroke="#e5bd75"/>
+<text x="937" y="495" class="head">B. 平台内部处理与保存</text><text x="937" y="532" class="body">需要最终回执，确认数据已持久化</text>
+<rect x="915" y="605" width="437" height="88" rx="12" fill="#f0f3f7"/>
+<text x="937" y="640" class="head">C. 读取接口验证</text><text x="937" y="675" class="small muted">使用独立读取凭据，按文档与固定版本查询</text>
+<path d="M1133 416V449" fill="none" stroke="#a6660a" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#amber)"/>
+<path d="M1133 563V597" fill="none" stroke="#a6660a" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#amber)"/>
+<text x="915" y="730" class="small muted">Whale = 另一套独立的数据接收与保存系统</text>
+<!-- upload route around cards -->
+<path d="M823 649H866V363H908" class="line"/>
+<!-- external source -->
+<rect x="64" y="790" width="783" height="110" rx="14" fill="#e9eff9"/>
+<text x="88" y="830" class="head">外部来源：Google Web / Google News</text>
+<text x="88" y="867" class="body muted">后台请求搜索结果；保存摘要和链接，本轮没有下载文章正文。</text>
+<path d="M827 818H872V295H803V306" class="line"/>
+<text x="916" y="809" class="label">怎么算“系统数量”？</text><text x="916" y="843" class="small muted">按部署职责：3 套；网站 + 后台合称 SearchFlow。</text><text x="916" y="875" class="small muted">Google 是外部来源；数据库、队列是内部组件。</text>
+<!-- current test -->
+<rect x="64" y="932" width="1312" height="137" rx="16" fill="#fff5e4" stroke="#e5bd75"/>
+<text x="88" y="973" class="head warn">本次测试停在哪里？</text>
+<text x="88" y="1012" class="body">Web、News 各 1 条：A 已接收 2/2 → B 最终保存尚未确认 → C 两条均未查到</text>
+<text x="88" y="1046" class="small muted">截至 2026-11-11 本轮测试；只能确认提交成功。平台后续可能继续处理，具体原因尚未查明。</text>
+</svg>

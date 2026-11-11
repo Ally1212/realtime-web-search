@@ -72,7 +72,7 @@ def test_subscription_list_uses_existing_table_component_contract():
     load = next(line for line in subscription_js.splitlines() if line.startswith('async function loadSubscriptions('))
     script = """
 const productKey='test', subscriptionBatches=new Map();
-let subscriptionRequestVersion=0,subscriptionLoadedKey=null,subscriptionHistoryState=null;
+let subscriptionRequestVersion=0,subscriptionLoadedKey=null,subscriptionHistoryState=null,subscriptionHistoryVersion=0,subscriptionBatchVersion=0;
 const nodes={subscriptionList:{innerHTML:''},subscriptionBatch:{innerHTML:''},subscriptionHistory:{innerHTML:''}};
 const $=id=>nodes[id],esc=x=>String(x),productEmpty=x=>x;
 async function subscriptionApi(){return {subscriptions:[{id:'id',name:'Saved',filters:{},mode:'new_urls',active:false}]};}

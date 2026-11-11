@@ -1,0 +1,49 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "index": {
+      "versions": [
+        {
+          "path": "index.html",
+          "createdAt": "2026-11-10T04:49:35.931Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "source-responses": {
+      "versions": [
+        {
+          "path": "source-responses.html",
+          "createdAt": "2026-11-10T05:55:54.775Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "ai-mode-reader": {
+      "versions": [
+        {
+          "path": "ai-mode-reader.html",
+          "createdAt": "2026-11-10T06:20:06.911Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "failed-subset-retry": {
+      "versions": [
+        {
+          "path": "failed-subset-retry.html",
+          "createdAt": "2026-11-10T08:04:08.486Z",
+          "status": "needs-review",
+          "viewport": {
+            "width": 1440,
+            "height": 1050
+          }
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-11-10T04:49:35.931Z",
+  "updatedAt": "2026-11-10T08:04:08.487Z"
+}

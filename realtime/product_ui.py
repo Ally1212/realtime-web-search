@@ -86,7 +86,9 @@ def extend(page):
     page=page.replace("window.addEventListener('hashchange',showView);showView();setInterval(refreshView,10000);",JS+analytics_js+"\nwindow.addEventListener('hashchange',showView);showView();setInterval(refreshView,10000);")
     page=page.replace("'每 10 秒刷新 / 最近读取 '+new Date()", "(current==='analysis'?'报告按需更新 / 页面检查 ':'每 10 秒刷新 / 最近读取 ')+new Date()")
     from .workbench_ui import extend as refine_ui
-    return refine_ui(page)
+    from .data_capability_ui import extend as capability_ui
+    from .insights_ui import extend as insights_ui
+    return insights_ui(capability_ui(refine_ui(page)))
 
 # Keep subscription controls within the existing API workspace.
 from .subscription_ui import SECTIONS as SUBSCRIPTION_SECTIONS, JS as SUBSCRIPTION_JS

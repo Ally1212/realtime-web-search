@@ -149,7 +149,9 @@ def canonical_parameters(payload):
 
 
 def capability_payload():
+    from .data_capability_schema import catalog
     return {
+        'data_capabilities': catalog(),
         'schema_version': 'searchflow-v1', 'search_mode': 'asynchronous',
         'regions': list(REGIONS), 'languages': ['en', 'zh'], 'depth': [10],
         'sources': [

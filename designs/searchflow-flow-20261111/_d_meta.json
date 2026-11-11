@@ -1,0 +1,18 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "三个系统与上传流程": {
+      "versions": [
+        {
+          "path": "index.html",
+          "createdAt": "2026-11-11T01:52:32.493Z",
+          "status": "needs-review"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-11-11T01:52:32.497Z",
+  "updatedAt": "2026-11-11T01:52:32.497Z"
+}

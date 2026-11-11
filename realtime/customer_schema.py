@@ -201,4 +201,5 @@ def extend_openapi(doc):
                 if not any(p.get('name') == 'id' and p.get('in') == 'path' for p in operation.get('parameters', [])):
                     operation.setdefault('parameters', []).append({'name': 'id', 'in': 'path', 'required': True, 'schema': {'type': 'string', 'format': 'uuid'}})
     doc['info']['description'] += ' 新版 Google 研究目录另见 /v1/google/openapi.json，其登记接口不等于当前已有来源，先查 /v1/google/capabilities。'
-    return doc
+    from .data_capability_schema import extend_openapi as extend_capabilities
+    return extend_capabilities(doc)
