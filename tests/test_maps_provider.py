@@ -44,6 +44,26 @@ class MapsTests(unittest.TestCase):
         self.check_browser_result(partial_timeout=False,
                                   deadline_at=datetime.now(timezone.utc) + timedelta(seconds=480))
 
+    def test_retry_only_confirmed_empty_output_with_time_to_deliver(self):
+        from datetime import datetime, timedelta, timezone
+        from realtime import maps_provider
+
+        deadline = datetime.now(timezone.utc) + timedelta(minutes=10)
+        short_deadline = datetime.now(timezone.utc) + timedelta(seconds=90)
+        missing = ProductError('maps_no_verifiable_output', 'missing', 502)
+        malformed = ProductError('maps_invalid_response', 'malformed', 502)
+        for count, cutoff, failure, attempts in (
+                (100, deadline, missing, 2), (100, deadline, malformed, 1),
+                (100, short_deadline, missing, 1), (20, deadline, missing, 1)):
+            with self.subTest(count=count, cutoff=cutoff, code=failure.code):
+                with patch.object(maps_provider, '_search', side_effect=[failure, result()]) as scan:
+                    if attempts == 2:
+                        self.assertEqual(len(maps_provider.search({'max_places':count}, deadline_at=cutoff)['places']), 1)
+                    else:
+                        with self.assertRaises(ProductError):
+                            maps_provider.search({'max_places':count}, deadline_at=cutoff)
+                    self.assertEqual(scan.call_count, attempts)
+
     def check_browser_result(self, *, partial_timeout, confirmed=True, deadline_at=None):
         import hashlib
         import subprocess

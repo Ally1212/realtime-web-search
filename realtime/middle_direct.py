@@ -416,7 +416,8 @@ class DirectTasks:
                     if code:
                         state['failure_message'] = code
                     if code in ('maps_location_required','maps_location_not_found','maps_location_ambiguous',
-                                'maps_location_invalid','image_max_items_exceeded'):
+                                'maps_location_invalid','maps_no_verifiable_output','maps_invalid_response',
+                                'image_max_items_exceeded'):
                         state['failure_message'] = code+': '+str(exc)
                     self.save(state)
                     self.collector.post('/v1/collection/tasks/'+state['task']['id']+'/fail',dict(agent_id=self.collector.agent_id,message=state.get('failure_message','SearchFlow direct collection rejected or failed'),retry=False))

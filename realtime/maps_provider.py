@@ -18,6 +18,7 @@ TTL = 24 * 3600
 FAST_MAX_PLACES = 21
 DEEP_TIMEOUT_SECONDS = 540
 DELIVERY_RESERVE_SECONDS = 60
+MIN_EMPTY_OUTPUT_RETRY_SECONDS = 120
 CITIES = {'Singapore': (1.29027,103.851959), 'London': (51.5074,-0.1278),
           'New York': (40.7128,-74.0060), 'Tokyo': (35.6762,139.6503),
           'Hong Kong': (22.3193,114.1694), 'Taipei': (25.0330,121.5654),
@@ -132,6 +133,18 @@ def _normalize_observation(raw, p, *, filter_outside=False):
 
 
 def search(p, *, deadline_at=None):
+    try:
+        return _search(p, deadline_at=deadline_at)
+    except ProductError as exc:
+        if (exc.code != 'maps_no_verifiable_output' or deadline_at is None
+                or p.get('max_places', FAST_MAX_PLACES) <= FAST_MAX_PLACES
+                or (deadline_at - datetime.now(timezone.utc)).total_seconds()
+                < DELIVERY_RESERVE_SECONDS + MIN_EMPTY_OUTPUT_RETRY_SECONDS):
+            raise
+    return _search(p, deadline_at=deadline_at)
+
+
+def _search(p, *, deadline_at):
     if not availability()['enabled']: raise ProductError('maps_disabled','地图查询尚未启用',503)
     p=prepare(p); settings=config(); binary=settings.get('binary','/opt/maps/scraper')
     # A release hash is pinned at worker startup as well as before execution.
@@ -193,11 +206,18 @@ def search(p, *, deadline_at=None):
                                 break
                             raise
                         raw.extend(value if isinstance(value,list) else [value])
-            if not raw: raise ValueError()
+        except FileNotFoundError:
+            if timed_out:
+                raise timeout_error from None
+            raise ProductError('maps_no_verifiable_output', '地图来源未生成可验证的结果', 502) from None
         except (OSError,ValueError):
             if timed_out:
                 raise timeout_error from None
             raise ProductError('maps_invalid_response','地图未返回可验证的数据',502) from None
+        if not raw:
+            if timed_out:
+                raise timeout_error
+            raise ProductError('maps_no_verifiable_output', '地图来源未生成可验证的结果', 502)
     provider_count = len(raw)
     all_places, raw, outside = _normalize_observation(raw, p, filter_outside=deep)
     places = all_places[:requested]
