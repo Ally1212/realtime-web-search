@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import json
 import hashlib
+import re
 import signal
 import subprocess
 import sys
@@ -174,7 +175,7 @@ class GoogleTransport:
         )
 
     def _resolve_google_goto(
-        self, session: requests.Session, url: str, proxy_url: str | None,
+        self, session: requests.Session, url: str, proxy_url: str | None, *, deadline: float | None = None,
     ) -> str:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower()
@@ -182,25 +183,67 @@ class GoogleTransport:
             return url
         if parsed.path.rstrip("/") != "/goto":
             return url
-        response: requests.Response | None = None
+        deadline = deadline if deadline is not None else time.monotonic() + min(self.openserp_request_timeout_seconds, 15)
         try:
-            response = session.get(
-                url,
-                allow_redirects=False,
-                stream=True,
-                timeout=min(self.openserp_request_timeout_seconds, 15),
-                proxies=({"http": proxy_url, "https": proxy_url} if proxy_url else None),
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            if response.status_code not in {301, 302, 303, 307, 308}:
-                return ""
-            location = urljoin(url, str(response.headers.get("Location") or "").strip())
-            return location if self._valid_result_url(location) else ""
-        except requests.RequestException:
+            for turn in range(2):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return ""
+                response = session.get(
+                    url, allow_redirects=False, stream=True, timeout=min(15, remaining),
+                    proxies=({"http": proxy_url, "https": proxy_url} if proxy_url else None),
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                try:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = urljoin(url, str(response.headers.get("Location") or "").strip())
+                        destination = urlsplit(location)
+                        if (destination.hostname == parsed.hostname and
+                                (destination.path.rstrip('/') in {'/goto', '/url', '/sorry'} or
+                                 destination.path.startswith('/sorry/'))):
+                            return ""
+                        return location if self._valid_result_url(location) else ""
+                    if turn:
+                        return ""
+                    refresh = self._google_goto_refresh(url, response)
+                finally:
+                    response.close()
+                if not refresh or refresh[0] + 1 >= deadline - time.monotonic():
+                    return ""
+                delay, url = refresh
+                time.sleep(delay)
+        except (requests.RequestException, ValueError):
             return ""
-        finally:
-            if response is not None:
-                response.close()
+        return ""
+
+    @staticmethod
+    def _google_goto_refresh(url, response):
+        """Recognize Google's explicit same-origin waiting page."""
+        if (response.status_code != 200
+                or response.headers.get('Content-Type', '').split(';', 1)[0].lower() != 'text/html'):
+            return None
+        header = bytearray()
+        for chunk in response.iter_content(chunk_size=8192):
+            header.extend(chunk[:65536-len(header)])
+            if b'</head' in header.lower() or len(header) >= 65536:
+                break
+        soup = BeautifulSoup(bytes(header), 'html.parser')
+        if not soup.head:
+            return None
+        tags = soup.head.find_all('meta', attrs={'http-equiv': re.compile('^refresh$', re.I)})
+        if len(tags) != 1:
+            return None
+        target = re.fullmatch(r'\s*(\d{1,2})\s*;\s*url\s*=\s*(.+)\s*',
+                              tags[0].get('content', ''), flags=re.I)
+        if not target or not 0 < int(target.group(1)) <= 12:
+            return None
+        path = target.group(2).strip()
+        if path[:1] in ('"', "'") and path[-1:] == path[0]:
+            path = path[1:-1]
+        parsed = urlsplit(path)
+        if parsed.scheme or parsed.netloc or parsed.path != '/goto' or not parsed.query or parsed.fragment:
+            return None
+        return int(target.group(1)), urljoin(url, path)
 
     def _valid_result_url(self, url: str) -> bool:
         if self.validate_target_dns:
@@ -282,6 +325,7 @@ class GoogleTransport:
         elif vertical != "web":
             raise GoogleBlocked("openserp_bad_vertical")
         request_url = self.openserp_url + "/google/search?" + urlencode(params)
+        page_deadline = time.monotonic() + self.openserp_request_timeout_seconds
         request_id = str(uuid.uuid4())
         headers = {"Accept": "application/json", "X-Request-ID": request_id}
         if proxy_url:
@@ -368,7 +412,7 @@ class GoogleTransport:
                 title = str(item.get("title") or "").strip()
                 if (urlsplit(url).hostname or "").lower().endswith("google.com") and urlsplit(url).path.rstrip("/") == "/goto":
                     wrapped_google_results += 1
-                    url = self._resolve_google_goto(session, url, proxy_url)
+                    url = self._resolve_google_goto(session, url, proxy_url, deadline=page_deadline)
                     if url:
                         resolved_google_results += 1
                 if vertical == "images":

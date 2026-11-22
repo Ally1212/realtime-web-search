@@ -138,6 +138,36 @@ class FreeGoogleTests(unittest.TestCase):
                          {"observed": 2, "wrapped": 2, "resolved": 1, "saved": 1})
         self.assertEqual(transport.last_evidence["resolved_google_results"], 1)
 
+    def test_google_goto_waits_for_google_prescribed_same_origin_refresh_once(self):
+        transport = GoogleTransport(5, 'en', '', validate_target_dns=False)
+        session = Mock()
+        headers = {'Content-Type': 'text/html; charset=utf-8'}
+        for delay, location, allowed in (
+            (3, '/goto?retry=abc&amp;next=1', True),
+            (4, 'https://example.com/article', False),
+            (3, '/sorry/index?retry=abc', False),
+            (40, '/goto?retry=abc', False),
+        ):
+            session.reset_mock()
+            with self.subTest(location=location):
+                html = f'<head><meta http-equiv="Refresh" content="{delay}; URL={location}"></head>'.encode()
+                session.get.side_effect = [
+                    Mock(status_code=200, headers=headers, iter_content=Mock(return_value=iter([html]))),
+                    Mock(status_code=302, headers={'Location': 'https://example.com/article'}),
+                ]
+                with patch('realtime.free_google.time.sleep') as sleep:
+                    result = transport._resolve_google_goto(
+                        session, 'https://www.google.com/goto?example=1', 'http://proxy.example:80')
+                if allowed:
+                    self.assertEqual(result, 'https://example.com/article')
+                    sleep.assert_called_once_with(3)
+                    self.assertEqual(session.get.call_args.args, ('https://www.google.com/goto?retry=abc&next=1',))
+                    self.assertEqual(session.get.call_args.kwargs['proxies']['https'], 'http://proxy.example:80')
+                else:
+                    self.assertEqual(result, '')
+                    sleep.assert_not_called()
+                    session.get.assert_called_once()
+
     def test_openserp_maps_captcha_without_exposing_error_body(self):
         session = MagicMock()
         response = session.get.return_value
