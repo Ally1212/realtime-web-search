@@ -652,9 +652,13 @@ class SearchDiscovery:
 
     def _discover_google_page(self, query: str, page: int) -> list[SearchResult]:
         cache_locale = self.locale + ":free-v2:" + ",".join(self.providers)
-        cache_key, cached = self._cached("google_web", query, cache_locale, page)
-        if cached is not None:
-            return cached
+        fresh = page in getattr(self, 'refresh_web_pages', ())
+        if fresh:
+            cache_key = self._cache_key("google_web", query, cache_locale, page)
+        else:
+            cache_key, cached = self._cached("google_web", query, cache_locale, page)
+            if cached is not None:
+                return cached
         lease = None
         if self.singleflight_acquirer:
             lease = self.singleflight_acquirer(cache_key)
@@ -662,7 +666,7 @@ class SearchDiscovery:
                 raise GoogleBlocked("google_query_inflight")
         try:
             # Another process may have filled the cache before our lease was acquired.
-            if lease:
+            if lease and not fresh:
                 _, cached = self._cached("google_web", query, cache_locale, page)
                 if cached is not None:
                     return cached
@@ -704,7 +708,8 @@ class SearchDiscovery:
                     continue
                 novel = self.novelty_counter([row.url for row in results]) if self.novelty_counter else len(results)
                 ttl = self.query_cache_seconds if page <= 3 else self.deep_cache_seconds
-                self._store_cache(cache_key, "google_web", query, cache_locale, page, results, ttl, novel)
+                if not fresh:
+                    self._store_cache(cache_key, "google_web", query, cache_locale, page, results, ttl, novel)
                 return results
             # Preserve actionable failure over a later skipped/cooling provider.
             substantive = [exc for exc in errors if exc.reason != "google_provider_cooling"]

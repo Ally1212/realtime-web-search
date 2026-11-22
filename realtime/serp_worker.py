@@ -82,7 +82,8 @@ def complete_once_task(console: ConsoleStore, campaign_id: str, reason: str) -> 
 def run_serp_campaign(campaign_id: str, config: Config | None = None,
                       store: CampaignStore | None = None, serp: SerpStore | None = None,
                       *, should_continue=None, proxy_pool: ProxyPool | None = None,
-                      skip_web_pages=frozenset(), on_proxy_switch=None, collection_stop_at=None) -> tuple[str, ...]:
+                      skip_web_pages=frozenset(), refresh_web_pages=frozenset(),
+                      on_proxy_switch=None, collection_stop_at=None) -> tuple[str, ...]:
     config = config or Config()
     store = store or CampaignStore(config.database_url, initialize=False)
     serp = serp or SerpStore(config.database_url)
@@ -117,6 +118,7 @@ def run_serp_campaign(campaign_id: str, config: Config | None = None,
         discovery.proxy_provider_attempts = 2
         discovery.pause_on_proxy_unavailable = True
         discovery.completed_web_pages = skip_web_pages
+        discovery.refresh_web_pages = refresh_web_pages
         if 'google_web' in sources:
             discovery.live_collection_stop_at = collection_stop_at
             if collection_stop_at is not None:

@@ -134,6 +134,8 @@ class FreeGoogleTests(unittest.TestCase):
         self.assertTrue(first.kwargs["stream"])
         self.assertEqual(first.kwargs["proxies"]["https"], "http://proxy.example:80")
         self.assertEqual(transport.last_evidence["wrapped_google_results"], 2)
+        self.assertEqual(transport.last_serp_response["upstream_metadata"]["organic_link_counts"],
+                         {"observed": 2, "wrapped": 2, "resolved": 1, "saved": 1})
         self.assertEqual(transport.last_evidence["resolved_google_results"], 1)
 
     def test_openserp_maps_captcha_without_exposing_error_body(self):

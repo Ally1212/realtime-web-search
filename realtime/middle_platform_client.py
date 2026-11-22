@@ -77,6 +77,9 @@ def search_request(payload, *, dataset_id='social_media_raw'):
         if type(count) is not int or not 1 <= count <= (20 if source == 'google_images' else 100):
             raise ProductError('invalid_parameter', 'max_items 超出来源支持范围')
         request['max_items'] = count
+    if source == 'google_web' and request['max_items'] == 100:
+        from .live_collection import WEB_MAX_LIVE_SECONDS
+        request['deadline_seconds'] = WEB_MAX_LIVE_SECONDS
     return request
 
 def upstream_idempotency_key(account_id, idempotency_key):

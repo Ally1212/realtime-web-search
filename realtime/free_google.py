@@ -392,6 +392,13 @@ class GoogleTransport:
                 # URL dedup limits downstream work; observation order and repeated
                 # ranks remain independent facts in the saved response.
                 self.local.last_serp_response['organic_results'] = organic_observations
+                self.local.last_serp_response['upstream_metadata']['organic_link_counts'] = {
+                    'observed': sum(isinstance(item, dict) and str(item.get('type') or '').lower() == 'organic'
+                                    for item in rows),
+                    'wrapped': wrapped_google_results,
+                    'resolved': resolved_google_results,
+                    'saved': len(organic_observations),
+                }
             if vertical == "images":
                 self.local.last_serp_response['source'] = 'google_images'
                 self.local.last_serp_response['search_parameters']['vertical'] = 'images'

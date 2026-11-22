@@ -295,7 +295,7 @@ class DirectDatabaseTests(SearchDatabaseFixture, unittest.TestCase):
 
     def test_proxy_recovery_resumes_all_eleven_pages_under_same_direct_task(self):
         task = self.task()
-        task['payload']['max_items'] = 20
+        task['payload']['max_items'] = 11
         self.runtime.accept(task)
 
         def save_pages(cid, pages):
@@ -346,6 +346,44 @@ class DirectDatabaseTests(SearchDatabaseFixture, unittest.TestCase):
         self.assertEqual(len(final['state']['messages']), 11)
         self.assertEqual(self.collector.post.call_args.args[0], '/v1/collection/tasks/ctask_direct/complete')
 
+    def test_web_underfilled_round_recovers_gaps_then_refreshes_sparse_pages(self):
+        task = self.task()
+        task['payload']['max_items'] = 100
+        self.runtime.accept(task)
+        passes = []
+
+        def run(cid, config, **kwargs):
+            skipped = set(kwargs.get('skip_web_pages', ()))
+            refreshed = set(kwargs.get('refresh_web_pages', ()))
+            passes.append((skipped, refreshed))
+            number = len(passes)
+            for page in sorted(set(range(1, 12)) - skipped):
+                if number == 1 and page in (3, 6):
+                    self.console.record(cid, source='google_web', provider='openserp', query='energy',
+                                        page=page, language='en', elapsed_seconds=.1,
+                                        classification='captcha', http_status=429, error_code='google_captcha',
+                                        response={})
+                    continue
+                links = [dict(link=f'https://example.org/{number}-{page}-{i}', title='link', position=i + 1)
+                         for i in range(2 if number == 1 else 10)]
+                self.console.record(cid, source='google_web', provider='openserp', query='energy',
+                                    page=page, language='en', elapsed_seconds=.1, classification='results',
+                                    response=dict(organic_results=links))
+            return ('page 3: google web google_captcha',) if number == 1 else ()
+
+        receipts = [dict(status='accepted', document_id=f'doc_{i}', version_id=f'ver_{i}') for i in range(100)]
+        with patch('realtime.serp_worker.run_serp_campaign', side_effect=run), \
+             patch('realtime.middle_direct.processing_receipts', return_value=receipts):
+            self.runtime.poll(allow_claim=False)
+        self.assertEqual(len(passes), 3)
+        self.assertEqual(set(range(1, 12)) - passes[1][0], {3, 6})
+        self.assertEqual(passes[2][1], set(range(1, 12)) - {3, 6})
+        with self.base.connect() as db:
+            final = db.execute('SELECT state,status FROM sf_middle_direct_tasks').fetchone()
+        self.assertEqual(final['status'], 'succeeded')
+        self.assertEqual(len(final['state']['messages']), 100)
+        self.assertFalse(final['state']['web_partial'])
+
     def test_expired_proxy_wait_reports_the_specific_reason_once(self):
         task = self.task()
         self.runtime.accept(task)
@@ -361,6 +399,9 @@ class DirectDatabaseTests(SearchDatabaseFixture, unittest.TestCase):
             self.assertEqual(db.execute('SELECT status FROM sf_middle_direct_tasks').fetchone()['status'], 'failed')
 
     def test_web_delivers_saved_links_when_upstream_blocks_and_pool_runs_out(self):
+        from realtime.live_collection import WEB_DELIVERY_RESERVE_SECONDS
+        self.runtime.deadline_lookup = Mock(return_value=datetime.now(timezone.utc) +
+                                            timedelta(seconds=WEB_DELIVERY_RESERVE_SECONDS + 5))
         task = self.task()
         task['payload']['max_items'] = 20
         self.runtime.accept(task)
@@ -455,6 +496,7 @@ class DirectDatabaseTests(SearchDatabaseFixture, unittest.TestCase):
 
     def test_direct_claim_is_durable_and_does_not_create_website_job(self):
         task=self.task()
+        task['payload']['max_items'] = 1
         self.assertTrue(self.runtime.accept(task))
         with self.base.connect() as db:
             state=db.execute('SELECT state FROM sf_middle_direct_tasks').fetchone()['state']
@@ -557,7 +599,7 @@ class DirectDatabaseTests(SearchDatabaseFixture, unittest.TestCase):
 
     def test_multiple_persisted_pages_deliver_unique_links_with_page_proof(self):
         task = self.task()
-        task['payload']['max_items'] = 20
+        task['payload']['max_items'] = 3
         self.runtime.accept(task)
         with self.base.connect() as db:
             state = db.execute('SELECT state FROM sf_middle_direct_tasks').fetchone()['state']

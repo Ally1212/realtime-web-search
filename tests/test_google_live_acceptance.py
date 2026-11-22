@@ -74,7 +74,7 @@ class DirectMultiPageTests(unittest.TestCase):
         runner.base.connect.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = rows
         state = dict(campaign_id='campaign', task=dict(id='task', payload=dict(query='battery', live_query_id='lq_test')))
         with patch('realtime.middle_direct.task_spec', return_value=dict(keywords=['battery'],
-                   sources=['google_web'], options={}, google_pages=2, max_items=20, max_duration_minutes=5)), \
+                   sources=['google_web'], options={}, google_pages=2, max_items=2, max_duration_minutes=5)), \
              patch('realtime.serp_worker.run_serp_campaign') as collect, \
              patch('realtime.customer_data.project', side_effect=lambda raw: dict(page=raw['page'])), \
              patch('realtime.middle_direct.link_message', return_value=('key', dict(discovery={}))), \
@@ -274,9 +274,9 @@ class AllFailedCollectionTests(unittest.TestCase):
         state = dict(campaign_id='campaign', task=dict(id='task', payload=dict(query='battery')))
         with patch('realtime.middle_direct.task_spec', return_value=dict(keywords=['battery'],
                    sources=['google_web'], options={}, google_pages=1, max_items=10, max_duration_minutes=5)), \
-             patch('realtime.serp_worker.run_serp_campaign') as collect, self.assertRaisesRegex(ValueError, 'successful'):
+             patch('realtime.serp_worker.run_serp_campaign', return_value=()) as collect, self.assertRaisesRegex(ValueError, 'successful'):
             runner.collect(state)
-        collect.assert_not_called()
+        collect.assert_called_once()
 
 
 class MultiPageExportTests(unittest.TestCase):

@@ -15,8 +15,9 @@ from psycopg.types.json import Jsonb
 from .product import ProductError
 from .proxy_pool import ProxyPool
 from .live_collection import (
-    COLLECTION_ERROR_CODES, RETRYABLE_COLLECTION_CODES, WEB_DELIVERY_RESERVE_SECONDS,
-    can_deliver_web_results, check_collection, collection_error, needs_collection, retry_interval,
+    COLLECTION_ERROR_CODES, RETRYABLE_COLLECTION_CODES, WEB_DELIVERY_RESERVE_SECONDS, WEB_MAX_LIVE_SECONDS,
+    can_deliver_web_results, check_collection, collection_error, needs_collection, recover_web_pages, retry_interval,
+    wait_for_web_capacity,
 )
 from .middle_collector import image_conditions
 from .middle_ingest import task_spec, link_message, receipt_query, processing_receipts, collector_capabilities, retry_delay
@@ -150,7 +151,7 @@ class DirectTasks:
             except ProductError:
                 deadline = None
             if deadline is not None:
-                return min(deadline.timestamp(), time.time()+300)
+                return min(deadline.timestamp(), time.time()+WEB_MAX_LIVE_SECONDS)
         # The Collector claim does not include the Consumer deadline. Cap the
         # fallback from task creation, so reclaims cannot reset the budget.
         created_at = task.get('created_at')
@@ -218,25 +219,32 @@ class DirectTasks:
         rows = saved()
         errors = ()
         stop_at = state['collection_deadline_at']
-        if time.time() < stop_at and needs_collection(source, rows, spec['google_pages']):
-            pages = {r['page'] for r in rows if r['classification'] == 'results'}
-            resume = {'skip_web_pages': pages} if source == 'google_web' and pages else {}
+        def run(**resume):
             if getattr(self, 'proxy_pool', None) is not None:
                 resume['proxy_pool'] = self.proxy_pool
             if source == 'google_web' and getattr(self, 'proxy_pool', None) is not None:
                 resume['collection_stop_at'] = stop_at
-            errors = run_serp_campaign(cid, replace(self.config, content_fetch_enabled=False,
+            return run_serp_campaign(cid, replace(self.config, content_fetch_enabled=False,
                               google_web_max_pages=spec['google_pages'],
                               google_web_pages_per_batch=spec['google_pages']),
                               should_continue=lambda: time.time() < state['collection_deadline_at'],
                               **resume)
+        if time.time() < stop_at and needs_collection(source, rows, spec['google_pages']):
+            pages = {r['page'] for r in rows if r['classification'] == 'results'}
+            errors = run(**({'skip_web_pages': pages} if source == 'google_web' and pages else {}))
             rows = saved()
+        if source == 'google_web':
+            rows, errors = recover_web_pages(rows, errors, spec=spec, state=state, save=lambda: self.save(state),
+                                             run=run, read=saved, can_start=lambda: time.time()+5 < stop_at)
         cutoff = time.time() >= stop_at
         if cutoff and not errors:
             errors = (state.get('collection_retry_code') or 'search_deadline_exceeded',)
         candidates = [r for r in rows if r['classification'] in ('results', 'empty')]
         selections = selected_pages(candidates, source, spec['max_items'])
         count = sum(len(items) for _, items, _ in selections)
+        if source == 'google_web':
+            wait_for_web_capacity(errors, state=state, count=count, requested=spec['max_items'],
+                                  remaining=stop_at-time.time())
         deliver_saved = source == 'google_web' and can_deliver_web_results(
             rows, count, spec['max_items'], collection_finished=cutoff)
         try:
@@ -251,8 +259,8 @@ class DirectTasks:
         if source == 'google_web':
             if errors:
                 coverage['interruption_code'] = collection_error(rows, errors)
-            state['web_partial'] = bool(0 < count < spec['max_items'] and (
-                len(coverage['successful_pages']) < spec['google_pages'] or coverage['partial_failure']))
+            coverage['recovery_rounds'] = state.get('web_recovery_rounds', 0)
+            state['web_partial'] = 0 < count < spec['max_items']
         for row, selected, raw in selections:
             record = project(raw)
             record['page'] = row['page']

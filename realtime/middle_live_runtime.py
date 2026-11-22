@@ -30,7 +30,8 @@ from .serp_fields import result_items, normalize_serp_url
 from .proxy_pool import ProxyPool
 from .live_collection import (
     COLLECTION_ERROR_CODES, RETRYABLE_COLLECTION_CODES, WEB_DELIVERY_RESERVE_SECONDS,
-    can_deliver_web_results, check_collection, collection_error, needs_collection, retry_interval,
+    can_deliver_web_results, check_collection, collection_error, needs_collection, recover_web_pages, retry_interval,
+    wait_for_web_capacity,
 )
 
 LOG = logging.getLogger(__name__)
@@ -374,7 +375,8 @@ class LiveRunner:
         rows = saved()
         collection_errors = ()
         stop_at = job['deadline_at'].timestamp() - (WEB_DELIVERY_RESERVE_SECONDS if self.source == 'google_web' else 0)
-        if time.time() < stop_at and needs_collection(self.source, rows, spec['google_pages']):
+        initial_pass = needs_collection(self.source, rows, spec['google_pages'])
+        if time.time() < stop_at and (initial_pass or self.source == 'google_web'):
             pages = {r['page'] for r in rows if r['classification'] == 'results'}
             stopped = threading.Event(); errors = []
             def pulse():
@@ -400,17 +402,29 @@ class LiveRunner:
                         state.update(stage='switching_proxy')
                         self.save(job, state)
                 resume['on_proxy_switch'] = show_proxy_switch
-            try: collection_errors = run_serp_campaign(str(local['campaign_id']), collection_config,
-                                   should_continue=lambda: time.time() < stop_at and not errors, **resume)
+            def run(**overrides):
+                return run_serp_campaign(str(local['campaign_id']), collection_config,
+                                         should_continue=lambda: time.time() < stop_at and not errors,
+                                         **(resume | overrides))
+            try:
+                if initial_pass:
+                    collection_errors = run()
+                    rows = saved()
+                if self.source == 'google_web':
+                    rows, collection_errors = recover_web_pages(
+                        rows, collection_errors, spec=spec, state=state, save=lambda: self.save(job, state),
+                        run=run, read=saved, can_start=lambda: time.time()+5 < stop_at and not errors)
             finally: stopped.set(); thread.join()
             if errors: raise errors[0]
-            rows = saved()
         cutoff = time.time() >= stop_at
         if cutoff and not collection_errors:
             collection_errors = (state.get('collection_retry_code') or 'search_deadline_exceeded',)
         candidates = [r for r in rows if r['classification'] in ('results', 'empty')]
         selections = selected_pages(candidates, self.source, state['task']['payload']['max_items'])
         count = sum(len(items) for _, items, _ in selections)
+        if self.source == 'google_web':
+            wait_for_web_capacity(collection_errors, state=state, count=count, requested=spec['max_items'],
+                                  remaining=stop_at-time.time())
         deliver_saved = self.source == 'google_web' and can_deliver_web_results(
             rows, count, spec['max_items'], collection_finished=cutoff)
         check_collection(self.source, rows, collection_errors, spec['google_pages'], deliver_saved=deliver_saved)
@@ -423,8 +437,8 @@ class LiveRunner:
         if self.source == 'google_web':
             if collection_errors:
                 coverage['interruption_code'] = collection_error(rows, collection_errors)
-            state['web_partial'] = bool(0 < count < spec['max_items'] and (
-                len(coverage['successful_pages']) < spec['google_pages'] or coverage['partial_failure']))
+            coverage['recovery_rounds'] = state.get('web_recovery_rounds', 0)
+            state['web_partial'] = 0 < count < spec['max_items']
         messages = []
         for row, selected, raw in selections:
             for item in selected:
