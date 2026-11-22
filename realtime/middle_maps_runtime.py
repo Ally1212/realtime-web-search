@@ -1,7 +1,10 @@
 """Durable Maps live-query phases; persistence precedes every write side effect."""
 from copy import deepcopy
 from datetime import datetime, timezone
-from .middle_maps_contract import CAPABILITIES, task_parameters, query_snapshot, snapshot_message, snapshot_places
+import json
+from .middle_maps_contract import (
+    CAPABILITIES, MAPS_MESSAGE_BUDGET, task_parameters, query_snapshot, snapshot_message, snapshot_places,
+)
 from .middle_ingest import receipt_query, processing_receipts
 from .product import ProductError
 
@@ -105,7 +108,16 @@ class MapsPhases:
             receipt = processing_receipts([row], self.collector.post('/v1/ingest/receipts', [receipt_query(row)]))[0]
             if receipt['status'] == 'failed':
                 raise ProductError('middle_persistence_failed', '地图快照中台入库失败', 502)
-            if receipt['status'] == 'unknown':
+            pending_without_version = (
+                receipt['status'] == 'pending' and not receipt.get('document_id') and not receipt.get('version_id')
+            )
+            legacy_rejected_candidate = (
+                pending_without_version
+                and message['content']['platform_payload'].get('schema_version') == 'searchflow-maps-query-2'
+                and len(json.dumps([message]).encode()) > MAPS_MESSAGE_BUDGET
+            )
+            if receipt['status'] == 'unknown' or legacy_rejected_candidate or (
+                    pending_without_version and state.get('repacked_after_413')):
                 # Collector transport must attach X-Ingest-Class: realtime.
                 try:
                     self.collector.upload_realtime([message])
@@ -117,12 +129,17 @@ class MapsPhases:
                     if compact['source']['payload_hash'] == message['source']['payload_hash']:
                         raise ProductError('maps_snapshot_too_large', '中台拒绝地图快照大小', 502) from None
                     state['message'] = compact
+                    state['repacked_after_413'] = True
                     self.save(job, state)
+                else:
+                    if state.pop('repacked_after_413', False):
+                        self.save(job, state)
                 return None
             if receipt['status'] not in ('accepted', 'duplicate'):
                 return None
             if not receipt.get('document_id') or not receipt.get('version_id'):
                 raise ProductError('middle_invalid_response', '地图入库回执缺少固定版本', 502)
+            state.pop('repacked_after_413', None)
             state['receipt'] = receipt
             self.save(job, state)
         receipt = state['receipt']

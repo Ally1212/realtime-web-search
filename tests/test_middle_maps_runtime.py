@@ -46,14 +46,24 @@ class MapsPhasesTests(unittest.TestCase):
 
     def test_saved_snapshot_is_repacked_after_explicit_size_rejection(self):
         runtime, job, state, receipt = self.fixture()
-        receipt['status'] = 'unknown'
+        receipt['status'] = 'pending'
+        receipt.pop('document_id')
+        receipt.pop('version_id')
+        state['message']['content']['platform_payload']['schema_version'] = 'searchflow-maps-query-2'
         failed = ProductError('middle_collector_failed', 'too large', 503)
         failed.status_code = 413
         runtime.collector.upload_realtime.side_effect = failed
         compact = dict(state['message'], source=dict(state['message']['source'], payload_hash='compact'))
-        with patch('realtime.middle_maps_runtime.snapshot_message', return_value=compact):
+        with patch('realtime.middle_maps_runtime.snapshot_message', return_value=compact), \
+             patch('realtime.middle_maps_runtime.MAPS_MESSAGE_BUDGET', 0):
             self.assertIsNone(runtime.advance(job, state))
-        self.assertEqual(runtime.save.call_args.args[1]['message'], compact)
+        saved = runtime.save.call_args.args[1]
+        self.assertEqual(saved['message'], compact)
+        self.assertTrue(saved['repacked_after_413'])
+        runtime.collector.upload_realtime.side_effect = None
+        self.assertIsNone(runtime.advance(job, saved))
+        self.assertEqual(runtime.collector.upload_realtime.call_args.args, ([compact],))
+        self.assertNotIn('repacked_after_413', runtime.save.call_args.args[1])
         runtime.search.assert_not_called()
 
     def test_wrong_result_never_unlocks(self):
