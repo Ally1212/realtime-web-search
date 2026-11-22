@@ -1,7 +1,7 @@
 """Durable Maps live-query phases; persistence precedes every write side effect."""
 from copy import deepcopy
 from datetime import datetime, timezone
-from .middle_maps_contract import CAPABILITIES, task_parameters, query_snapshot, snapshot_message
+from .middle_maps_contract import CAPABILITIES, task_parameters, query_snapshot, snapshot_message, snapshot_places
 from .middle_ingest import receipt_query, processing_receipts
 from .product import ProductError
 
@@ -107,7 +107,17 @@ class MapsPhases:
                 raise ProductError('middle_persistence_failed', '地图快照中台入库失败', 502)
             if receipt['status'] == 'unknown':
                 # Collector transport must attach X-Ingest-Class: realtime.
-                self.collector.upload_realtime([message])
+                try:
+                    self.collector.upload_realtime([message])
+                except ProductError as exc:
+                    if getattr(exc, 'status_code', None) != 413:
+                        raise
+                    original = message['content']['platform_payload']
+                    compact = snapshot_message(job_id=job['id'], task_id=task_id, payload=original)
+                    if compact['source']['payload_hash'] == message['source']['payload_hash']:
+                        raise ProductError('maps_snapshot_too_large', '中台拒绝地图快照大小', 502) from None
+                    state['message'] = compact
+                    self.save(job, state)
                 return None
             if receipt['status'] not in ('accepted', 'duplicate'):
                 return None
@@ -170,7 +180,7 @@ def process_middle_pending(base, phases, *, limit=1):
                 raise ProductError('middle_snapshot_mismatch', '地图结果未完成中台读取校验', 502)
             store.finish(job, result=dict(location_resolution=payload.get('location_resolution'),
                 search_area={k:payload['query_conditions'][k] for k in ('location','radius_m')} if payload.get('query_conditions') else None,
-                places=payload['places'], coverage=payload.get('collection_coverage'), provider=payload['provider']['name'],
+                places=snapshot_places(payload), coverage=payload.get('collection_coverage'), provider=payload['provider']['name'],
                 provider_version=payload['provider']['version'], ordering=payload['ordering'],
                 middle_verified=True, notice='已从中台固定版本快照读取并校验。',
                 provider_request_id=outcome['middle_query_id'], response_hash=digest(payload),

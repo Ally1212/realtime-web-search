@@ -44,6 +44,18 @@ class MapsPhasesTests(unittest.TestCase):
         runtime.middle.read_snapshot.assert_not_called()
         self.assertEqual(runtime.collector.post.call_count, 2)
 
+    def test_saved_snapshot_is_repacked_after_explicit_size_rejection(self):
+        runtime, job, state, receipt = self.fixture()
+        receipt['status'] = 'unknown'
+        failed = ProductError('middle_collector_failed', 'too large', 503)
+        failed.status_code = 413
+        runtime.collector.upload_realtime.side_effect = failed
+        compact = dict(state['message'], source=dict(state['message']['source'], payload_hash='compact'))
+        with patch('realtime.middle_maps_runtime.snapshot_message', return_value=compact):
+            self.assertIsNone(runtime.advance(job, state))
+        self.assertEqual(runtime.save.call_args.args[1]['message'], compact)
+        runtime.search.assert_not_called()
+
     def test_wrong_result_never_unlocks(self):
         runtime, job, state, receipt = self.fixture()
         state['receipt'] = receipt

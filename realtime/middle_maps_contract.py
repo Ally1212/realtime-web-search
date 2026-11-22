@@ -1,5 +1,11 @@
 """Marsyoo Maps conditions contract (platform reply 2026-11-12)."""
+import base64
+import gzip
+import hashlib
+import io
+import json
 import math
+import zlib
 from copy import deepcopy
 from .product import ProductError
 from .google_data import digest
@@ -7,6 +13,9 @@ from .maps_provider import FAST_MAX_PLACES, prepare
 
 CAPABILITIES = ['identity', 'title', 'condition:location', 'condition:category']
 MAPS_DEEP_DEADLINE_SECONDS = 900
+COMPACT_SNAPSHOT_SCHEMA = 'searchflow-maps-query-3'
+MAPS_MESSAGE_BUDGET = 900_000
+MAX_RAW_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 def maps_request(parameters):
@@ -54,6 +63,38 @@ def verify_snapshot(snapshot, *, version_id, expected_payload, expected_hash):
     return deepcopy(snapshot['platform_payload'])
 
 
+def _raw_json(raw):
+    return json.dumps(raw, ensure_ascii=False, sort_keys=True).encode()
+
+
+def _place_summary(place):
+    return {key: value for key, value in place.items() if key != 'source_fields'}
+
+
+def snapshot_places(payload):
+    """Restore full, scope-checked place records after immutable readback."""
+    if payload.get('schema_version') != COMPACT_SNAPSHOT_SCHEMA:
+        return payload['places']
+    from .maps_provider import normalize
+
+    try:
+        encoded = payload['raw_response_gzip_base64']
+        if not isinstance(encoded, str) or len(encoded) > MAPS_MESSAGE_BUDGET:
+            raise ValueError()
+        compressed = base64.b64decode(encoded, validate=True)
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
+            raw_bytes = stream.read(MAX_RAW_RESPONSE_BYTES + 1)
+        if len(raw_bytes) > MAX_RAW_RESPONSE_BYTES or hashlib.sha256(raw_bytes).hexdigest() != payload['source_response_hash']:
+            raise ValueError()
+        raw = json.loads(raw_bytes)
+        places = normalize(raw, payload['query_conditions'])
+        if digest([_place_summary(place) for place in places]) != digest(payload['places']):
+            raise ValueError()
+    except (KeyError, TypeError, ValueError, OSError, EOFError, zlib.error):
+        raise ProductError('middle_snapshot_mismatch', '压缩地图快照校验失败', 502) from None
+    return places
+
+
 def snapshot_message(*, job_id, task_id, payload):
     """One immutable query observation, including valid zero-result searches."""
     from uuid import UUID
@@ -61,7 +102,7 @@ def snapshot_message(*, job_id, task_id, payload):
     if (not isinstance(task_id, str) or not task_id.startswith('ctask_')
             or not task_id[6:].isalnum()):
         raise ProductError('invalid_parameter', '中台任务编号无效')
-    if (not isinstance(payload, dict) or payload.get('schema_version') not in ('searchflow-maps-query-1','searchflow-maps-query-2')
+    if (not isinstance(payload, dict) or payload.get('schema_version') not in ('searchflow-maps-query-1','searchflow-maps-query-2',COMPACT_SNAPSHOT_SCHEMA)
             or payload.get('job_id') != job_id or payload.get('collection_task_id') != task_id
             or not isinstance(payload.get('places'), list)
             or type(payload.get('place_count')) is not int
@@ -76,7 +117,7 @@ def snapshot_message(*, job_id, task_id, payload):
     except (AttributeError, TypeError, ValueError):
         raise ProductError('invalid_parameter', '地图快照缺少有效采集完成时间') from None
     key = 'maps-query:' + job_id
-    return dict(schema_version='whale.ingest.v1', dataset_id='google_maps_raw',
+    message = dict(schema_version='whale.ingest.v1', dataset_id='google_maps_raw',
                 source=dict(source_platform='google_maps', source_name='searchflow.maps.query',
                             source_record_key=key, collection_task_id=task_id,
                             payload_hash='sha256:' + digest(payload), received_at=observed_at),
@@ -84,6 +125,19 @@ def snapshot_message(*, job_id, task_id, payload):
                 discovery=dict(collector='searchflow.maps', acquisition_type='live_query', discovered_at=observed_at),
                 content=dict(content_type='search_result', external_content_id=key,
                              title='Google Maps query ' + job_id, platform_payload=deepcopy(payload)))
+    if len(json.dumps([message]).encode()) > MAPS_MESSAGE_BUDGET:
+        if payload['schema_version'] != 'searchflow-maps-query-2':
+            raise ProductError('maps_snapshot_too_large', '地图快照超过中台单文档大小限制', 502)
+        compact = message['content']['platform_payload']
+        raw = _raw_json(compact.pop('raw_response'))
+        if len(raw) > MAX_RAW_RESPONSE_BYTES:
+            raise ProductError('maps_snapshot_too_large', '地图原始响应超过可还原大小限制', 502)
+        compact.update(schema_version=COMPACT_SNAPSHOT_SCHEMA, places=[_place_summary(p) for p in compact['places']],
+                       raw_response_gzip_base64=base64.b64encode(gzip.compress(raw, mtime=0)).decode('ascii'))
+        message['source']['payload_hash'] = 'sha256:' + digest(compact)
+        if len(json.dumps([message]).encode()) > MAPS_MESSAGE_BUDGET:
+            raise ProductError('maps_snapshot_too_large', '地图快照超过中台单文档大小限制', 502)
+    return message
 
 
 def task_parameters(task, *, query_id, task_id, expected_parameters):
@@ -125,9 +179,7 @@ def query_snapshot(*, job_id, query_id, task_id, parameters, result, observed_at
     raw, places = result.get('raw_response'), result.get('places')
     if not isinstance(raw, list) or not isinstance(places, list):
         raise ProductError('maps_invalid_response', '地图结果缺少原始响应', 502)
-    import hashlib
-    import json
-    source_hash = hashlib.sha256(json.dumps(raw, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    source_hash = hashlib.sha256(_raw_json(raw)).hexdigest()
     if result.get('response_hash') != source_hash:
         raise ProductError('maps_invalid_response', '地图原始响应摘要不一致', 502)
     # Recompute from raw: a normalized result must not silently lose fields.

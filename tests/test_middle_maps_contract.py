@@ -198,6 +198,35 @@ class MapsClaimTests(unittest.TestCase):
 
 
 class MapsSnapshotTests(unittest.TestCase):
+    def test_large_snapshot_fits_transport_and_restores_original_places(self):
+        import hashlib
+        import json
+        from realtime.maps_provider import normalize, prepare
+        from realtime.middle_maps_contract import (
+            MAPS_MESSAGE_BUDGET, query_snapshot, snapshot_message, snapshot_places,
+        )
+        from realtime.google_local_jobs import parameters
+
+        p = prepare(parameters(dict(query='coffee', city='Singapore', max_places=100)))
+        raw = [dict(title='Cafe', data_id='id:1', latitude=1.29027, longitude=103.851959,
+                    source_detail='x' * 540_000)]
+        places = normalize(raw, p)
+        job_id = '00000000-0000-0000-0000-000000000001'
+        task_id = 'ctask_large'
+        result = dict(raw_response=raw, places=places, provider='gosom', provider_version='test',
+                      ordering='distance', response_hash=hashlib.sha256(
+                          json.dumps(raw, ensure_ascii=False, sort_keys=True).encode()).hexdigest())
+        snapshot = query_snapshot(job_id=job_id, query_id='lq_large', task_id=task_id,
+                                  parameters=p, result=result, observed_at='2026-11-22T00:00:00Z')
+        message = snapshot_message(job_id=job_id, task_id=task_id, payload=snapshot)
+        payload = message['content']['platform_payload']
+        self.assertEqual(payload['schema_version'], 'searchflow-maps-query-3')
+        self.assertLess(len(json.dumps([message]).encode()), MAPS_MESSAGE_BUDGET)
+        self.assertEqual(snapshot_places(payload), places)
+        self.assertEqual(message['source']['payload_hash'], 'sha256:' + digest(payload))
+        with self.assertRaises(ProductError):
+            snapshot_places(dict(payload, source_response_hash='0' * 64))
+
     def test_zero_result_preserves_raw_and_query(self):
         from realtime.middle_maps_contract import query_snapshot
         p = dict(mode='text', query='coffee', city='Singapore', region='SG', language='en')
