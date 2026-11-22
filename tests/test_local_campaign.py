@@ -61,7 +61,7 @@ class LocalCampaignIntegrationTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(stored["content"], body)
 
-    def test_whale_campaign_does_not_keep_body_in_pages(self):
+    def test_middle_campaign_body_storage_does_not_enqueue_legacy_upload(self):
         task_id = f"test-whale-local-storage-{os.getpid()}"
         campaign_id = self.store.create_whale_campaign(
             task_id=task_id,
@@ -81,9 +81,6 @@ class LocalCampaignIntegrationTests(unittest.TestCase):
         page_id, _, _, _ = self.store.record_page(
             campaign_id,
             page,
-            whale_task_id=task_id,
-            source_record_key=f"test:{campaign_id}",
-            whale_payload={"content": {"body_text": body}},
         )
         self.page_ids.append(page_id)
 
@@ -93,7 +90,10 @@ class LocalCampaignIntegrationTests(unittest.TestCase):
                 "SELECT content FROM pages p JOIN campaign_pages cp ON cp.page_id=p.id "
                 "WHERE cp.campaign_id=%s", (campaign_id,),
             ).fetchone()
-        self.assertEqual(stored["content"], "")
+        self.assertEqual(stored["content"], body)
+        with self.store.connect() as connection:
+            count = connection.execute("SELECT count(*) AS n FROM whale_ingest_outbox WHERE task_id=%s", (task_id,)).fetchone()
+        self.assertEqual(count["n"], 0)
 
 
 if __name__ == "__main__":

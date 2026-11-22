@@ -8,10 +8,12 @@ import sys
 import threading
 import time
 
+from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
+
 from .campaign_queue import CampaignQueue
 from .campaign_store import CampaignStore
 from .config import Config
-from .proxy_pool import ProxyApiError, ProxySynchronizer
+from .proxy_pool import ProxyApiError, ProxyPool, ProxySynchronizer
 
 
 class WorkerManager:
@@ -26,6 +28,7 @@ class WorkerManager:
         self.console.initialize_console(config)
         self.queue = CampaignQueue(config.valkey_url)
         self.syncer = ProxySynchronizer(config)
+        self.web_proxy_pool = ProxyPool(config)
         self.stop = threading.Event()
 
     def proxy_sync_loop(self) -> None:
@@ -33,6 +36,9 @@ class WorkerManager:
         while not self.stop.is_set():
             retry = self.config.proxy_sync_seconds
             profiles = self.store.local_proxy_profiles() - {"direct"}
+            if self.config.proxy_api_key and self.config.default_proxy_profile != "direct":
+                # Website-owned live jobs are excluded from the local campaign scan.
+                profiles.add(self.config.default_proxy_profile)
             for profile in profiles:
                 try:
                     self.syncer.sync(profile)
@@ -77,7 +83,8 @@ class WorkerManager:
         returncode = 0
         if not self.serp.content_fetch_enabled(self.config.content_fetch_enabled):
             from .serp_worker import run_serp_campaign
-            run_serp_campaign(campaign_id, config, self.store, self.serp)
+            proxy_pool = self.web_proxy_pool if profile != 'direct' and campaign.get('sources') == ['google_web'] else None
+            run_serp_campaign(campaign_id, config, self.store, self.serp, proxy_pool=proxy_pool)
         else:
             # The child gets the effective runtime switch, not a stale env default.
             child_env = dict(os.environ, CONTENT_FETCH_ENABLED='true')
@@ -115,14 +122,40 @@ class WorkerManager:
 
     def worker_loop(self) -> None:
         while not self.stop.is_set():
-            self.queue.promote_due()
-            campaign_id = self.queue.pop(timeout=5)
-            if campaign_id:
-                try:
-                    self.run_campaign(campaign_id)
-                except Exception as exc:
-                    print(f"campaign retry after {type(exc).__name__}", flush=True)
-                    self.queue.schedule(campaign_id, 60)
+            try:
+                campaign_id = self.queue.pop(timeout=5)
+            except (RedisConnectionError, RedisTimeoutError) as exc:
+                print(f"campaign queue read retry after {type(exc).__name__}", flush=True)
+                self.stop.wait(5)
+                continue
+            if not campaign_id:
+                continue
+            try:
+                self.run_campaign(campaign_id)
+            except Exception as exc:
+                print(f"campaign retry after {type(exc).__name__}", flush=True)
+                self.schedule_campaign_retry(campaign_id)
+
+    def schedule_campaign_retry(self, campaign_id: str) -> None:
+        while not self.stop.is_set():
+            try:
+                # A lost response may follow a successful schedule write.
+                self.queue.schedule(campaign_id, 60, only_if_unscheduled=True)
+                return
+            except (RedisConnectionError, RedisTimeoutError) as exc:
+                print(f"campaign queue write retry after {type(exc).__name__}", flush=True)
+                self.stop.wait(5)
+
+    def queue_promotion_loop(self) -> None:
+        # A dedicated loop can wake blocked pops when delayed work becomes due.
+        while not self.stop.is_set():
+            try:
+                self.queue.promote_due()
+            except Exception as exc:
+                print(f"campaign promotion retry after {type(exc).__name__}", flush=True)
+                self.stop.wait(5)
+            else:
+                self.stop.wait(0.5)
 
     def supply_loop(self) -> None:
         from .serp_worker import SerpSupply
@@ -140,14 +173,10 @@ class WorkerManager:
             print(f"removed duplicate ready entries={removed}", flush=True)
         for campaign_id in self.store.active_local_campaign_ids():
             self.queue.recover(campaign_id)
+        threading.Thread(target=self.queue_promotion_loop, daemon=True).start()
         threading.Thread(target=self.proxy_sync_loop, daemon=True).start()
         # The website can enable supply even when the startup environment was off.
         threading.Thread(target=self.supply_loop, daemon=True).start()
-        if self.config.whale_serp_enabled:
-            from .whale_serp import WhaleSerpStore, WhaleSerpRuntime
-            whale = WhaleSerpStore(self.config.database_url)
-            whale.initialize()
-            threading.Thread(target=WhaleSerpRuntime(self.config, whale).run, args=(self.stop,), daemon=True).start()
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.config.crawler_slots) as pool:
             futures = [pool.submit(self.worker_loop) for _ in range(self.config.crawler_slots)]
             try:

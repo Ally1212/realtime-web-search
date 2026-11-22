@@ -23,7 +23,7 @@ class RevisionMigrationTests(unittest.TestCase):
     def setUp(self):
         self.root_dsn=os.environ['TEST_DATABASE_URL'];self.name='transition_'+uuid4().hex
         with psycopg.connect(self.root_dsn,autocommit=True) as db:
-            db.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(self.name)))
+            db.execute(sql.SQL("CREATE DATABASE {} TEMPLATE template0 ENCODING 'UTF8'").format(sql.Identifier(self.name)))
         self.dsn=make_conninfo(self.root_dsn,dbname=self.name)
         self.run='legacy-continuous';self.campaign=str(uuid4())
         self.a='Original article text. '*50;self.b='Changed article text. '*50

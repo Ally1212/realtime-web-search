@@ -1,3 +1,4 @@
+from tests.product_job_fixture import legacy_private_job
 import io
 import json
 import os
@@ -75,6 +76,51 @@ class ProductIntegrationTests(unittest.TestCase):
 
     def submit(self,key='one',p=None):return self.store.submit(self.owner,p or {'query':'private query'},key,self.config)[0]
 
+    def test_internal_submission_rejects_old_providers_before_reserving(self):
+        for provider in ('openserp', 'serper'):
+            with self.assertRaises(ProductError) as error:
+                self.store.submit(self.owner, {'query': 'retired', 'provider': provider}, 'old-'+provider, self.config)
+            self.assertEqual(error.exception.status, 410)
+        self.assertEqual(self.store.jobs(self.owner['id']), [])
+        self.assertEqual(self.store.usage(self.owner['id'])['reserved'], 0)
+
+    def test_middle_job_preserves_quota_isolation_and_cancel_binding(self):
+        from realtime.customer_data import CustomerDataStore
+        jid=self.submit('middle-one',dict(query='battery',provider='middle'))
+        with self.store.base.connect() as db:
+            row=db.execute('SELECT campaign_id FROM sf_jobs WHERE id=%s',(jid,)).fetchone()
+            self.assertIsNone(row['campaign_id'])
+            db.execute('UPDATE sf_jobs SET response=%s WHERE id=%s',
+                       (psycopg.types.json.Jsonb(dict(middle_query_id='lq_bound',stage='collecting')),jid))
+        self.assertEqual(self.store.usage(self.owner['id'])['reserved'],1)
+        with self.assertRaises(ProductError):
+            self.store.job(self.other['account_id'],jid)
+        with self.assertRaises(ProductError):
+            CustomerDataStore(self.store,self.owner['id']).job_data(jid)
+        cancelled=self.store.cancel(self.owner['id'],jid)
+        self.assertEqual(cancelled['response']['middle_query_id'],'lq_bound')
+        self.assertEqual(self.store.usage(self.owner['id'])['reserved'],0)
+        self.assertEqual(self.store.usage(self.owner['id'])['used'],0)
+
+    def test_cancel_quick_submission_resolves_without_creating_or_charging(self):
+        key = 'quick-' + str(uuid4())
+        with self.assertRaises(ProductError) as missing:
+            self.store.cancel_quick_submission(self.owner, key)
+        self.assertEqual(missing.exception.code, 'submission_unconfirmed')
+        self.assertEqual(self.store.jobs(self.owner['id']), [])
+        jid = self.submit(key, {'query': 'battery', 'provider': 'middle'})
+        other_key = self.store.issue_key(self.owner['id'], 'other credential')
+        other = self.store.authenticate(other_key['api_key'], rate_limit=False)
+        with self.assertRaises(ProductError):
+            self.store.cancel_quick_submission(other, key)
+        self.assertEqual(self.store.job(self.owner['id'], jid)['status'], 'queued')
+        for _ in range(2):
+            cancelled = self.store.cancel_quick_submission(self.owner, key)
+            self.assertEqual(cancelled['status'], 'cancelled')
+        usage = self.store.usage(self.owner['id'])
+        self.assertEqual((usage['reserved'], usage['used']), (0, 0))
+        self.assertEqual(len(self.store.jobs(self.owner['id'])), 1)
+
     def test_atomic_quota_and_idempotency(self):
         with ThreadPoolExecutor(max_workers=2) as pool:ids=list(pool.map(lambda _:self.submit(),range(2)))
         self.assertEqual(ids[0],ids[1]);self.assertEqual(self.store.usage(self.owner['id'])['reserved'],1)
@@ -101,29 +147,37 @@ class ProductIntegrationTests(unittest.TestCase):
     def test_monitor_paused_default_and_stop_pending(self):
         m=self.store.create_monitor(self.owner['id'],dict(query='test',domain='example.com',competitors=['other.com']))
         self.assertFalse(m['enabled'])
+        self.assertEqual(self.store.monitors(self.owner['id'])[0]['parameters']['provider'], 'middle')
+        # A saved pre-migration monitor must schedule through middle too.
+        with self.base.connect() as db:
+            db.execute("UPDATE sf_monitors SET parameters=jsonb_set(parameters,'{provider}','\"openserp\"'::jsonb) WHERE id=%s", (m['id'],))
         service=ProductService(self.config,Mock());service.tick()
         self.assertEqual(self.store.jobs(self.owner['id']),[])
         self.store.monitor_action(self.owner['id'],m['id'],True);service.tick()
         self.assertEqual(len(self.store.jobs(self.owner['id'])),1)
+        self.assertEqual(self.store.jobs(self.owner['id'])[0]['parameters']['provider'], 'middle')
         self.store.monitor_action(self.owner['id'],m['id'],False)
         self.assertEqual(self.store.jobs(self.owner['id'])[0]['status'],'cancelled')
         p=self.store.monitors(self.owner['id'])[0]['parameters']
         with self.assertRaises(ProductError):self.store.submit(self.owner,p,'stale-scheduler',self.config,m['id'])
         self.assertEqual(self.store.usage(self.owner['id'])['reserved'],0)
 
-    def test_reconcile_success_freezes_result_and_hides_public_data(self):
-        jid=self.submit()
+    def test_retired_local_job_cannot_succeed_from_saved_collector_result(self):
+        jid, _ = legacy_private_job(self.store, self.owner, {'query': 'private query'}, 'legacy-'+str(uuid4()), self.config)
         with self.base.connect() as db:cid=db.execute('SELECT campaign_id FROM sf_jobs WHERE id=%s',(jid,)).fetchone()['campaign_id']
         self.console.record(str(cid),source='google_web',provider='openserp',query='private query',page=1,language='en',response={'organic_results':[{'title':'Private','link':'https://example.com/','position':2}]},elapsed_seconds=.1,classification='results',http_status=200)
         ProductService(self.config,Mock()).tick()
         result=self.store.job(self.owner['id'],jid)
-        self.assertEqual(result['status'],'succeeded');self.assertEqual(result['charged'],1)
-        self.assertEqual(result['response']['data']['organic_results'][0]['position'],2)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['error_code'], 'provider_retired')
+        self.assertEqual(result['charged'], 0)
+        self.assertIsNone(result['response'])
+        self.assertEqual(self.store.usage(self.owner['id'])['reserved'], 0)
         self.assertEqual(self.console.browse({},'requests')['rows'],[])
         self.assertEqual(self.store.history_analysis()['samples'],0)
 
     def test_finished_collector_failure_releases_quota_immediately(self):
-        jid=self.submit()
+        jid, _ = legacy_private_job(self.store, self.owner, {'query': 'private query'}, 'legacy-'+str(uuid4()), self.config)
         with self.base.connect() as db:
             cid=db.execute('SELECT campaign_id FROM sf_jobs WHERE id=%s',(jid,)).fetchone()['campaign_id']
             db.execute("UPDATE campaigns SET status='completed' WHERE id=%s",(cid,))

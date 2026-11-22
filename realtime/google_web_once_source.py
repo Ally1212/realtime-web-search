@@ -71,7 +71,7 @@ class SingleWebSource:
     def _paused(self, base):
         with base.connect() as db:
             db.execute('SET TRANSACTION READ ONLY')
-            row=db.execute("SELECT c.status,o.started,EXISTS(SELECT 1 FROM whale_serp_task_uploads u WHERE u.campaign_id=c.id) upload FROM campaigns c JOIN serp_task_options o ON o.campaign_id=c.id WHERE c.id=%s",(self.campaign_id,)).fetchone()
+            row=db.execute("SELECT c.status,o.started,false upload FROM campaigns c JOIN serp_task_options o ON o.campaign_id=c.id WHERE c.id=%s",(self.campaign_id,)).fetchone()
         if not row or row['status']!='paused' or row['started'] or row['upload']:
             raise ValueError('one-shot campaign was activated or upload-enabled')
 

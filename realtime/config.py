@@ -197,8 +197,6 @@ class Config:
         if value.strip()
     )
     crawler_obey_robots: bool = _enabled("CRAWLER_OBEY_ROBOTS", True)
-    whale_serp_enabled: bool = _enabled("WHALE_SERP_ENABLED", False)
-    whale_enabled: bool = _enabled("WHALE_ENABLED", False)
     whale_base_url: str = os.getenv("WHALE_BASE_URL", "https://www.marsyoo.com")
     whale_collector_api_key: str = os.getenv("WHALE_COLLECTOR_API_KEY", "")
     whale_agent_id: str = os.getenv("WHALE_AGENT_ID", "realtime-web-search-01")
@@ -206,13 +204,10 @@ class Config:
     whale_source_platform: str = os.getenv("WHALE_SOURCE_PLATFORM", "google_search")
     whale_source_name: str = os.getenv("WHALE_SOURCE_NAME", "realtime-web-search")
     whale_supported_task_types: tuple[str, ...] = tuple(
-        value.strip() for value in os.getenv("WHALE_SUPPORTED_TASK_TYPES", "keyword_search").split(",") if value.strip()
+        value.strip() for value in os.getenv("WHALE_SUPPORTED_TASK_TYPES", "live_query").split(",") if value.strip()
     )
-    whale_max_concurrency: int = int(os.getenv("WHALE_MAX_CONCURRENCY", "2"))
-    whale_claim_limit: int = int(os.getenv("WHALE_CLAIM_LIMIT", "2"))
     whale_heartbeat_seconds: int = int(os.getenv("WHALE_HEARTBEAT_SECONDS", "20"))
     whale_ingest_batch_size: int = int(os.getenv("WHALE_INGEST_BATCH_SIZE", "50"))
-    continuous_whale_enabled: bool = _enabled("CONTINUOUS_WHALE_ENABLED", False)
     continuous_date_slicing_enabled: bool = _enabled(
         "CONTINUOUS_DATE_SLICING_ENABLED", False
     )

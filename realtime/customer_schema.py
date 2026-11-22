@@ -129,17 +129,11 @@ def extend_openapi(doc):
         ('/api/serp/stats', '网站运营统计', ['get']),
         ('/api/serp/export', '网站筛选结果导出', ['get']),
         ('/api/serp/tasks/{id}/progress', '手动任务详细进度', ['get']),
-        ('/api/whale/status', '平台同步状态', ['get']),
-        ('/api/whale/settings', '自动上传、平台领取设置', ['post']),
-        ('/api/whale/jobs', '平台上传队列', ['get', 'post']),
-        ('/api/whale/jobs/{id}', '平台上传任务详情', ['get']),
-        ('/api/whale/jobs/{id}/receipts', '平台上传回执', ['get']),
         ('/api/product/admin/accounts', '分配客户空间', ['get', 'post']),
     ]:
         paths[endpoint] = {method: op(title, method=method, admin=True,
                                       description='已有工作台接口；管理写操作需管理密钥。保持原参数和权限，不创建新的数据来源授权。')[method] for method in methods}
-    for prefix, actions in [('/api/serp/tasks/{id}/', ['start', 'pause', 'resume', 'stop']),
-                            ('/api/whale/jobs/{id}/', ['pause', 'resume', 'stop', 'retry'])]:
+    for prefix, actions in [('/api/serp/tasks/{id}/', ['start', 'pause', 'resume', 'stop'])]:
         for action in actions:
             paths[prefix + action] = op('管理任务：' + action, method='post', admin=True)
     from .serp_console import REGIONS, NEWS_LOCALES
@@ -157,7 +151,7 @@ def extend_openapi(doc):
         'query': {'type': 'string', 'maxLength': 300},
         'keywords': {'type': 'array', 'maxItems': 50, 'items': {'type': 'string', 'maxLength': 300}},
         'sources': source_array, 'options': task_options,
-        'start': {'type': 'boolean', 'default': True}, 'upload_to_whale': {'type': 'boolean', 'default': False},
+        'start': {'type': 'boolean', 'default': True},
         'mode': {'type': 'string', 'enum': ['once', 'scheduled'], 'default': 'once'},
         'max_successful_searches': {'type': 'integer', 'minimum': 1},
     }}
@@ -172,29 +166,17 @@ def extend_openapi(doc):
         'news_interval_seconds': {'type': 'integer', 'minimum': 300, 'maximum': 86400},
         'trends_interval_seconds': {'type': 'integer', 'minimum': 60, 'maximum': 86400},
     }}
-    upload_body = {'type': 'object', 'additionalProperties': False, 'properties': {
-        **{k: {'type': 'string'} for k in ('campaign_id', 'since', 'until', 'q')},
-        'source': {'type': 'string', 'enum': ['google_web', 'google_news', 'google_trends']},
-        'new_only': {'type': 'boolean'}, 'start': {'type': 'boolean', 'default': True},
-        'limit': {'type': 'integer', 'minimum': 1, 'maximum': 10000},
-        'urls': {'type': 'array', 'minItems': 1, 'maxItems': 1000, 'items': {'type': 'string', 'format': 'uri'}},
-    }}
     for path, schema in [('/api/serp/tasks', task_body), ('/api/collector-settings', settings_body),
-                         ('/api/whale/jobs', upload_body),
-                         ('/api/whale/settings', {'type': 'object', 'additionalProperties': False, 'properties': {
-                             k: {'type': 'boolean'} for k in ('uploads_enabled', 'claims_enabled')}}),
                          ('/api/product/admin/accounts', {'type': 'object', 'required': ['name'], 'properties': {
                              'name': {'type': 'string'}, 'monthly_limit': {'type': 'integer', 'minimum': 1, 'maximum': 100000},
                              'concurrency': {'type': 'integer', 'minimum': 1, 'maximum': 10}}})]:
         paths[path]['post']['requestBody'] = {'required': True, 'content': {'application/json': {'schema': schema}}}
-        if path in ('/api/serp/tasks', '/api/whale/jobs', '/api/product/admin/accounts'):
+        if path in ('/api/serp/tasks', '/api/product/admin/accounts'):
             paths[path]['post']['responses']['201'] = paths[path]['post']['responses'].pop('200')
     paths['/api/serp/tasks']['get']['parameters'] = [param(k) for k in ('kind', 'status', 'q')] + [param('offset', 'integer'), param('limit', 'integer')]
     for path in ('/api/serp/results', '/api/serp/browse-requests', '/api/serp/export'):
         paths[path]['get']['parameters'] = [param(k) for k in ('source', 'campaign_id', 'status', 'since', 'until', 'q', 'new_only', 'count_total')] + [param('offset', 'integer'), param('limit', 'integer')]
     paths['/api/serp/export']['get']['parameters'] += [param('format', enum=['csv', 'jsonl']), param('mode', enum=['results', 'requests']), param('view', enum=['user'])]
-    for path in ('/api/whale/jobs', '/api/whale/jobs/{id}/receipts'):
-        paths[path]['get']['parameters'] = [param('offset', 'integer'), param('limit', 'integer')]
     for path, methods in paths.items():
         if '{id}' in path:
             for operation in methods.values():

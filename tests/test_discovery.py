@@ -7,9 +7,64 @@ from unittest.mock import Mock, patch
 from realtime.config import Config
 from realtime.discovery import GoogleBlocked, ProviderCooldownRegistry, SearchDiscovery, SearchResult
 from realtime.proxy_pool import ProxyCache, ProxyPool, ProxyRecord
+from realtime.serp_worker import make_discovery
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_known_local_proxy_wait_does_not_reserve_source_slots(self):
+        pool = Mock()
+        pool.next_available_seconds.return_value = 6
+        pool.available_count.side_effect = [0, 1]
+        pool.choose.side_effect = [None, ('http://fixture-proxy:80', 'fixture-proxy')]
+        store = Mock()
+        store.acquire_discovery_slot.return_value = {'allowed': True, 'wait': 0}
+        store.reserve_google_proxy.return_value = True, 0
+        d = make_discovery(Config(), store, Mock(),
+                           {'id':'test-campaign', 'query':'test', 'proxy_profile':'private'},
+                           proxy_pool=pool)
+        self.addCleanup(d.close)
+        d.should_continue = lambda: True
+        expected = [SearchResult('https://example.org/result', 'Result', ('openserp',))]
+        d.transport.fetch = Mock(return_value=expected)
+        with self.assertRaisesRegex(GoogleBlocked, 'google_proxy_unavailable'):
+            d._attempt('openserp', 'test', 2)
+        self.assertEqual(d.proxy_wait_seconds, 6)
+        store.acquire_discovery_slot.assert_not_called()
+        store.reserve_google_proxy.assert_not_called()
+        d.transport.fetch.assert_not_called()
+
+        pool.next_available_seconds.return_value = 0
+        pool.available_count.side_effect = None
+        pool.available_count.return_value = 1
+        pool.choose.side_effect = None
+        pool.choose.return_value = ('http://fixture-proxy:80', 'fixture-proxy')
+        self.assertEqual(d._attempt('openserp', 'test', 2), expected)
+        self.assertEqual([call.args[0] for call in store.acquire_discovery_slot.call_args_list],
+                         ['google_openserp', 'google_web'])
+        store.reserve_google_proxy.assert_called_once()
+        d.transport.fetch.assert_called_once()
+
+    def test_openserp_query_pages_share_sticky_affinity(self):
+        pool = Mock()
+        pool.available_count.return_value = 1
+        pool.choose.return_value = ("http://proxy.example:80", "proxy-key")
+        d = SearchDiscovery(
+            providers=("openserp",), proxy_pool=pool, proxy_profile="private",
+            proxy_reserver=lambda *args, **kwargs: (True, 0),
+            source_slot_acquirer=Mock(return_value={"allowed": True, "wait": 0}),
+        )
+        d.transport.fetch = Mock(return_value=[SearchResult("https://example.org", "Result", ("openserp",))])
+
+        d._attempt("openserp", "same query", 1)
+        d._attempt("openserp", "same query", 2)
+        sticky = [call.kwargs["sticky_key"] for call in pool.choose.call_args_list]
+        self.assertEqual(sticky[0], sticky[1])
+        self.assertTrue(sticky[0].startswith("google-query:"))
+        self.assertNotIn("same query", sticky[0])
+
+        d._attempt("openserp", "different query", 1)
+        self.assertNotEqual(sticky[0], pool.choose.call_args_list[-1].kwargs["sticky_key"])
+
     def test_openserp_health_hash_is_separate_from_legacy_transport(self):
         key = '192.0.2.1:8080/http'
         self.assertNotEqual(
@@ -325,6 +380,42 @@ class DiscoveryTests(unittest.TestCase):
         discovery._discover_google_page.assert_called_once_with("AI", 7)
         self.assertFalse(recorder.call_args.kwargs["success"])
         self.assertTrue(recorder.call_args.kwargs["captcha"])
+
+    def test_frontier_defers_to_local_proxy_readiness_without_requesting_upstream(self):
+        proxy_pool = Mock()
+        proxy_pool.available_count.return_value = 0
+        proxy_pool.choose.return_value = None
+        proxy_pool.next_available_seconds.return_value = 12.5
+        batch = {"start_page": 7, "end_page": 7, "lease_token": "lease"}
+        recorder = Mock(return_value=True)
+        discovery = SearchDiscovery(
+            providers=("openserp",), proxy_pool=proxy_pool, proxy_profile="private",
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+            page_batch_acquirer=Mock(return_value=batch), page_result_recorder=recorder,
+        )
+        with patch.object(discovery.transport, "fetch") as fetch:
+            results, errors = discovery.discover("AI", 11)
+        self.assertEqual(results, [])
+        self.assertEqual(errors, ["page 7: google web google_proxy_unavailable"])
+        fetch.assert_not_called()
+        recorder.assert_called_once_with(
+            batch, 7, success=False, error="google_proxy_unavailable", captcha=False,
+            retry_after_seconds=12.5,
+        )
+
+    def test_local_readiness_does_not_pause_when_an_exit_is_available(self):
+        proxy_pool = Mock()
+        proxy_pool.available_count.return_value = 1
+        proxy_pool.next_available_seconds.return_value = 12.5
+        discovery = SearchDiscovery(
+            providers=("openserp",), proxy_pool=proxy_pool, proxy_profile="private",
+            source_slot_acquirer=Mock(return_value={"allowed": True}),
+        )
+        discovery._select_proxy = Mock(return_value=("http://relay:20000", "exit"))
+        discovery.transport.fetch = Mock(return_value=[])
+        discovery._attempt("openserp", "AI", 1)
+        discovery.transport.fetch.assert_called_once()
+        proxy_pool.next_available_seconds.assert_not_called()
 
     def test_pause_between_pages_releases_owned_batch_without_fake_page_failure(self):
         batch=dict(start_page=1,end_page=2,lease_token='owned')

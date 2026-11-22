@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import logging
 import time
 
 from redis import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
+
+
+log = logging.getLogger(__name__)
 
 
 class CampaignQueue:
@@ -15,11 +20,21 @@ class CampaignQueue:
 
     def enqueue(self, campaign_id: str, *, priority: bool = False) -> None:
         marker = f"realtime:campaign:queued:{campaign_id}"
-        if self.redis.set(marker, "1", nx=True, ex=3600):
-            if priority:
-                self.redis.rpush(self.READY, campaign_id)
-            else:
-                self.redis.lpush(self.READY, campaign_id)
+        # An explicit start may promote an existing ready item or repair a
+        # marker left behind after a successful pop and failed marker cleanup.
+        self.redis.eval("""
+            if ARGV[2] == '1' then
+                redis.call('LREM', KEYS[1], 0, ARGV[1])
+                redis.call('RPUSH', KEYS[1], ARGV[1])
+            else
+                if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
+                if not redis.call('LPOS', KEYS[1], ARGV[1]) then
+                    redis.call('LPUSH', KEYS[1], ARGV[1])
+                end
+            end
+            redis.call('SET', KEYS[2], '1', 'EX', 3600)
+            return 1
+        """, 2, self.READY, marker, campaign_id, "1" if priority else "0")
 
     def recover(self, campaign_id: str) -> None:
         """Recover interrupted work without duplicating ready work or bypassing delays."""
@@ -59,8 +74,8 @@ class CampaignQueue:
             return #rows - #keep
         """, 1, self.READY))
 
-    def schedule(self, campaign_id: str, delay_seconds: int = 300) -> None:
-        self.redis.zadd(self.DELAYED, {campaign_id: time.time() + delay_seconds})
+    def schedule(self, campaign_id: str, delay_seconds: float = 300, *, only_if_unscheduled: bool = False) -> None:
+        self.redis.zadd(self.DELAYED, {campaign_id: time.time() + delay_seconds}, nx=only_if_unscheduled)
 
     def promote_due(self) -> int:
         # Several worker threads promote concurrently; claim and enqueue in a
@@ -84,5 +99,10 @@ class CampaignQueue:
         if not result:
             return None
         campaign_id = result[1]
-        self.redis.delete(f"realtime:campaign:queued:{campaign_id}")
+        try:
+            self.redis.delete(f"realtime:campaign:queued:{campaign_id}")
+        except (RedisConnectionError, RedisTimeoutError):
+            # The ID has already left the ready list. Keep processing it if
+            # the secondary marker cleanup loses its connection.
+            log.warning("campaign queue marker cleanup interrupted")
         return campaign_id

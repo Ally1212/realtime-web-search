@@ -265,7 +265,13 @@ def record_news_aliases(db,response,normalized):
     # All current writers take the same ordered locks, including Web writers
     # that may discover a target concurrently with a News wrapper resolution.
     keys=sorted({int.from_bytes(hashlib.sha256(('serp-url:'+h).encode()).digest()[:8],'big',signed=True) for h in set(normalized)|set(pairs)})
-    for key in keys:db.execute('SELECT pg_advisory_xact_lock(%s)',(key,))
+    if keys:
+        db.execute(
+            """SELECT pg_advisory_xact_lock(lock_key)
+               FROM (SELECT lock_key FROM unnest(%s::bigint[]) AS keys(lock_key)
+                     ORDER BY lock_key) AS ordered_keys""",
+            (keys,),
+        )
     for old,(new,url,proof) in sorted(pairs.items()):
         previous=db.execute('SELECT * FROM serp_urls WHERE url_hash=%s',(old,)).fetchone()
         if not previous or previous['canonical_url_hash'] not in (None,new):continue

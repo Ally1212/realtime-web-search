@@ -429,8 +429,6 @@ class PipelineRunner(Runner):
                 store, self.config, self.production, self.output,
                 proxy_pool=self.pool, provider_cooldowns=self.provider_cooldowns,
             )
-            if kind != 'upload':
-                runner.whale = None
             while not self.shutdown.is_set():
                 if kind == 'search':
                     try:
@@ -443,10 +441,6 @@ class PipelineRunner(Runner):
                     finally:
                         self.events.put(('search_done', None))
                         self.jobs.task_done()
-                elif kind == 'upload':
-                    if store.get('state') in {'running', 'draining'}:
-                        runner.flush_whale()
-                    self.shutdown.wait(.5)
                 else:
                     profiles = {store.get('proxy_profile', 'private')}
                     # Google public endpoints are an independent overflow pool.
@@ -468,8 +462,6 @@ class PipelineRunner(Runner):
             if runner:
                 for client in runner.clients.values():
                     client._close_browser()
-                if runner.whale:
-                    runner.whale.session.close()
             if store:
                 store.db.close()
 
@@ -639,8 +631,6 @@ class PipelineRunner(Runner):
 
     def run(self):
         store = self.store
-        store.set('upload_interval', 1)
-        store.set('upload_batch_size', 50)
         with store.db:
             store.db.execute("UPDATE urls SET state='pending' WHERE state='fetching'")
             store.db.execute('CREATE INDEX IF NOT EXISTS pipeline_url_due ON urls(state,next_fetch,last_fetch)')
@@ -651,7 +641,7 @@ class PipelineRunner(Runner):
         restore_page_frontier(store, time.time())
         pool = BodyPool(self.body_size, per_domain=self.body_per_domain,
                         max_rss_mib=self.store.get('body_max_rss_mib', 192))
-        for kind in ['search'] * self.search_size + ['upload', 'proxy']:
+        for kind in ['search'] * self.search_size + ['proxy']:
             self._start_stage(kind)
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda *_: setattr(self, 'stop', True))
@@ -687,16 +677,13 @@ class PipelineRunner(Runner):
                         drain_until = min(now+120, store.get('deadline')+120)
                         store.set('state', 'draining')
                         store.set('stop_reason', 'interrupted' if self.stop else 'deadline')
-                    outbox = store.db.execute("SELECT count(*) FROM outbox WHERE status='pending'").fetchone()[0]
-                    if (not pool.busy and not self.search_inflight and not outbox) or now >= drain_until:
+                    if (not pool.busy and not self.search_inflight) or now >= drain_until:
                         break
                 elif state == 'running':
                     if now-last_dispatch >= .1:
-                        outbox = store.db.execute("SELECT count(*) FROM outbox WHERE status='pending'").fetchone()[0]
-                        if outbox < 5000:
-                            self._submit_bodies(pool)
-                            if not preflight_done:
-                                family_index = self._submit_searches(family_index)
+                        self._submit_bodies(pool)
+                        if not preflight_done:
+                            family_index = self._submit_searches(family_index)
                         last_dispatch = now
                     if preflight_done and not self.search_inflight and not pool.busy:
                         if not store.due_urls(1, now):

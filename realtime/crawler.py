@@ -20,7 +20,6 @@ from .discovery import SearchDiscovery, SearchResult
 from .fetcher import detect_language, extract_text, is_public_url, normalize_url, relevant_to
 from .keyword_catalog import AI_ANCHORS
 from .proxy_pool import ProxyPool
-from .whale_collector import whale_message
 
 
 SKIP_SUFFIXES = (
@@ -134,18 +133,10 @@ class PagePipeline:
             fetched_at=str(item["fetched_at"]),
             source_engines=tuple(item.get("source_engines") or ()),
         )
-        whale_task = self.store.whale_task_for_campaign(campaign_id)
-        record_key = None
-        message = None
-        if whale_task:
-            record_key, message = whale_message(item, whale_task, self.config)
         started = time.monotonic()
         _, inserted, duplicate_content, _ = self.store.record_page(
             campaign_id,
             page,
-            whale_task_id=str(whale_task["task_id"]) if whale_task else None,
-            source_record_key=record_key,
-            whale_payload=message,
         )
         observe = getattr(spider, "_observe_stage", None)
         if observe:
@@ -442,8 +433,7 @@ class FocusedSpider(scrapy.Spider):
             console = ConsoleStore(self.config.database_url)
             discovery.should_continue = lambda: console.runnable(self.campaign_id)
             discovery.task_options = self.serp_options
-            discovery.serp_cache_reader = lambda key: console.cached_feed(key, self.campaign_id)
-            discovery.serp_cache_writer = console.cache_feed
+            discovery.serp_cache_campaign_id = self.campaign_id
             discovery.transport.region = self.serp_options['web_region']
             if self.serp_options['web_region'] != 'US':
                 discovery.locale += ':' + self.serp_options['web_region']
@@ -517,22 +507,6 @@ class FocusedSpider(scrapy.Spider):
             if not self.store.attach_page(self.campaign_id, page_id):
                 continue
             self.pending_accepts += 1
-            if whale_task and str(row.get("content") or ""):
-                item = {
-                    "campaign_id": self.campaign_id,
-                    "url": str(row["url"]),
-                    "title": str(row["title"]),
-                    "content": str(row["content"]),
-                    "content_hash": str(row["content_hash"]),
-                    "language": str(row["language"] or "unknown"),
-                    "fetched_at": str(row["fetched_at"]),
-                    "discovered_at": datetime.now(timezone.utc).isoformat(),
-                    "query": self.query,
-                    "source_engines": tuple(row.get("source_engines") or ()),
-                    "http_status": int(row["http_status"]),
-                }
-                record_key, message = whale_message(item, whale_task, self.config)
-                self.store.queue_whale_message(str(whale_task["task_id"]), record_key, message)
         processed = self.store.processed_urls(self.campaign_id, candidate_urls)
         if processed:
             self._increment(duplicates=len(processed))

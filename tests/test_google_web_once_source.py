@@ -8,16 +8,16 @@ import threading
 import unittest
 from urllib.parse import urlsplit,parse_qs
 
-from tests import test_whale_serp as fixture
+from tests.search_database_fixture import SearchDatabaseFixture
 from realtime.google_web_once import web_plan
 from realtime.google_web_once_source import SingleWebSource,OneBackendSession
 
 
 @unittest.skipUnless(os.getenv('TEST_DATABASE_URL'),'requires isolated PostgreSQL')
 class SingleSourceTests(unittest.TestCase):
-    setUpDatabase=fixture.IntegrationTests.setUp
-    tearDown=fixture.IntegrationTests.tearDown
-    record=fixture.IntegrationTests.record
+    setUpDatabase=SearchDatabaseFixture.setUp
+    tearDown=SearchDatabaseFixture.tearDown
+    record=SearchDatabaseFixture.record
 
     def setUp(self):
         self.setUpDatabase()
@@ -53,8 +53,6 @@ class SingleSourceTests(unittest.TestCase):
         with self.base.connect() as db:
             self.assertEqual(db.execute("SELECT count(*) n FROM campaigns WHERE status='active'").fetchone()['n'],0)
         self.assertFalse(self.console.settings(self.config)['continuous_enabled'])
-        self.assertFalse(self.store.settings()['uploads_enabled'])
-        self.assertFalse(self.store.settings()['claims_enabled'])
 
     def test_one_http_request_saved_and_campaign_never_active(self):
         with tempfile.TemporaryDirectory() as td:

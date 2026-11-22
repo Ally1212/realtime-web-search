@@ -130,31 +130,6 @@ class PageContentHistoryTests(unittest.TestCase):
         )
         return campaign, task
 
-    def test_whale_empty_storage_refresh_and_local_body_protection(self):
-        campaign, task = self.whale_campaign()
-        a, b = "Whale first. " * 50, "Whale refreshed. " * 50
-        for i, body in enumerate((a, b)):
-            self.store.record_page(campaign, self.page("https://example.invalid/whale", body),
-                                   whale_task_id=task, source_record_key=f"whale-{i}",
-                                   whale_payload={"body": body})
-        row = self.rows()[0]
-        self.assertEqual(row["content"], "")
-        self.assertEqual(row["content_hash"], self.page("", b).content_hash)
-        local_body = "Retained local article. " * 50
-        local = self.record("https://example.invalid/local", local_body)
-        upload_body = "New upload revision. " * 50
-        self.store.record_page(campaign, self.page("https://example.invalid/local", upload_body),
-                               whale_task_id=task, source_record_key="whale-local",
-                               whale_payload={"body": upload_body})
-        with self.store.connect() as db:
-            local_row = db.execute("SELECT * FROM pages WHERE id=%s", (local[0],)).fetchone()
-            payloads = db.execute("SELECT payload FROM whale_ingest_outbox ORDER BY id").fetchall()
-        self.assertEqual(local_row["content"], local_body)
-        self.assertEqual(local_row["title"], local_body[:30])
-        self.assertEqual(local_row["content_hash"], self.page("", local_body).content_hash)
-        self.assertEqual([p["payload"]["body"] for p in payloads], [a, b, upload_body])
-        self.assertEqual(self.record("https://example.invalid/alias", upload_body)[:3], (local[0], False, True))
-
     def test_legacy_backfill_runs_once_and_preserves_unrecoverable_rows(self):
         a, b = "Legacy original. " * 50, "Legacy current. " * 50
         first = self.record("https://example.invalid/legacy", a)

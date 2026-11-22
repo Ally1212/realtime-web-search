@@ -24,7 +24,7 @@ from psycopg.types.json import Jsonb
 
 from .campaign_store import CampaignStore
 from .serp_console import NEWS_LOCALES, REGIONS
-from .serp_fields import MODULES, normalize_serp_url, public_fields
+from .serp_fields import MODULES, normalize_serp_url
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sf_platform_months (
@@ -122,25 +122,60 @@ def domain_name(value):
         raise ProductError('invalid_domain', '请输入有效域名，例如 example.com') from None
 
 
+def middle_images_enabled():
+    return os.getenv('SEARCHFLOW_MIDDLE_IMAGES_ENABLED', '').lower() == 'true'
+
+
 def parameters(payload):
     if not isinstance(payload, dict):
         raise ProductError('invalid_parameter', '请求必须是 JSON 对象')
-    if set(payload) - {'query', 'source', 'region', 'language', 'provider'}:
+    if set(payload) - {'query', 'source', 'region', 'language', 'provider', 'trends_mode', 'trends_time_range', 'max_items'}:
         raise ProductError('unsupported_parameter', '当前支持 query、source、region、language、provider；城市、设备和深度扩展尚未开放')
     query = payload.get('query', '')
     source = payload.get('source', 'google_web')
     region = payload.get('region', 'US')
     language = payload.get('language', 'en')
-    provider = payload.get('provider', 'openserp')
+    provider = payload.get('provider', 'middle')
     if not isinstance(query, str) or not 1 <= len(query.strip()) <= 300:
         raise ProductError('invalid_query', '关键词必须为 1–300 个字符')
     if source not in ('google_web', 'google_news', 'google_trends', 'google_images') or region not in REGIONS or language not in ('en', 'zh'):
         raise ProductError('invalid_parameter', '不支持此数据源、地区或语言')
-    if provider not in ('openserp', 'serper') or (provider == 'serper' and source != 'google_web'):
-        raise ProductError('unsupported_provider', '当前提供方不支持所选数据源')
+    if provider != 'middle':
+        raise ProductError('provider_retired', '新请求统一使用中台，请移除旧 provider 参数', 410)
+    if source == 'google_images' and not middle_images_enabled():
+        raise ProductError('middle_source_not_ready', '图片中台运行器尚未发布启用', 409)
     if source == 'google_news' and (region, language) not in {(x.split(':')[0], 'zh' if ':zh' in x else 'en') for x in NEWS_LOCALES if x.endswith(':en') or ':zh' in x}:
         raise ProductError('unsupported_locale', '当前新闻 RSS 不支持此地区和语言组合')
-    return dict(query=query.strip(), source=source, region=region, language=language, provider=provider, depth=20 if source == 'google_images' else 10)
+    mode = payload.get('trends_mode', 'keyword' if source == 'google_trends' else None)
+    if source == 'google_trends' and mode not in ('regional_hotlist','keyword'):
+        raise ProductError('invalid_trends_mode', '趋势模式仅支持 keyword 或 regional_hotlist', 422)
+    if source != 'google_trends' and mode is not None:
+        raise ProductError('invalid_parameter', 'trends_mode 仅适用于 Google Trends')
+    count = payload.get('max_items', 20 if source == 'google_images' else 100 if source == 'google_web' else 1 if source == 'google_trends' and mode == 'keyword' else 10)
+    if type(count) is not int or not 1 <= count <= (20 if source == 'google_images' else 100):
+        raise ProductError('invalid_parameter', 'max_items 必须为有效整数：图片1–20，其他来源1–100')
+    result = dict(query=query.strip(), source=source, region=region, language=language, provider=provider, depth=count)
+    if 'max_items' in payload:
+        result['max_items'] = count
+    if source == 'google_trends':
+        result['trends_mode'] = mode
+        window=payload.get('trends_time_range','today 3-m')
+        if window not in ('now 7-d','today 1-m','today 3-m','today 12-m','today 5-y'):raise ProductError('invalid_parameter','无效趋势时间范围')
+        if mode=='keyword':result['trends_time_range']=window
+    return result
+
+
+def middle_search_payload(payload):
+    """New customer submissions have one persistence path; no local fallback."""
+    if not isinstance(payload, dict):
+        raise ProductError('invalid_parameter', '请求必须是 JSON 对象')
+    if payload.get('provider', 'middle') != 'middle':
+        raise ProductError('provider_retired', '新请求统一使用中台，请移除旧 provider 参数', 410)
+    if payload.get('source', 'google_web') not in ('google_web', 'google_news', 'google_trends', 'google_images'):
+        raise ProductError('middle_source_not_ready', '此来源尚未完成中台契约适配，暂不能创建新请求', 409)
+    result = {**payload, 'provider': 'middle'}
+    parameters(result)
+    return result
 
 
 def canonical_parameters(payload):
@@ -150,19 +185,24 @@ def canonical_parameters(payload):
 
 def capability_payload():
     from .data_capability_schema import catalog
+    from .maps_provider import availability as maps_availability
     return {
+        'maps_api': {**maps_availability(), 'capabilities_url': '/v1/google/local/capabilities',
+                     'jobs_url': '/v1/google/local/jobs', 'search_endpoint': 'separate_from_v1_search'},
         'data_capabilities': catalog(),
         'schema_version': 'searchflow-v1', 'search_mode': 'asynchronous',
         'regions': list(REGIONS), 'languages': ['en', 'zh'], 'depth': [10],
         'sources': [
-            {'id':'google_images','label':'Google Images','method':'openserp_google_images','depth':[20],'rank_type':'image_grid_order','media_download':False},
+            {'id':'google_images','label':'Google Images','method':'openserp_google_images','depth':[20],'rank_type':'image_grid_order','media_download':False,'new_requests_enabled':middle_images_enabled(),'unavailable_reason':None if middle_images_enabled() else 'middle_images_rollout_pending'},
             {'id': 'google_web', 'label': 'Google Web', 'method': 'openserp', 'rank_type': 'observed_organic'},
             {'id': 'google_news', 'label': 'Google News', 'method': 'google_news_rss', 'rank_type': 'feed_order'},
-            {'id': 'google_trends', 'label': 'Trending Now', 'method': 'trending_now_rss', 'keyword_filter': False},
+            {'id': 'google_trends', 'label': 'Trending Now', 'method': 'trending_now_rss', 'keyword_filter': True, 'regional_hotlist_keyword_filter': False,
+             'query_modes': ['keyword','regional_hotlist'], 'default_mode': 'keyword',
+             'keyword_trends': 'interest_over_time', 'entity_units': {'keyword':'time_series','regional_hotlist':'associated_article_links'}},
         ],
-        'providers': [{'id': 'openserp', 'enabled': True}, {'id': 'serper', 'enabled': bool(os.getenv('SERPER_API_KEY'))}],
+        'providers': [{'id': 'middle', 'enabled': True, 'readback_required': True}],
         'modules': {m: 'upstream_if_provided' for m in MODULES},
-        'unsupported': ['city_targeting', 'device_selection', 'ai_mode', 'historical_trends', 'search_volume', 'live_sla'],
+        'unsupported': ['city_targeting', 'device_selection', 'ai_mode', 'search_volume', 'live_sla'],
         'freshness': '保留原始采样时间与缓存标记；OpenSERP 使用既有共享缓存，不保证每次新采。',
         'quota': '每个成功搜索任务扣 1 次；失败和取消释放预留；这是用量额度，不是支付账单。',
         'rate_limit_per_minute': 60, 'platform_new_jobs_per_utc_month': 100000,
@@ -190,6 +230,8 @@ class ProductStore:
             db.execute(subscription_schema)
             from .news_backfill import SCHEMA as news_enrichment_schema
             db.execute(news_enrichment_schema)
+            from .google_local_jobs import SCHEMA as google_local_schema
+            db.execute(google_local_schema)
             from .analytics import initialize_projection
             initialize_projection(db)
             db.execute("INSERT INTO sf_platform_months(month,accepted) SELECT quota_month,count(*) FROM sf_jobs GROUP BY quota_month ON CONFLICT(month) DO UPDATE SET accepted=greatest(sf_platform_months.accepted,EXCLUDED.accepted)")
@@ -268,13 +310,11 @@ class ProductStore:
 
     def submit(self, account, payload, idem, config, monitor_id=None, *, _db=None):
         p = canonical_parameters(payload) if monitor_id else parameters(payload)
-        if p['provider'] == 'serper' and not os.getenv('SERPER_API_KEY'):
-            raise ProductError('provider_not_configured', 'Serper 尚未配置服务端密钥', 409)
         if not isinstance(idem, str) or not 1 <= len(idem) <= 120 or re.search(r'[\x00-\x1f]', idem):
             raise ProductError('idempotency_required', '请提供 1–120 字符的 Idempotency-Key')
         fingerprint = digest(json.dumps(p, sort_keys=True))
         aid = account['id']
-        jid, cid = str(uuid4()), str(uuid4()) if p['provider'] == 'openserp' else None
+        jid, cid = str(uuid4()), None
         with (nullcontext(_db) if _db is not None else self.base.connect()) as db:
             a = db.execute('SELECT * FROM sf_accounts WHERE id=%s AND enabled FOR UPDATE', (aid,)).fetchone()
             if not a:
@@ -289,7 +329,8 @@ class ProductStore:
                     raise ProductError('idempotency_conflict', '此幂等键已用于另一组搜索参数', 409)
                 return str(existing['id']), True
             active = db.execute("SELECT count(*) n FROM sf_jobs WHERE account_id=%s AND status IN('queued','running')", (aid,)).fetchone()['n']
-            if active >= a['concurrency']:
+            maps_active = db.execute("SELECT count(*) n FROM sf_google_local_jobs WHERE account_id=%s AND status IN('queued','running')", (aid,)).fetchone()['n']
+            if active + maps_active >= a['concurrency']:
                 raise ProductError('concurrency_limit', '空间并发任务已满，请等待现有任务结束', 429)
             month = db.execute("SELECT date_trunc('month',now() AT TIME ZONE 'UTC')::date m").fetchone()['m']
             db.execute('INSERT INTO sf_platform_months(month) VALUES(%s) ON CONFLICT DO NOTHING',(month,))
@@ -300,14 +341,6 @@ class ProductStore:
             reserved = db.execute('UPDATE sf_months SET reserved=reserved+1 WHERE account_id=%s AND month=%s AND used+reserved<%s RETURNING reserved', (aid,month,a['monthly_limit'])).fetchone()
             if not reserved:
                 raise ProductError('quota_exhausted', '本月搜索额度已用尽', 429)
-            if cid:
-                opts = dict(customer_private=True, web_region=p['region'], web_language=p['language'], web_pages=1, trends_geo=p['region'])
-                candidates = [x for x in NEWS_LOCALES if x.startswith(p['region']+':') and ((p['language']=='zh' and ':zh' in x) or (p['language']=='en' and x.endswith(':en')))]
-                if candidates:
-                    opts['news_locale'] = candidates[0]
-                # Campaign and ownership commit together: no unowned in-flight task window.
-                db.execute("INSERT INTO campaigns(id,query,aliases,daily_target,proxy_profile,sources,status) VALUES(%s,%s,'[]',1000000,%s,%s,'active')", (cid,p['query'],config.default_proxy_profile,Jsonb([p['source']])))
-                db.execute("INSERT INTO serp_task_options(campaign_id,options,started,mode,max_successful_searches) VALUES(%s,%s,true,'once',1)", (cid,Jsonb(opts)))
             db.execute("INSERT INTO sf_jobs(id,account_id,monitor_id,key_id,idempotency_key,fingerprint,parameters,status,campaign_id,quota_month) VALUES(%s,%s,%s,%s,%s,%s,%s,'queued',%s,%s)",
                        (jid,aid,monitor_id,account.get('key_id'),idem,fingerprint,Jsonb(p),cid,month))
         return jid, False
@@ -385,9 +418,19 @@ class ProductStore:
             return True
 
     def cancel(self, aid, jid):
-        self.job(aid,jid)
-        self.finish(identifier(jid),'cancelled',error='cancelled_by_customer')
+        current = self.job(aid,jid)
+        self.finish(identifier(jid),'cancelled',response=current.get('response') if current['parameters']['provider']=='middle' else None,error='cancelled_by_customer')
         return self.job(aid,jid)
+
+    def cancel_quick_submission(self, account, idem):
+        with self.base.connect() as db:
+            job = db.execute(
+                'SELECT id FROM sf_jobs WHERE account_id=%s AND key_id=%s AND idempotency_key=%s AND monitor_id IS NULL',
+                (account['id'], account['key_id'], idem),
+            ).fetchone()
+        if not job:
+            raise ProductError('submission_unconfirmed', '尚未确认服务器是否收到请求，可重试停止', 409)
+        return self.cancel(account['id'], str(job['id']))
 
     def create_monitor(self, aid, payload):
         if not isinstance(payload,dict) or set(payload)-{'name','query','region','language','provider','domain','competitors','interval_seconds'}:
@@ -395,9 +438,7 @@ class ProductStore:
         name = payload.get('name') or payload.get('query','')
         if not isinstance(name,str) or not 1<=len(name.strip())<=100:
             raise ProductError('invalid_name','监测名称必须为 1–100 字符')
-        p = parameters({k:v for k,v in payload.items() if k in ('query','region','language','provider')})
-        if p['provider']=='serper' and not os.getenv('SERPER_API_KEY'):
-            raise ProductError('provider_not_configured','Serper 尚未配置',409)
+        p = parameters(middle_search_payload({k:v for k,v in payload.items() if k in ('query','region','language','provider')}))
         domain = domain_name(payload.get('domain',''))
         competitors = payload.get('competitors',[])
         if not isinstance(competitors,list) or len(competitors)>10:
@@ -514,56 +555,20 @@ class ProductService:
                 return
             pending=db.execute("SELECT * FROM sf_jobs WHERE status IN('queued','running') ORDER BY created_at LIMIT 100").fetchall()
             for job in pending:
-                if job['deadline_at']<now():
-                    self.store.finish(job['id'],'failed',error='search_deadline_exceeded')
-                    continue
-                if job['parameters']['provider']=='serper':
-                    if job['status']=='queued':
-                        with self.store.base.connect() as claim:
-                            claimed=claim.execute("UPDATE sf_jobs SET status='running' WHERE id=%s AND status='queued' RETURNING id",(job['id'],)).fetchone()
-                        if claimed:self.run_serper(job)
-                    continue
-                response=db.execute("SELECT r.*,cr.reused FROM serp_campaign_requests cr JOIN serp_requests r USING(request_id) WHERE cr.campaign_id=%s AND r.classification IN('results','empty') ORDER BY r.completed_at LIMIT 1",(job['campaign_id'],)).fetchone()
-                if response:
-                    result=dict(schema_version='searchflow-v1',provider=response['provider'],fetched_at=response['completed_at'].isoformat(),cache_hit=response['reused'],data=public_fields(response['response']),origin_request_id=str(response['request_id']))
-                    self.store.finish(job['id'],'succeeded',result)
-                elif (campaign:=db.execute('SELECT status FROM campaigns WHERE id=%s',(job['campaign_id'],)).fetchone()) and campaign['status'] in ('completed','failed','stopped'):
-                    failure=db.execute('SELECT error_code FROM serp_requests WHERE campaign_id=%s ORDER BY completed_at DESC LIMIT 1',(job['campaign_id'],)).fetchone()
-                    self.store.finish(job['id'],'failed',error=(failure or {}).get('error_code') or 'upstream_no_successful_result')
-                elif campaign and campaign['status'] == 'paused':
-                    continue
-                elif job['enqueued_at'] is None or (now()-job['enqueued_at']).total_seconds()>45:
-                    self.queue.enqueue(str(job['campaign_id']),priority=True)
-                    db.execute("UPDATE sf_jobs SET status='running',enqueued_at=now() WHERE id=%s AND status IN('queued','running')",(job['id'],))
+                if job['parameters']['provider'] == 'middle':
+                    continue  # Independent live-query runner owns deadlines and cancellation.
+                self.store.finish(job['id'], 'failed', error='provider_retired')
             monitors=db.execute('SELECT m.*,a.enabled account_enabled FROM sf_monitors m JOIN sf_accounts a ON a.id=m.account_id WHERE m.enabled AND a.enabled AND m.next_run_at<=now() ORDER BY m.next_run_at LIMIT 10').fetchall()
             for m in monitors:
                 # Serialize by account inside submit, including API traffic.
                 try:
-                    self.store.submit(dict(id=m['account_id']),m['parameters'],'monitor:'+str(m['id'])+':'+m['next_run_at'].isoformat(),self.config,m['id'])
+                    self.store.submit(dict(id=m['account_id']),dict(m['parameters'],provider='middle'),'monitor:'+str(m['id'])+':'+m['next_run_at'].isoformat(),self.config,m['id'])
                     db.execute('UPDATE sf_monitors SET next_run_at=now()+interval \'1 second\'*interval_seconds,last_error=NULL WHERE id=%s AND enabled',(m['id'],))
                 except ProductError as exc:
                     db.execute("UPDATE sf_monitors SET next_run_at=now()+interval '5 minutes',last_error=%s WHERE id=%s",(str(exc),m['id']))
             db.execute("DELETE FROM sf_rate_windows WHERE minute<now()-interval '2 hours'")
         from .analytics import sync_projection
         sync_projection(self.store.base, limit=100)
-
-    def run_serper(self, job):
-        import requests
-        p=job['parameters']
-        try:
-            r=requests.post('https://google.serper.dev/search',headers={'X-API-KEY':os.environ['SERPER_API_KEY']},json=dict(q=p['query'],gl=p['region'].lower(),hl=p['language'],num=10),timeout=(5,35))
-            r.raise_for_status();raw=r.json()
-            if not isinstance(raw,dict) or not isinstance(raw.get('organic'),list):
-                raise ValueError('invalid upstream response')
-            organic=[dict(title=x.get('title'),link=x.get('link'),snippet=x.get('snippet'),position=x.get('position')) for x in raw['organic'] if isinstance(x,dict)]
-            data=dict(organic_results=organic,search_parameters=dict(q=p['query'],gl=p['region'].lower(),hl=p['language'],device=None),module_status={m:'unavailable' for m in MODULES})
-            for upstream,field in [('knowledgeGraph','knowledge_graph'),('peopleAlsoAsk','related_questions'),('relatedSearches','related_searches')]:
-                if upstream in raw:
-                    data[field]=raw[upstream];data['module_status'][field]='present' if raw[upstream] else 'absent'
-            self.store.finish(job['id'],'succeeded',dict(schema_version='searchflow-v1',provider='serper',fetched_at=now().isoformat(),cache_hit=False,data=public_fields(data)))
-        except Exception:
-            # Never log upstream bodies, headers or credentials; no automatic paid retry.
-            self.store.finish(job['id'],'failed',error='upstream_unavailable')
 
 
 _services={}

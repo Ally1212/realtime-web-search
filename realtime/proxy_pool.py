@@ -14,8 +14,49 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+from urllib3.util import Timeout
 
 from .config import Config
+
+
+class ProxyPoolUnavailable(requests.exceptions.ProxyError):
+    pass
+
+
+class ProxyTransportFailed(requests.exceptions.ProxyError):
+    pass
+
+
+def request_with_failover(pool, profile, domain, budget, request, *, on_switch=None):
+    """Retry transport errors on up to three distinct Google exits."""
+    deadline = time.monotonic() + budget
+    use_proxy = pool is not None and profile != "direct"
+
+    def timeout():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise requests.exceptions.Timeout()
+        return Timeout(total=remaining, connect=min(5, remaining) if use_proxy else remaining)
+
+    if not use_proxy:
+        return request(None, timeout)
+    attempted = False
+    for _ in range(3):
+        if time.monotonic() >= deadline:
+            break
+        selected = pool.choose(profile, domain)
+        if selected is None:
+            if not attempted:
+                raise ProxyPoolUnavailable("no eligible proxy")
+            break
+        if attempted and on_switch:
+            on_switch()
+        attempted = True
+        try:
+            return request(selected, timeout)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            pool.defer(selected[1], domain, 30)
+    raise ProxyTransportFailed("proxy transport attempts exhausted")
 
 
 PRIVATE_PARAMS = {

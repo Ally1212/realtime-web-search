@@ -31,6 +31,7 @@ FULL_COLUMNS = (
     'rating', 'reviews', 'sitelinks_json', 'rich_snippet_json', 'favicon',
     'publisher_site_url', 'field_status_json', 'collection_method',
     'picture', 'picture_source', 'geo', 'traffic_unit',
+    'trend_time', 'trend_value', 'trend_is_partial', 'trend_query', 'trend_region', 'trend_window',
 )
 _exports = threading.BoundedSemaphore(2)
 
@@ -44,6 +45,12 @@ def _safe(value):
 
 
 def full_rows(record):
+    if record.get('page_observations'):
+        yield dict(record_type='query_snapshot', request_id=record.get('request_id'),
+                   record_json=canonical_json(record))
+        for page_record in record['page_observations']:
+            yield from full_rows(page_record)
+        return
     common = {k: record.get(k) for k in ('request_id', 'source', 'query', 'classification',
                                         'availability', 'completed_at', 'requested_at',
                                         'received_at', 'source_observed_at')}
@@ -88,6 +95,14 @@ def full_rows(record):
                    geo=source.get('geo'), traffic_unit=source.get('traffic_unit'),
                    source_fields_json=source, field_adaptation_json=enhanced_topics.get(topic['topic_observation_id']),
                    record_json=canonical_json(topic))
+    for topic in record.get('topics') or []:
+        series=topic.get('numeric_trend_series')
+        if not isinstance(series,dict):continue
+        for point in series.get('points') or []:
+            yield dict(common,record_type='trend_point',topic_id=topic['topic_observation_id'],
+                trend_time=point['timestamp'],trend_value=point['value'],trend_is_partial=point['is_partial'],
+                trend_query=series['query'],trend_region=series['region'],trend_window=series['time_range'],
+                record_json=canonical_json(point))
     for feature in adaptation.get('features', []):
         yield dict(common, record_type='feature', feature_id=feature['feature_id'],
                    feature_type=feature['feature_type'], title=feature.get('title'),

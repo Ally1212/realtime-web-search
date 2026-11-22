@@ -1,0 +1,165 @@
+import copy
+from datetime import timedelta
+import unittest
+from unittest.mock import Mock, patch
+
+from realtime.google_data import digest
+from realtime.google_domain import DomainError
+from realtime.google_whale_readback import WhaleReadbackClient
+from realtime.middle_live_runtime import LiveRunner, verified_record, bind_live_observation
+from realtime.product import now, parameters, ProductError
+
+
+def sample():
+    record=dict(request_id='request-1',source='google_web',query='battery',occurrences=[{'occurrence_id':'one'}],topics=[])
+    payload=dict(schema_version='searchflow-live-links-1',middle_query_id='lq_1',collection_task_id='task_1',record=record)
+    message=dict(dataset_id='social_media_raw',source=dict(source_platform='google_search',source_name='live',source_record_key='event'),content=dict(platform_payload=payload,external_content_id='url:one'))
+    state=dict(middle_query_id='lq_1',platform_task_ids=['task_1'],messages=[message],receipts=[dict(status='accepted',document_id='doc_1',version_id='ver_1')])
+    doc=dict(id='doc_1',dataset_id='social_media_raw',source_platform='google_search',current_version_id='newer',external_content_id='url:one')
+    ver=dict(document_id='doc_1',version_id='ver_1',version=dict(document_id='doc_1',version_id='ver_1'),platform_payload=payload)
+    reader=WhaleReadbackClient('https://middle.test','test')
+    reader._read_pair=Mock(return_value=(doc,ver))
+    return state,reader,doc,ver
+
+
+class MiddleLiveTests(unittest.TestCase):
+    def test_download_uses_pinned_payload_even_when_current_version_changes(self):
+        state,reader,_,_=sample()
+        record=verified_record(reader,state,'social_media_raw')
+        self.assertTrue(record['readback_verified'])
+        self.assertEqual(record['provenance'],'middle_consumer_pinned_versions')
+        self.assertEqual(record['middle_versions'][0]['version_id'],'ver_1')
+        self.assertEqual(record['middle_versions'][0]['verified_hashes'],['platform_payload_hash'])
+        self.assertFalse(record['middle_versions'][0]['current_document_version_matches'])
+        self.assertNotIn('provenance',state['messages'][0]['content']['platform_payload']['record'])
+
+    def test_queued_mismatch_tamper_or_missing_payload_never_unlocks_download(self):
+        for mutate in (lambda s,r,d,v:s['receipts'][0].update(status='queued'),
+                       lambda s,r,d,v:v['platform_payload'].update(collection_task_id='other'),
+                       lambda s,r,d,v:d.update(dataset_id='other'),
+                       lambda s,r,d,v:d.update(external_content_id='url:other'),
+                       lambda s,r,d,v:v.update(version_id='other'),
+                       lambda s,r,d,v:v.pop('platform_payload')):
+            state,reader,doc,version=sample()
+            # Deep copy to prevent a tampered Consumer payload also changing expected upload.
+            version=copy.deepcopy(version);reader._read_pair.return_value=(doc,version)
+            mutate(state,reader,doc,version)
+            with self.assertRaises((ValueError,KeyError,DomainError)):
+                verified_record(reader,state,'social_media_raw')
+
+    def test_realtime_upload_is_scoped_and_does_not_touch_global_switches(self):
+        runner=object.__new__(LiveRunner);runner.config=Mock(whale_collector_api_key='private')
+        runner.collector=Mock(base_url='https://middle.test')
+        runner.collector.session.post.return_value=Mock(status_code=202,json=lambda:[{}])
+        state,*_=sample();runner.upload(state)
+        call=runner.collector.session.post.call_args
+        self.assertEqual(call.kwargs['headers']['X-Ingest-Class'],'realtime')
+        self.assertEqual(call.kwargs['json'],state['messages'])
+        self.assertFalse(call.kwargs['allow_redirects'])
+
+    def test_middle_provider_cannot_silently_drop_other_sources(self):
+        self.assertEqual(parameters(dict(query='battery',provider='middle'))['provider'],'middle')
+        for source in ('google_news', 'google_trends'):
+            self.assertEqual(parameters(dict(query='battery', provider='middle', source=source, **({'trends_mode': 'regional_hotlist'} if source == 'google_trends' else {})))['source'], source)
+        with self.assertRaises(ProductError):
+            parameters(dict(query='battery', provider='middle', source='google_images'))
+
+    def test_cancellation_and_deadline_cancel_upstream_before_any_collection(self):
+        for status,deadline in [('cancelled',now()+timedelta(minutes=1)),('running',now()-timedelta(seconds=1))]:
+            runner=object.__new__(LiveRunner)
+            runner.store=Mock();runner.middle=Mock();runner.stop_campaign=Mock()
+            runner.store.base.connect.return_value.__enter__=Mock(return_value=Mock())
+            runner.store.base.connect.return_value.__exit__=Mock()
+            job=dict(id='job',account_id='owner',status=status,deadline_at=deadline,response={'middle_query_id':'lq_1'})
+            runner.advance(job)
+            runner.middle.cancel.assert_called_once_with('lq_1')
+            runner.stop_campaign.assert_called_once()
+
+    def test_create_retry_keeps_tenant_and_original_idempotency(self):
+        runner=object.__new__(LiveRunner);runner.collector=Mock();runner.middle=Mock();runner.store=Mock();runner.save=Mock()
+        runner.middle.create.side_effect=ProductError('middle_transport_unknown','unknown',503)
+        job=dict(id='job',account_id='owner',status='queued',deadline_at=now()+timedelta(minutes=1),response=None,
+                 idempotency_key='same',parameters=dict(query='battery',source='google_web',region='US',language='en',provider='middle',depth=10))
+        for _ in range(2):
+            with self.assertRaises(ProductError):runner.advance(job)
+        for call in runner.middle.create.call_args_list:
+            self.assertEqual(call.args,('owner',dict(query='battery',source='google_web',region='US',language='en'),'same'))
+
+
+class LiveObservationIdentityTests(unittest.TestCase):
+    def test_same_url_new_query_has_distinct_document_and_retry_is_stable(self):
+        source = dict(content=dict(external_content_id='url:same', canonical_url='https://example.org'), source={})
+        first = bind_live_observation(source, query_id='lq_first', task_id='task_first', record={'query': 'a', 'occurrences': [], 'completed_at': '2026-11-13T00:00:00Z'})
+        retry = bind_live_observation(source, query_id='lq_first', task_id='task_first', record={'query': 'a', 'occurrences': [], 'completed_at': '2026-11-13T00:00:00Z'})
+        other = bind_live_observation(source, query_id='lq_other', task_id='task_other', record={'query': 'b', 'occurrences': [], 'completed_at': '2026-11-13T00:00:00Z'})
+        self.assertEqual(first, retry)
+        self.assertNotEqual(first['content']['external_content_id'], other['content']['external_content_id'])
+        self.assertEqual(first['content']['canonical_url'], source['content']['canonical_url'])
+        self.assertEqual(source['content']['external_content_id'], 'url:same')
+
+
+class FeedReadbackScopeTests(unittest.TestCase):
+    def test_feed_document_cannot_be_verified_as_web(self):
+        state, reader, document, version = sample()
+        document['source_platform'] = 'google_news'
+        version['platform_payload']['record']['source'] = 'google_news'
+        with self.assertRaises(DomainError):
+            verified_record(reader, state, 'social_media_raw')
+        record = verified_record(reader, state, 'social_media_raw', 'google_news')
+        self.assertTrue(record['readback_verified'])
+        self.assertEqual(record['source'], 'google_news')
+
+
+class LiveServiceAvailabilityTests(unittest.TestCase):
+    def test_idle_registration_heartbeat_and_single_leader(self):
+        from unittest.mock import MagicMock
+        for acquired in (True, False):
+            with self.subTest(acquired=acquired):
+                runner = object.__new__(LiveRunner)
+                runner.source = 'google_news'
+                runner.store, runner.collector, runner.advance = MagicMock(), Mock(), Mock()
+                runner.config = Mock()
+                leader, db = MagicMock(), MagicMock()
+                leader.__enter__.return_value = leader
+                db.__enter__.return_value = db
+                leader.execute.return_value.fetchone.return_value = {'acquired': acquired}
+                db.execute.return_value.fetchall.return_value = []
+                runner.store.base.connect.side_effect = [leader, db]
+                with patch('realtime.middle_live_runtime.time.sleep', side_effect=KeyboardInterrupt), patch('realtime.middle_direct.DirectTasks'):
+                    with self.assertRaises(KeyboardInterrupt if acquired else RuntimeError):
+                        runner.run()
+                if acquired:
+                    runner.collector.register.assert_called_once()
+                    runner.collector.heartbeat.assert_called_once_with(0)
+                else:
+                    runner.collector.register.assert_not_called()
+                    runner.collector.heartbeat.assert_not_called()
+                runner.advance.assert_not_called()
+
+class TrendsSelectedLinksTests(unittest.TestCase):
+    def test_repeated_article_across_topics_has_one_delivered_observation(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        runner = object.__new__(LiveRunner)
+        runner.source = 'google_trends'
+        runner.config = SimpleNamespace()
+        runner.store, runner.links, runner.save = MagicMock(), MagicMock(), Mock()
+        runner.collector = SimpleNamespace(agent_id='collector')
+        owned = runner.store.base.connect.return_value.__enter__.return_value
+        owned.execute.return_value.fetchone.return_value = dict(campaign_id='campaign',status='running')
+        article = dict(title='Shared article',link='https://example.org/shared')
+        row=dict(request_id='00000000-0000-0000-0000-000000000001',source='google_trends',
+                 query='current trends',page=1,provider='google_trends_rss',classification='results',completed_at=now(),
+                 response=dict(trending_searches=[dict(keyword='Topic one',articles=[article]),
+                                                  dict(keyword='Topic two',articles=[dict(article),dict(title='Other',link='https://example.org/other')])]))
+        runner.links.connect.return_value.__enter__.return_value.execute.return_value.fetchall.return_value=[row]
+        state=dict(middle_query_id='lq_test',platform_task_ids=['task'],task=dict(payload=dict(max_items=10)))
+        def message(row,item,config,task):
+            return None,dict(content=dict(external_content_id=item['link']),source={},discovery={})
+        with patch('realtime.middle_live_runtime.task_spec',return_value=dict(max_items=10,google_pages=1)),patch('realtime.middle_live_runtime.link_message',side_effect=message):
+            runner.collect(dict(id='job',deadline_at=now()+timedelta(minutes=5)),state)
+        self.assertEqual(len(state['messages']),2)
+        record=state['messages'][0]['content']['platform_payload']['record']
+        self.assertEqual(len(record['occurrences']),2)
+        self.assertEqual(len(record['topics']),2)  # Keep actual topic metadata.
+        self.assertEqual(len(row['response']['trending_searches'][1]['articles']),2)  # Raw response remains intact.

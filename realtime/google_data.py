@@ -117,7 +117,7 @@ def normalize_request(row):
         if not isinstance(item, dict):
             invalid.append(dict(ordinal=ordinal, child_ordinal=child, reason='non_object', source_value=public_fields(item)))
             return
-        kind = 'organic' if source == 'google_web' else 'image' if source == 'google_images' else 'news_index'
+        kind = 'trend_reference' if source=='google_trends' and item.get('data_kind')=='keyword_trend_reference' else 'organic' if source == 'google_web' else 'image' if source == 'google_images' else 'news_index'
         identity = digest([DATA_VERSION, source, rid, ordinal, child])
         link = url_identity(item.get('link'))
         if kind == 'image' and link['status'] == 'available':
@@ -130,7 +130,7 @@ def normalize_request(row):
             organic_position=_positive(item.get('position')) if kind == 'organic' else None,
             source_absolute_rank=_positive(item.get('rank_absolute')),
             feed_position=_positive(item.get('feed_position')),
-            article_url=None if wrapper or kind == 'image' else link['original_url'],
+            article_url=None if wrapper or kind in ('image','trend_reference') else link['original_url'],
             publisher_site_url=url_identity(item.get('publisher_url'))['original_url'],
             resolution_status='unresolved_wrapper' if wrapper else link['status'],
             publication=news_time(item) if kind == 'news_index' else None,
@@ -150,7 +150,7 @@ def normalize_request(row):
             topics.append(dict(topic_observation_id=tid, ordinal=ordinal,
                 topic=item.get('keyword'), approx_traffic_label=item.get('approx_traffic'),
                 measurement_nature='rounded_lower_bound' if str(item.get('approx_traffic') or '').endswith('+') else 'unknown',
-                numeric_trend_series=None, source_fields=public_fields(item),
+                numeric_trend_series=public_fields(item.get('numeric_trend_series')) if item.get('data_kind')=='keyword_interest_over_time' else None, source_fields=public_fields(item),
                 source_record_hash=digest(public_fields(item))))
             articles = item.get('articles')
             if articles is not None and not isinstance(articles, list):

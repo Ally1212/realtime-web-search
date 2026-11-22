@@ -174,7 +174,7 @@ class WebOnce:
                 except Exception as error:
                     if getattr(error,'status_code',None) not in {429,503}:
                         raise
-                    from .whale_serp import retry_delay
+                    from .middle_ingest import retry_delay
                     delay = retry_delay(state['receipt_polls'],getattr(error,'retry_after',None))
                     self._save(state,'awaiting_terminal',receipt_not_before=(
                         datetime.now(timezone.utc)+timedelta(seconds=delay)).isoformat())

@@ -21,7 +21,7 @@ from realtime.campaign_store import CampaignStore, _INITIALIZED_DSNS, _POOLS
 from realtime.config import Config
 from realtime.google_legacy import read_public_requests as browse, read_public_request as detail
 from realtime.google_data_export import export_public_data, verify_bundle as verify_export
-from realtime.product import parameters
+from realtime.product import parameters, ProductError
 from realtime.serp_presentation import user_result_rows
 
 
@@ -86,7 +86,9 @@ class ImagesTests(unittest.TestCase):
         self.assertIsNone(result['article_url'])
         self.assertEqual(result['source_page_url'],'https://example.com/article')
         self.assertEqual(result['url']['normalized_url'],item()['image']['url'])
-        self.assertEqual(parameters({'query':'cats','source':'google_images'})['depth'],20)
+        # Historical image records remain readable; new image jobs require a middle contract.
+        with self.assertRaises(ProductError):
+            parameters({'query':'cats','source':'google_images'})
         csvrow=next(user_result_rows(dict(data=mapped,source='google_images')))
         self.assertEqual(csvrow['图片来源网页'],'https://example.com/article')
         self.assertIsNone(csvrow['自然排名'])
@@ -134,13 +136,6 @@ class ImagesDatabaseTests(unittest.TestCase):
         from realtime.analytics import initialize_projection, sync_projection
         with self.base.connect() as db:initialize_projection(db)
         self.assertEqual(sync_projection(self.base),0)  # Not a Web ranking observation.
-        from realtime.whale_serp import WhaleSerpStore
-        whale=WhaleSerpStore(self.dsn);whale.initialize()
-        config=Config(database_url=self.dsn)
-        with self.assertRaises(ValueError):whale.enqueue({'source':'google_images'},config)
-        with self.assertRaises(ValueError):whale.enqueue({'new_only':False,'start':False},config)
-        with self.base.connect() as db:
-            self.assertEqual(db.execute('SELECT count(*) n FROM whale_serp_outbox').fetchone()['n'],0)
         with tempfile.TemporaryDirectory() as tmp:
             export_public_data(self.dsn,Path(tmp)/'bundle',filters={'source':'google_images'})
             verify_export(Path(tmp)/'bundle')

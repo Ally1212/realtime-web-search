@@ -9,8 +9,6 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("serve")
     commands.add_parser("worker")
-    commands.add_parser("whale-worker")
-    commands.add_parser("continuous-whale")
     sync = commands.add_parser("sync-proxies")
     sync.add_argument("--profile", choices=("private", "public"), default="private")
     benchmark = commands.add_parser("benchmark")
@@ -59,11 +57,6 @@ def main() -> None:
         "--languages", default="zh,en",
         help="Comma-separated experiment languages: zh,en (default: zh,en)",
     )
-    experiment.add_argument("--whale", action="store_true")
-    experiment.add_argument(
-        "--remote-only", action="store_true",
-        help="Keep document bodies only while pending Whale delivery; requires --whale",
-    )
     experiment.add_argument("--preflight", action="store_true", help="Bounded two-page pilot, not a 24h result")
     experiment.add_argument("--baseline-run", action="append", default=[])
     experiment.add_argument("--baseline-export", action="append", default=[])
@@ -79,12 +72,6 @@ def main() -> None:
     elif args.command == "worker":
         from .worker import run_worker
         run_worker()
-    elif args.command == "whale-worker":
-        from .whale_collector import run_whale_worker
-        run_whale_worker()
-    elif args.command == "continuous-whale":
-        from .whale_collector import run_continuous_whale
-        run_continuous_whale()
     elif args.command == "sync-proxies":
         from .config import Config
         from .proxy_pool import ProxySynchronizer

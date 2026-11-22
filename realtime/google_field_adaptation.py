@@ -272,19 +272,19 @@ def adapt_request_fields(row):
             result_language=_text(source.get('language')),
             detected_language=_text(source.get('detected_language')),
             content_semantics='image_metadata' if occurrence['result_type']=='image' else
-                'serp_snippet' if occurrence['result_type']=='organic' else 'news_index',
+                'trend_reference' if occurrence['result_type']=='trend_reference' else 'serp_snippet' if occurrence['result_type']=='organic' else 'news_index',
             publisher_page_verified=False,
             missing_reason={k:'not_provided' for k in ('author','provider_rank_group','parent_block_id',
                 'registrable_domain','subdomain','canonical_url','sponsored_label') if source.get(k) is None}))
     topics = [dict(topic_observation_id=topic['topic_observation_id'],
                    native_topic_id=_text(topic['source_fields'].get('provider_topic_id')),
-                   label=topic['topic'], topic_kind='trending_now_label_not_provider_topic_id',
+                   label=topic['topic'], topic_kind='keyword_interest_over_time' if topic.get('numeric_trend_series') is not None else 'trending_now_label_not_provider_topic_id',
                    geo=topic['source_fields'].get('geo'),
                    traffic_value=_number(topic['source_fields'].get('traffic_value')),
                    traffic_unit=topic['source_fields'].get('traffic_unit'),
                    traffic_is_lower_bound=_boolean(topic['source_fields'].get('traffic_is_lower_bound')),
-                   numeric_trend_series=None,
-                   numeric_series_availability='not_covered') for topic in record['topics']]
+                   numeric_trend_series=topic.get('numeric_trend_series'),
+                   numeric_series_availability='available' if topic.get('numeric_trend_series') is not None else 'not_covered') for topic in record['topics']]
     native_items = {}
     for item in items:
         if item['native_id']:

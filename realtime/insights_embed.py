@@ -99,7 +99,7 @@ $('allowAI').onchange=()=>{$('external').checked=$('allowAI').checked;if(!curren
 let entering=false;
 async function enter(){if(entering)return;const shared=typeof productKey==='string'?productKey:(sessionStorage.getItem('searchflowKey')||'');if(shared!==key){key=shared;reset()}if(!key){$('connectPanel').open=true;status('请使用工作台已有客户密钥连接数据权限。');return}entering=true;try{await loadList();if(!current&&datasets.length){await selectDataset(datasets[0].id);switchTab('observed')}}catch(e){status(e.message,true)}finally{entering=false}}
 const originalShowView=showView;
-showView=function(){if(location.hash==='#insights'){view='insights';for(const node of document.querySelectorAll('main section[id$="View"]'))node.hidden=true;root.hidden=false;for(const nav of document.querySelectorAll('aside [data-view]'))nav.setAttribute('aria-current',nav.dataset.view==='insights'?'page':'false');document.getElementById('pageTitle').textContent='数据分析';document.getElementById('pageSubtitle').textContent='分析系统已采集的真实数据，随时回查原始记录';action(enter)}else{root.hidden=true;originalShowView()}};
+showView=function(){for(const nav of document.querySelectorAll('aside [data-view]'))nav.removeAttribute('aria-current');if(location.hash==='#insights'){view='insights';for(const node of document.querySelectorAll('main section[id$="View"]'))node.hidden=true;root.hidden=false;document.querySelector('aside [data-view="insights"]').setAttribute('aria-current','page');document.getElementById('pageTitle').textContent='数据分析';document.getElementById('pageSubtitle').textContent='分析系统已采集的真实数据，随时回查原始记录';action(enter)}else{root.hidden=true;originalShowView()}};
 $('observedTab').append($('workspace').querySelector('section details'));
 reset();
 '''.replace('\n+', '\n')

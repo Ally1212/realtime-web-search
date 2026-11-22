@@ -10,33 +10,91 @@ import re
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from .product import ProductError, ProductStore, admin_secret, capability_payload, identifier
+from .product import ProductError, ProductStore, admin_secret, capability_payload, identifier, middle_search_payload
 from .google_domain import DomainError
 
 
 def openapi():
     search = {'type':'object','additionalProperties':False,'required':['query'],'properties':{
         'query':{'type':'string','minLength':1,'maxLength':300},
-        'source':{'type':'string','enum':['google_web','google_news','google_trends','google_images'],'default':'google_web'},
+        'source':{'type':'string','enum':['google_web','google_news','google_trends'],'default':'google_web'},
         'region':{'type':'string','enum':capability_payload()['regions'],'default':'US'},
         'language':{'type':'string','enum':['en','zh'],'default':'en'},
-        'provider':{'type':'string','enum':['openserp','serper'],'default':'openserp'}}}
+        'max_items':{'type':'integer','minimum':1,'maximum':100,'default':10,
+                     'description':'最多交付链接数，不保证搜满；Web按10条估算分页预算，最多10页。'},
+        'trends_time_range':{'type':'string','enum':['now 7-d','today 1-m','today 3-m','today 12-m','today 5-y'],'default':'today 3-m'},
+        'trends_mode':{'type':'string','enum':['keyword','regional_hotlist'],
+                       'description':'默认关键词趋势；地区热榜需显式选择 regional_hotlist。'},
+        'provider':{'type':'string','enum':['middle'],'default':'middle'}}}
     def op(summary, method='get', body=None, code='200'):
-        v={'summary':summary,'responses':{code:{'description':'成功'},'400':{'description':'参数无效'},'401':{'description':'密钥无效'},'429':{'description':'限流、并发或额度已满'}}}
+        v={'summary':summary,'responses':{code:{'description':'成功'},'400':{'description':'参数无效'},'422':{'description':'不支持关键词趋势；地区热榜需显式声明模式'},'401':{'description':'密钥无效'},'429':{'description':'限流、并发或额度已满'}}}
         if body:v['requestBody']={'required':True,'content':{'application/json':{'schema':body}}}
         if summary=='提交搜索':v['parameters']=[{'in':'header','name':'Idempotency-Key','required':True,'schema':{'type':'string','maxLength':120}}]
         return {method:v}
     paths={'/v1/search':op('提交搜索','post',search,'202'), '/v1/jobs':op('最近 30 个任务'),
            '/v1/jobs/{id}':op('查询任务及冻结结果'),'/v1/jobs/{id}/cancel':op('取消任务','post'),
            '/v1/usage':op('UTC 月度额度'),'/v1/keys':{**op('列出密钥'),**op('创建密钥','post',{'type':'object','required':['name'],'properties':{'name':{'type':'string'}}},'201')},
-           '/v1/keys/{id}/revoke':op('撤销密钥','post'),'/v1/monitors':{**op('监测列表'),**op('创建暂停的监测','post',{'type':'object','required':['query','domain'],'properties':{**{k:v for k,v in search['properties'].items() if k!='source'},'name':{'type':'string'},'domain':{'type':'string'},'competitors':{'type':'array','items':{'type':'string'},'maxItems':10},'interval_seconds':{'type':'integer','minimum':3600,'maximum':604800}}},'201')},
+           '/v1/keys/{id}/revoke':op('撤销密钥','post'),'/v1/monitors':{**op('监测列表'),**op('创建暂停的监测','post',{'type':'object','required':['query','domain'],'properties':{**{k:v for k,v in search['properties'].items() if k not in ('source', 'max_items', 'trends_mode')},'name':{'type':'string'},'domain':{'type':'string'},'competitors':{'type':'array','items':{'type':'string'},'maxItems':10},'interval_seconds':{'type':'integer','minimum':3600,'maximum':604800}}},'201')},
            '/v1/monitors/{id}/start':op('开始监测，会消耗空间额度','post'),'/v1/monitors/{id}/pause':op('暂停监测','post'),'/v1/monitors/{id}/report':op('监测排名与竞品变化'),'/v1/jobs/{id}/export':op('导出结果，format=jsonl 或 csv')}
     for path, methods in paths.items():
         if '{id}' in path:
             for v in methods.values():v.setdefault('parameters',[]).append({'in':'path','name':'id','required':True,'schema':{'type':'string','format':'uuid'}})
-    document = {'openapi':'3.0.3','info':{'title':'SearchFlow API','version':'1.1.0','description':'异步搜索和完整数据交付；不保证每次新采或上游成功。所有请求还需站点访问凭据。'},'servers':[{'url':'/'}],'security':[{'bearerAuth':[], 'siteAccess':[]}],'components':{'securitySchemes':{'bearerAuth':{'type':'http','scheme':'bearer'}, 'siteAccess':{'type':'apiKey','in':'header','name':'X-SearchFlow-Access-Key'}, 'adminAuth':{'type':'http','scheme':'bearer','description':'管理密钥；客户密钥不可替代'}}},'paths':paths}
+    document = {'openapi':'3.0.3','info':{'title':'SearchFlow API','version':'1.2.0','description':'异步搜索和完整数据交付；不保证每次新采或上游成功。所有请求还需站点访问凭据。'},'servers':[{'url':'/'}],'security':[{'bearerAuth':[], 'siteAccess':[]}],'components':{'securitySchemes':{'bearerAuth':{'type':'http','scheme':'bearer'}, 'siteAccess':{'type':'apiKey','in':'header','name':'X-SearchFlow-Access-Key'}, 'adminAuth':{'type':'http','scheme':'bearer','description':'管理密钥；客户密钥不可替代'}}},'paths':paths}
+    local_job = {'type':'object','additionalProperties':False,'properties':{
+        'mode':{'type':'string','enum':['text','nearby'],'default':'text'},
+        'query':{'type':'string','maxLength':300},
+        'region':{'type':'string','enum':capability_payload()['regions'],'default':'US'},
+        'language':{'type':'string','enum':['en','zh'],'default':'en'},
+        'city':{'type':'string','maxLength':120},
+        'included_type':{'type':'string','maxLength':80},
+        'location':{'type':'object','required':['lat','lng'],'properties':{
+            'lat':{'type':'number','minimum':-90,'maximum':90},
+            'lng':{'type':'number','minimum':-180,'maximum':180}}},
+        'radius_m':{'type':'integer','minimum':1,'maximum':50000,'default':5000}}}
+    document['paths'].update({
+        '/v1/google/local/capabilities':op('Google Maps 实时数据能力'),
+        '/v1/google/local/jobs':op('创建 Google Maps 实时查询','post',local_job,'202'),
+        '/v1/google/local/jobs/{id}':op('查询 Google Maps 任务状态'),
+        '/v1/google/local/jobs/{id}/results':op('读取 24 小时 Maps 商家快照'),
+        '/v1/google/local/jobs/{id}/export':op('下载 Maps 商家快照，format=csv 或 jsonl'),
+        '/v1/google/places/{place_id}':op('地点详情暂不可用，返回409'),
+    })
+    document['paths']['/v1/google/local/jobs']['post']['parameters']=[{'in':'header','name':'Idempotency-Key','required':True,'schema':{'type':'string','maxLength':120}}]
+    document['paths']['/v1/google/places/{place_id}']['get']['parameters']=[
+        {'in':'path','name':'place_id','required':True,'schema':{'type':'string'}},
+        {'in':'query','name':'language','schema':{'type':'string','enum':['en','zh'],'default':'en'}},
+        {'in':'query','name':'region','schema':{'type':'string','enum':capability_payload()['regions'],'default':'US'}}]
     from .customer_schema import extend_openapi
-    return extend_openapi(document)
+    from .maps_schema import extend_openapi as maps_openapi
+    return maps_openapi(extend_openapi(document))
+
+
+def data_openapi():
+    """Public catalog for the data-only API workspace.
+
+    Legacy operator, monitoring and analysis routes remain implemented for
+    existing deployments, but are deliberately not offered in this catalog.
+    """
+    document = openapi()
+    data_prefixes = (
+        '/v1/search', '/v1/jobs', '/v1/data/', '/v1/google/local/',
+        '/v1/google/places/', '/v1/google/legacy-data',
+        '/v1/google/legacy-delivery', '/v1/usage', '/v1/keys',
+    )
+    document['paths'] = {
+        path: operations for path, operations in document['paths'].items()
+        if path.startswith(data_prefixes) and not path.startswith('/v1/google/places/')
+    }
+    document['info'] = {
+        **document['info'],
+        'title': 'SearchFlow Data API',
+        'description': (
+            '搜索、地点、历史记录、文件导出与数据订阅接口。'
+            '当前目录不包含数据分析、排名报告、洞察、监测或工作台管理服务。'
+        ),
+    }
+    document['components']['securitySchemes'].pop('adminAuth', None)
+    return document
 
 
 def secure(handler):
@@ -65,6 +123,13 @@ def body(handler, *, reject_duplicates=False):
 
 def handle(handler, method):
     parsed=urlparse(handler.path);path=parsed.path
+    if path == '/api/quick-request' or path.startswith('/api/quick-request/'):
+        from .quick_request_http import handle as quick_handle
+        return quick_handle(handler, method)
+    if path.startswith('/api/maps/') or path.startswith('/v1/google/local/') or re.fullmatch(r'/v1/google/places/[^/]+', path):
+        from .google_local_http import handle as local_handle
+        if local_handle(handler, method):
+            return True
     if path=='/v1/google' or path.startswith('/v1/google/'):
         from .google_http import handle as google_handle
         return google_handle(handler, method)
@@ -77,7 +142,8 @@ def handle(handler, method):
             if runtime_for(handler):payload['data_capabilities']['availability']='tenant_dependent'
             handler.send_json(payload);return True
         if path=='/v1/openapi.json' and method=='GET':
-            handler.send_json(openapi());return True
+            catalog=parse_qs(parsed.query).get('catalog',[''])[0]
+            handler.send_json(data_openapi() if catalog=='data' else openapi());return True
         if os.getenv('SEARCHFLOW_PRODUCT_ENABLED')!='true':
             raise ProductError('product_disabled','产品模块尚未启用',503)
         store=ProductStore(handler.config.database_url)
@@ -111,10 +177,14 @@ def handle(handler, method):
         params = query_parameters(parse_qs(parsed.query, keep_blank_values=True))
         status=200
         if path=='/v1/search' and method=='POST':
-            jid,reused=store.submit(account,body(handler),handler.headers.get('Idempotency-Key'),handler.config)
+            jid,reused=store.submit(account,middle_search_payload(body(handler)),handler.headers.get('Idempotency-Key'),handler.config)
             result=dict(id=jid,reused=reused,status_url='/v1/jobs/'+jid);status=202
         elif path=='/v1/search/batch' and method=='POST':
-            result=store.submit_batch(account,body(handler),handler.headers.get('Idempotency-Key'),handler.config);status=202
+            batch = body(handler)
+            if not isinstance(batch, dict) or set(batch) != {'searches'} or not isinstance(batch['searches'], list):
+                raise ProductError('invalid_parameter', '批量请求仅支持 searches 数组')
+            batch = {'searches': [middle_search_payload(item) for item in batch['searches']]}
+            result=store.submit_batch(account,batch,handler.headers.get('Idempotency-Key'),handler.config);status=202
         elif path=='/v1/usage' and method=='GET':result=store.usage(aid)
         elif path=='/v1/jobs' and method=='GET':
             from .customer_jobs import list_jobs

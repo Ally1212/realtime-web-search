@@ -16,12 +16,13 @@ from xml.etree import ElementTree
 import requests
 from bs4 import BeautifulSoup
 
-from .proxy_pool import ProxyPool
+from .proxy_pool import ProxyPool, request_with_failover
 from .discovery_audit import DiscoveryAudit
 
 
 _DISCOVERY_LIMITERS: dict[int, threading.BoundedSemaphore] = {}
 _DISCOVERY_LIMITERS_LOCK = threading.Lock()
+_OPENSERP_PROXY_PROTOCOLS = frozenset({'http', 'socks5'})
 
 
 def _discovery_limiter(limit: int) -> threading.BoundedSemaphore:
@@ -94,6 +95,7 @@ class SearchDiscovery:
         proxy_min_interval_seconds: int = 30,
         proxy_sticky_seconds: int = 120,
         proxy_cooldown_seconds: int = 300,
+        check_local_proxy_readiness: bool = False,
         source_cooldown_seconds: int = 1800,
         captcha_threshold: float = 0.02,
         web_query_eligible: bool = True,
@@ -140,11 +142,11 @@ class SearchDiscovery:
         self.timeout = timeout
         self.proxy_pool = proxy_pool
         self.proxy_profile = proxy_profile
+        self.check_local_proxy_readiness = check_local_proxy_readiness
         self.language = language if language in {"en", "zh"} else "en"
         self.locale = "zh-CN" if self.language == "zh" else "en-SG"
         self.should_continue = None
-        self.serp_cache_reader = None
-        self.serp_cache_writer = None
+        self.serp_cache_campaign_id = None
         self.global_limiter = _discovery_limiter(global_concurrency)
         self.query_concurrency = max(1, query_concurrency)
         self.proxy_usage_recorder = proxy_usage_recorder
@@ -264,11 +266,10 @@ class SearchDiscovery:
         key = self._cache_key(source, query, locale, page)
         if not self.cache_get:
             return key, None
-        row = self.cache_get(key, source)
-        if row and source == 'google_web' and self.serp_cache_reader:
-            # A reused response must remain attributable to this task.
-            if self.serp_cache_reader(key) is None:
-                return key, None
+        if source == 'google_web' and self.serp_cache_campaign_id:
+            row = self.cache_get(key, source, serp_campaign_id=self.serp_cache_campaign_id)
+        else:
+            row = self.cache_get(key, source)
         return key, self._deserialize(row.get("payload")) if row else None
 
     def _store_cache(
@@ -278,16 +279,15 @@ class SearchDiscovery:
     ) -> None:
         if not self.cache_put:
             return
+        request_id = (getattr(self._thread_state, 'last_serp_request_id', None)
+                      if source == 'google_web' and self.serp_cache_campaign_id else None)
         self.cache_put(
             key, source, hashlib.sha256(query.encode()).hexdigest(), locale, page,
             self._serialize(results), ttl, novel_count=novel_count,
             etag=response.headers.get("ETag") if response else None,
             last_modified=response.headers.get("Last-Modified") if response else None,
+            **({'serp_request_id': request_id} if request_id else {}),
         )
-        if source == 'google_web' and self.serp_cache_writer:
-            request_id = getattr(self._thread_state, 'last_serp_request_id', None)
-            if request_id:
-                self.serp_cache_writer(key, request_id, ttl)
 
     def _flush_proxy_usage(self) -> None:
         if not self.proxy_usage_recorder:
@@ -354,7 +354,7 @@ class SearchDiscovery:
         if wait > 0:
             time.sleep(wait)
 
-    def _select_proxy(self, provider: str) -> tuple[str | None, str]:
+    def _select_proxy(self, provider: str, *, affinity_key: str | None = None) -> tuple[str | None, str]:
         self._thread_state.proxy_wait_seconds = 0.0
         if provider == "searxng" or provider.endswith("_direct") or self.proxy_profile == "direct":
             return None, ""
@@ -363,7 +363,7 @@ class SearchDiscovery:
         # OpenSERP uses Chrome through the credential-hiding relay. Authenticated
         # HTTP CONNECT is less reliable there; authenticated SOCKS5 preserves
         # per-exit lanes and measured substantially better in isolation.
-        protocols = frozenset({"http", "socks5"}) if provider == "openserp" else None
+        protocols = _OPENSERP_PROXY_PROTOCOLS if provider == "openserp" else None
         # Private exits are higher quality, but Google traffic can temporarily
         # exhaust their host-level reservations. WML is a lightweight fallback
         # and can safely use the independently measured public Google pool.
@@ -380,7 +380,7 @@ class SearchDiscovery:
             for _ in range(max(1, available)):
                 selected = self.proxy_pool.choose(
                     profile, "www.google.com", sticky_seconds=self.proxy_sticky_seconds,
-                    sticky_key=f"google:{threading.get_ident()}", full_pool=True,
+                    sticky_key=affinity_key or f"google:{threading.get_ident()}", full_pool=True,
                     protocols=protocols,
                 )
                 if not selected:
@@ -390,6 +390,7 @@ class SearchDiscovery:
                     self.proxy_pool.defer(key, "www.google.com", 60)
                     continue
                 proxy_hash = self._proxy_hash(provider, key)
+                live_reserver = None
                 if self.proxy_group_reserver:
                     if provider == "openserp":
                         group, aliases = self.proxy_pool.google_identity_for_scope(key, "openserp")
@@ -397,8 +398,12 @@ class SearchDiscovery:
                         group, aliases = self.proxy_pool.google_identity(key)
                     allowed, wait = self.proxy_group_reserver(group, aliases, self.locale, self.proxy_min_interval_seconds)
                 else:
-                    allowed, wait = self.proxy_reserver(proxy_hash, self.locale, self.proxy_min_interval_seconds) if self.proxy_reserver else (True, 0)
+                    live_reserver = getattr(self, 'live_web_reserver', None) if provider == 'openserp' else None
+                    reserve = live_reserver or self.proxy_reserver
+                    allowed, wait = reserve(proxy_hash, self.locale, self.proxy_min_interval_seconds) if reserve else (True, 0)
                 if allowed:
+                    if live_reserver and wait > 0:
+                        time.sleep(wait)
                     if provider == "openserp":
                         url = self.proxy_pool.openserp_proxy_url(self.proxy_profile, key) or url
                     return url, key
@@ -428,14 +433,48 @@ class SearchDiscovery:
     def _attempt(self, provider: str, query: str, page: int, *, vertical: str = "web") -> list[SearchResult]:
         if self.should_continue and not self.should_continue():
             raise GoogleBlocked("campaign_inactive")
+        cutoff_at = getattr(self, 'live_collection_stop_at', None) if vertical == 'web' else None
+        if cutoff_at is not None and time.time() >= cutoff_at:
+            raise GoogleBlocked('search_deadline_exceeded')
         source = f"google_{provider}"
         if self._provider_cooldowns.cooling(provider):
             raise GoogleBlocked("google_provider_cooling")
-        self._reserve_source(source)
-        self._reserve_source("google_web")
+        if (self.check_local_proxy_readiness and self.proxy_pool is not None
+                and self.proxy_profile != 'direct' and provider == 'openserp' and vertical == 'web'):
+            # next_available_seconds() reports the earliest local cooldown, but
+            # it is also positive when other compatible exits are already
+            # eligible. Treating any positive value as pool exhaustion causes
+            # all workers to pause behind one cooling exit. Only gate the
+            # request when the compatible local pool has no eligible endpoint.
+            available = self.proxy_pool.available_count(
+                self.proxy_profile, 'www.google.com', protocols=_OPENSERP_PROXY_PROTOCOLS,
+            )
+            if available <= 0:
+                wait = self.proxy_pool.next_available_seconds(
+                    self.proxy_profile, 'www.google.com', protocols=_OPENSERP_PROXY_PROTOCOLS,
+                )
+                self._thread_state.proxy_wait_seconds = max(1.0, wait)
+                raise GoogleBlocked('google_proxy_unavailable')
+        admitted_with_proxy = (provider == 'openserp' and vertical == 'web' and self.proxy_profile != 'direct'
+                               and getattr(self, 'live_web_reserver', None) and not self.proxy_group_reserver)
+        if not admitted_with_proxy:
+            self._reserve_source(source)
+            self._reserve_source("google_web")
         if self.should_continue and not self.should_continue():
             raise GoogleBlocked("campaign_inactive")
-        proxy_url, proxy_key = self._select_proxy(provider)
+        # Keep one Google identity across the pages of a query when possible.
+        # A cooling/failed exit is still skipped by ProxyPool.choose(), so this
+        # preserves the existing failover and per-exit interval safeguards.
+        affinity_key = None
+        if provider == "openserp" and vertical == "web":
+            affinity_key = "google-query:" + hashlib.sha256(
+                (self.locale + "\0" + query).encode("utf-8")
+            ).hexdigest()
+        proxy_url, proxy_key = self._select_proxy(provider, affinity_key=affinity_key)
+        if admitted_with_proxy and self.should_continue and not self.should_continue():
+            raise GoogleBlocked("campaign_inactive")
+        if cutoff_at is not None and time.time() >= cutoff_at:
+            raise GoogleBlocked('search_deadline_exceeded')
         proxy_hash = self._proxy_hash(provider, proxy_key) if proxy_key else ""
         if proxy_hash:
             with self._proxy_usage_lock:
@@ -452,7 +491,14 @@ class SearchDiscovery:
                     from .google_images import fetch_page
                     results = fetch_page(self.transport, query, page, proxy_url, proxy_key)
                 else:
-                    results = self.transport.fetch(provider, query, page, proxy_url, proxy_key=proxy_key)
+                    timeout = self.transport.openserp_request_timeout_seconds if cutoff_at is not None else None
+                    if timeout is not None:
+                        self.transport.openserp_request_timeout_seconds = min(timeout, max(.01, cutoff_at-time.time()))
+                    try:
+                        results = self.transport.fetch(provider, query, page, proxy_url, proxy_key=proxy_key)
+                    finally:
+                        if timeout is not None:
+                            self.transport.openserp_request_timeout_seconds = timeout
             return results
         except Exception as exc:
             failure = exc
@@ -693,6 +739,8 @@ class SearchDiscovery:
                     if batch and self.page_batch_releaser:
                         self.page_batch_releaser(batch)
                     break
+                if page in getattr(self, 'completed_web_pages', ()):
+                    continue
                 try:
                     page_results = self._discover_google_page(query, page)
                     for result in page_results:
@@ -714,12 +762,24 @@ class SearchDiscovery:
                     errors.append(f"page {page}: google web {reason}")
                     if batch and self.page_result_recorder:
                         try:
+                            retry = (
+                                {"retry_after_seconds": self.proxy_wait_seconds}
+                                if reason == "google_proxy_unavailable" else {}
+                            )
                             self.page_result_recorder(
                                 batch, page, success=False, error=reason,
                                 captcha=isinstance(exc, GoogleBlocked) and exc.captcha,
+                                **retry,
                             )
                         except Exception as frontier_exc:
                             errors.append(f"google frontier release {type(frontier_exc).__name__}")
+                    if getattr(self, 'continue_on_page_error', False) and not batch:
+                        if (reason in ('google_proxy_unavailable', 'google_web_circuit_open', 'google_web_rate_wait',
+                                       'google_provider_cooling', 'openserp_unavailable', 'google_query_inflight',
+                                       'search_deadline_exceeded')
+                                and getattr(self, 'pause_on_proxy_unavailable', False)):
+                            break
+                        continue
                     break
         return list(found.values()), list(dict.fromkeys(errors))
 
@@ -750,13 +810,27 @@ class SearchDiscovery:
         with self.auxiliary_audit.request(method, url) as audit:
             return self._external_request_traced(audit, method, url, **kwargs)
 
-    def _external_request_traced(self, audit: dict[str, Any], method: str, url: str, **kwargs: Any) -> requests.Response:
-        selected = None
+    def _external_request_traced(self, audit: dict[str, Any], method: str, url: str,
+                                 *, proxy_failover: bool = False, **kwargs: Any) -> requests.Response:
         domain = urlsplit(url).hostname or ""
+        if proxy_failover:
+            budget = kwargs.pop("timeout")
+            return request_with_failover(
+                self.proxy_pool, self.proxy_profile, domain, budget,
+                lambda selected, timeout: self._external_send(
+                    audit, method, url, domain, selected, timeout=timeout(),
+                    report_transport_failure=False, **kwargs),
+                on_switch=getattr(self, 'on_proxy_switch', None),
+            )
+        selected = None
         if self.proxy_pool and self.proxy_profile != "direct":
             selected = self.proxy_pool.choose(self.proxy_profile, domain)
             if selected is None:
                 raise requests.exceptions.ProxyError(f"{self.proxy_profile} proxy pool unavailable")
+        return self._external_send(audit, method, url, domain, selected, **kwargs)
+
+    def _external_send(self, audit, method, url, domain, selected, *, report_transport_failure=True, **kwargs):
+        if selected:
             proxy_url, proxy_key = selected
             usage_key = (self.proxy_profile, hashlib.sha256(proxy_key.encode()).hexdigest())
             with self._proxy_usage_lock:
@@ -767,7 +841,7 @@ class SearchDiscovery:
                 audit['attempted'] = True
             response = getattr(self._general_session(), method)(url, **kwargs)
         except requests.RequestException:
-            if selected:
+            if selected and report_transport_failure:
                 self.proxy_pool.report(selected[1], domain, failed=True)
             raise
         if selected:

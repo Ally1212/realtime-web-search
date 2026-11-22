@@ -1,3 +1,4 @@
+from tests.product_job_fixture import legacy_private_job
 import copy
 import csv
 import io
@@ -51,10 +52,11 @@ class CustomerDataUnitTests(unittest.TestCase):
         for path in ('/v1/data/requests', '/v1/data/export', '/v1/data/fields', '/v1/data/quality',
                      '/v1/jobs/{id}/data', '/v1/jobs/{id}/progress', '/v1/jobs/{id}/pause',
                      '/v1/search/batch', '/v1/analytics/rankings', '/v1/google/legacy-data',
-                     '/api/whale/jobs', '/api/collector-settings'):
+                     '/api/collector-settings'):
             self.assertIn(path, paths)
         self.assertIn('siteAccess', document['components']['securitySchemes'])
-        self.assertEqual(paths['/api/whale/settings']['post']['security'], [{'adminAuth': [], 'siteAccess': []}])
+        self.assertFalse(any(path.startswith('/api/whale/') for path in paths))
+        self.assertEqual(paths['/api/collector-settings']['post']['security'], [{'adminAuth': [], 'siteAccess': []}])
         self.assertNotIn('adminAuth', document['security'][0])
         fields = field_catalog()
         self.assertIn('source_observed_at', fields['enhanced_run_fields'])
@@ -83,9 +85,7 @@ class CustomerDataDatabaseTests(unittest.TestCase):
     def record(self, *, source='google_web', private=True, owner=None, query='query', response=None):
         owner = owner or self.owner
         if private:
-            jid, _ = self.store.submit(owner, dict(query=query, source=source), 'record-' + query + '-' + source, self.config)
-            with self.base.connect() as db:
-                cid = db.execute('SELECT campaign_id FROM sf_jobs WHERE id=%s', (jid,)).fetchone()['campaign_id']
+            jid, cid = legacy_private_job(self.store, owner, dict(query=query, source=source), 'record-' + query + '-' + source, self.config)
         else:
             task = self.console.create_task(dict(keywords=[query], sources=[source], start=False), self.config)
             cid, jid = task['campaign_id'], None
@@ -96,6 +96,13 @@ class CustomerDataDatabaseTests(unittest.TestCase):
         rid = self.console.record(str(cid), source=source, provider='openserp', query=query, page=1,
                                   language='en', response=response, elapsed_seconds=.1,
                                   classification='results', http_status=200)
+        if jid:
+            # Historical completed jobs are seeded directly; the retired local
+            # coordinator is no longer an execution path for new requests.
+            with self.base.connect() as db:
+                saved = db.execute('SELECT response,completed_at FROM serp_requests WHERE request_id=%s', (rid,)).fetchone()
+            self.store.finish(jid, 'succeeded', dict(provider='openserp', data=saved['response'],
+                fetched_at=saved['completed_at'].isoformat(), origin_request_id=rid, cache_hit=False))
         return jid, str(cid), rid
 
     def test_own_public_accessible_and_foreign_cache_origin_are_isolated(self):
@@ -114,7 +121,7 @@ class CustomerDataDatabaseTests(unittest.TestCase):
                 data.request(foreign, {'scope': scope})
             self.assertEqual(error.exception.status, 404)
         # Historical buggy cache associations must not become a read grant.
-        jid, _ = self.store.submit(self.owner, {'query': 'cache'}, 'cache', self.config)
+        jid, _ = legacy_private_job(self.store, self.owner, {'query': 'cache'}, 'cache', self.config)
         with self.base.connect() as db:
             cid = db.execute('SELECT campaign_id FROM sf_jobs WHERE id=%s', (jid,)).fetchone()['campaign_id']
             db.execute('INSERT INTO serp_campaign_requests(campaign_id,request_id,reused) VALUES(%s,%s,true)', (cid, foreign))
@@ -177,25 +184,18 @@ class CustomerDataDatabaseTests(unittest.TestCase):
         self.assertEqual(self.store.usage(self.owner['id'])['reserved'], 0)
         self.assertEqual(len(self.store.jobs(self.owner['id'])), 2)
 
-    def test_pause_progress_resume_deadline_and_foreign_control(self):
-        jid, _ = self.store.submit(self.owner, {'query': 'pause'}, 'pause', self.config)
-        paused = self.store.job_action(self.owner['id'], jid, 'pause')
-        self.assertEqual(paused['execution_state'], 'paused')
+    def test_paused_legacy_job_is_retired_without_reenqueue_or_charge(self):
+        jid, _ = legacy_private_job(self.store, self.owner, {'query': 'pause'}, 'pause', self.config)
+        self.store.job_action(self.owner['id'], jid, 'pause')
         queue = Mock()
         ProductService(self.config, queue).tick()
         queue.enqueue.assert_not_called()
-        progress = CustomerDataStore(self.store, self.owner['id']).progress(jid)
-        self.assertIsNotNone(progress['progress'])
-        resumed = self.store.job_action(self.owner['id'], jid, 'resume')
-        self.assertEqual(resumed['deadline_at'], paused['deadline_at'])
-        ProductService(self.config, queue).tick()
-        queue.enqueue.assert_called()
-        with self.assertRaises(ProductError):
-            self.store.job_action(self.other['account_id'], jid, 'pause')
-        with self.base.connect() as db:
-            db.execute("UPDATE sf_jobs SET deadline_at=now()-interval '1 second' WHERE id=%s", (jid,))
-        with self.assertRaises(ProductError):
-            self.store.job_action(self.owner['id'], jid, 'resume')
+        job = self.store.job(self.owner['id'], jid)
+        self.assertEqual((job['status'], job['error_code'], job['charged']), ('failed', 'provider_retired', 0))
+        self.assertEqual(self.store.usage(self.owner['id'])['reserved'], 0)
+        for account in (self.owner['id'], self.other['account_id']):
+            with self.assertRaises(ProductError):
+                self.store.job_action(account, jid, 'resume')
 
     def test_jobs_keyset_filters_do_not_repeat_or_leak(self):
         self.allow_more()

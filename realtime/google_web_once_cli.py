@@ -31,7 +31,10 @@ class IdleGuard:
             db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
             db.execute("SET LOCAL statement_timeout='10s'")
             settings=db.execute("SELECT content_fetch_enabled,runtime_config->>'continuous_enabled' continuous FROM serp_collector_settings WHERE id=true").fetchone()
-            whale=db.execute('SELECT uploads_enabled,claims_enabled FROM whale_serp_settings WHERE id=true').fetchone()
+            legacy = {name: db.execute('SELECT to_regclass(%s) present', (name,)).fetchone()['present'] is not None
+                      for name in ('whale_serp_settings', 'whale_serp_outbox', 'whale_serp_jobs')}
+            whale = (db.execute('SELECT uploads_enabled,claims_enabled FROM whale_serp_settings WHERE id=true').fetchone()
+                     if legacy['whale_serp_settings'] else dict(uploads_enabled=False, claims_enabled=False))
             if (not settings or settings['content_fetch_enabled'] is not False or settings['continuous']!='false'
                     or not whale or whale['uploads_enabled'] is not False or whale['claims_enabled'] is not False):
                 raise ValueError('automatic controls are enabled or unknown')
@@ -44,7 +47,11 @@ class IdleGuard:
                 'customer_jobs':"SELECT count(*) n FROM sf_jobs WHERE status IN ('queued','running')",
                 'monitors':'SELECT count(*) n FROM sf_monitors WHERE enabled',
             }
-            counts={name:db.execute(query).fetchone()['n'] for name,query in checks.items()}
+            counts = {}
+            for name, query in checks.items():
+                missing = (name == 'upload_leases' and not legacy['whale_serp_outbox']
+                           or name == 'platform_jobs' and not legacy['whale_serp_jobs'])
+                counts[name] = 0 if missing else db.execute(query).fetchone()['n']
             if any(counts.values()):raise ValueError('unrelated work or monitors are live')
             self.last_snapshot=dict(checked_at=datetime.now(timezone.utc).isoformat(),
                 settings=settings,whale_settings=whale,live_work=counts,source_read_only=True)

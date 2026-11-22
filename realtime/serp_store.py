@@ -227,10 +227,12 @@ class SerpStore:
             item['normalized_link'] = url
             normalized[hashlib.sha256(url.encode()).hexdigest()] = url
         with self.store.connect() as db:
+            # Establish the identity for the URL foreign keys. Readers only see
+            # the final response because both writes commit in this transaction.
             inserted = db.execute("INSERT INTO serp_requests(request_id,campaign_id,provider,query,page,classification,http_status,error_code,response,source) "
-                                  "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING request_id",
+                                  "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'{}'::jsonb,%s) ON CONFLICT DO NOTHING RETURNING completed_at",
                                   (request_id, campaign_id, event['provider'], event['query'], event['page'], classification,
-                                   event.get('http_status'), event.get('error_code'), Jsonb(response), source)).fetchone()
+                                   event.get('http_status'), event.get('error_code'), source)).fetchone()
             if not inserted:
                 existing = db.execute('SELECT campaign_id,query,page,provider,response,source,classification,http_status,error_code FROM serp_requests WHERE request_id=%s', (request_id,)).fetchone()
                 observed = [{k: v for k, v in item.items() if k != 'is_new_url'} for item in result_items(existing['response'])]
@@ -245,14 +247,23 @@ class SerpStore:
             from .google_news_links import record_news_aliases
             record_news_aliases(db,response,normalized)
             new_hashes = set()
-            for digest, url in sorted(normalized.items()):
-                row = db.execute("INSERT INTO serp_urls(url_hash,normalized_url,first_request_id) VALUES(%s,%s,%s) "
-                                 "ON CONFLICT DO NOTHING RETURNING url_hash", (digest, url, request_id)).fetchone()
-                if row:
-                    new_hashes.add(digest)
-                else:
-                    db.execute('UPDATE serp_urls SET last_seen=clock_timestamp() WHERE url_hash=%s', (digest,))
-                db.execute('INSERT INTO serp_url_sources(url_hash,source) VALUES(%s,%s) ON CONFLICT DO NOTHING', (digest,source))
+            if normalized:
+                hashes, urls = zip(*sorted(normalized.items()))
+                registered = db.execute(
+                    """INSERT INTO serp_urls(url_hash,normalized_url,first_request_id)
+                       SELECT digest, url, %s FROM unnest(%s::text[], %s::text[]) AS entry(digest,url)
+                       ORDER BY digest
+                       ON CONFLICT (url_hash) DO UPDATE SET last_seen=clock_timestamp()
+                       RETURNING url_hash, first_request_id=%s AS contributed""",
+                    (request_id, list(hashes), list(urls), request_id),
+                )
+                new_hashes = {row['url_hash'] for row in registered if row['contributed']}
+                db.execute(
+                    """INSERT INTO serp_url_sources(url_hash,source)
+                       SELECT digest, %s FROM unnest(%s::text[]) AS entry(digest)
+                       ORDER BY digest ON CONFLICT DO NOTHING""",
+                    (source, list(hashes)),
+                )
             # One first-discovery contribution per URL; retain all occurrences.
             contributed = set()
             for item in items:
@@ -261,7 +272,7 @@ class SerpStore:
                     item['is_new_url'] = digest in new_hashes and digest not in contributed
                     contributed.add(digest)
             response['new_unique_links'] = len(new_hashes)
-            response['search_metadata']['created_at'] = db.execute('SELECT completed_at FROM serp_requests WHERE request_id=%s', (request_id,)).fetchone()['completed_at'].isoformat()
+            response['search_metadata']['created_at'] = inserted['completed_at'].isoformat()
             db.execute('UPDATE serp_requests SET response=%s WHERE request_id=%s', (Jsonb(response), request_id))
         return request_id
 

@@ -1,3 +1,4 @@
+from tests.product_job_fixture import legacy_private_job
 import os
 import unittest
 from datetime import datetime,timezone,timedelta
@@ -61,7 +62,7 @@ class AnalyticsDatabaseTests(unittest.TestCase):
         self.record('google_news','news-keyword',[dict(title='News',link='https://example.com/a',publisher='Media',date='today')],region='HK',language='zh')
         self.record('google_trends','ignored',[dict(keyword='Topic',approx_traffic='200+',articles=[a('a'),a('e')])])
         self.record('google_web','failed-keyword',[],status='error')
-        private=self.store.submit(self.owner,{'query':'private'},'private',self.config)[0]
+        private, _ = legacy_private_job(self.store, self.owner, {'query': 'private'}, 'private', self.config)
         with self.base.connect() as db:cid=db.execute('SELECT campaign_id FROM sf_jobs WHERE id=%s',(private,)).fetchone()['campaign_id']
         self.console.record(str(cid),source='google_web',provider='openserp',query='private',page=1,language='en',response={'organic_results':[a('secret',1)]},elapsed_seconds=.1,classification='results',http_status=200)
         self.assertEqual(sync_projection(self.base),0)  # private responses stay out of the projection

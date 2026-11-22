@@ -55,6 +55,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/healthz":
             self.send_body(b"ok", "text/plain")
             return
+        if path.startswith("/v1/google/local/") or (
+                path.startswith("/v1/google/places/")
+                and not path.endswith("/reference")):
+            from .google_local_http import handle as local_handle
+            local_handle(self, method)
+            return
         if path == "/v1/google" or path.startswith("/v1/google/"):
             handle(self, method)
             return

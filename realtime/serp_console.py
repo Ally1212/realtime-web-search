@@ -34,9 +34,11 @@ def sources(value):
 
 
 def options(value):
-    if not isinstance(value, dict) or set(value) - {'web_region', 'web_language', 'news_locale', 'trends_geo', 'web_pages', 'retry_window_seconds'}:
+    if not isinstance(value, dict) or set(value) - {'web_region', 'web_language', 'news_locale', 'trends_geo', 'web_pages', 'retry_window_seconds', 'trends_mode', 'trends_time_range'}:
         raise ValueError('无效任务参数')
     out = dict(value)
+    if out.get('trends_mode', 'regional_hotlist') not in ('keyword','regional_hotlist'):raise ValueError('无效趋势模式')
+    if out.get('trends_time_range','today 3-m') not in ('now 7-d','today 1-m','today 3-m','today 12-m','today 5-y'):raise ValueError('无效趋势时间范围')
     for key in ('web_region', 'trends_geo'):
         if key in out and out[key] not in REGIONS:
             raise ValueError(key + ' 地区不支持')
@@ -166,7 +168,7 @@ class ConsoleStore(SerpStore):
             raise ValueError('无效任务字段')
         upload = payload.get('upload_to_whale',False)
         if type(upload) is not bool: raise ValueError('upload_to_whale 必须为布尔值')
-        if upload and not getattr(config,'whale_serp_enabled',False): raise ValueError('Whale 链接对接尚未启用')
+        if upload: raise ValueError('旧上传队列已退役，请使用中台实时查询')
         selected = sources(payload.get('sources', ['google_web']))
         if upload and 'google_images' in selected:
             raise ValueError('图片任务暂不支持自动平台上传；可保存和导出完整数据')
@@ -208,11 +210,13 @@ class ConsoleStore(SerpStore):
                 if previous:
                     if previous['options'].get('_creation_payload_hash') != payload_hash:
                         raise ValueError('Idempotency-Key 已用于不同任务参数')
-                    return dict(campaign_id=str(previous['id']),status=previous['status'],sources=previous['sources'],options={k:v for k,v in previous['options'].items() if not k.startswith('_')},mode=previous['mode'],max_successful_searches=previous['max_successful_searches'],idempotent_replay=True)
+                    replay = dict(campaign_id=str(previous['id']),status=previous['status'],sources=previous['sources'],options={k:v for k,v in previous['options'].items() if not k.startswith('_')},mode=previous['mode'],max_successful_searches=previous['max_successful_searches'],idempotent_replay=True)
+                    if previous['status'] == 'active' and previous['sources'] == ['google_web']:
+                        replay['_enqueue'] = self._active_web_dispatch(db, previous['id'])
+                    return replay
             db.execute('INSERT INTO campaigns(id,query,aliases,daily_target,proxy_profile,sources,status) VALUES(%s,%s,%s,1000000,%s,%s,%s)',
                        (cid, words[0], Jsonb(words[1:]), config.default_proxy_profile, Jsonb(selected), 'active' if start else 'paused'))
             db.execute('INSERT INTO serp_task_options(campaign_id,options,started,mode,max_successful_searches) VALUES(%s,%s,%s,%s,%s)', (cid, Jsonb(opts), start, mode, budget))
-            if upload: db.execute('INSERT INTO whale_serp_task_uploads(campaign_id) VALUES(%s)',(cid,))
         return dict(campaign_id=cid, status='active' if start else 'paused', sources=selected, options={k:v for k,v in opts.items() if not k.startswith('_')}, mode=mode, max_successful_searches=budget)
 
     def tasks(self, *, kind='manual', status=None, q='', limit=20, offset=0):
@@ -240,15 +244,25 @@ class ConsoleStore(SerpStore):
                 r.update(counts)
         return dict(tasks=rows, total=total, limit=limit, offset=offset)
 
-    def action(self, cid, operation):
+    @staticmethod
+    def _active_web_dispatch(db, cid):
+        leased = db.execute(
+            "SELECT 1 FROM google_page_frontier WHERE campaign_id=%s AND enabled "
+            "AND state='running' AND lease_expires_at>now() LIMIT 1", (cid,),
+        ).fetchone()
+        return 'none' if leased else 'recover'
+
+    def action(self, cid, operation, *, retry_active_web=False):
         cid = str(UUID(cid))
         if operation not in ('start', 'pause', 'resume', 'stop'):
             raise ValueError('无效任务操作')
         with self.store.connect() as db:
-            row = db.execute("SELECT status FROM campaigns c WHERE id=%s AND NOT EXISTS(SELECT 1 FROM serp_task_options private WHERE private.campaign_id=c.id AND private.options->>'customer_private'='true') AND NOT EXISTS(SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id) AND NOT (c.sources ? 'rss') AND (EXISTS(SELECT 1 FROM serp_task_options o WHERE o.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_supply_campaigns s WHERE s.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_campaign_requests cr WHERE cr.campaign_id=c.id)) FOR UPDATE", (cid,)).fetchone()
+            row = db.execute("SELECT status,sources FROM campaigns c WHERE id=%s AND NOT EXISTS(SELECT 1 FROM serp_task_options private WHERE private.campaign_id=c.id AND private.options->>'customer_private'='true') AND NOT EXISTS(SELECT 1 FROM whale_task_runs w WHERE w.campaign_id=c.id) AND NOT (c.sources ? 'rss') AND (EXISTS(SELECT 1 FROM serp_task_options o WHERE o.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_supply_campaigns s WHERE s.campaign_id=c.id) OR EXISTS(SELECT 1 FROM serp_campaign_requests cr WHERE cr.campaign_id=c.id)) FOR UPDATE", (cid,)).fetchone()
             if not row:
                 return None
             state = row['status']
+            if retry_active_web and state == 'active' and row['sources'] == ['google_web'] and operation in ('start', 'resume'):
+                return dict(campaign_id=cid, status=state, _enqueue=self._active_web_dispatch(db, cid))
             valid = {'start': ('paused', 'stopped', 'failed'), 'resume': ('paused',), 'pause': ('active',), 'stop': ('active', 'paused', 'failed', 'completed')}
             if state not in valid[operation]:
                 raise ValueError('当前状态不能执行此操作')

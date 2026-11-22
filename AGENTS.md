@@ -1,4 +1,52 @@
+## Google Web 采集页数（2026-11-18）
+
+- Google Web 默认采集第 1 至 11 页。后续持续采集和吞吐实验固定为 11 页，除非用户明确改动。启动前核对生产生效设置与启动配置均为 11 页。历史单页实验配置仅供复盘。
+
+## UI反馈修正已发布（2026-11-12）
+
+- 品牌仅保留SearchFlow文字；移除侧栏底部、折叠图标居中、增强数据包流动、恢复Google来源标识。正式桌面及320/390px核验通过，6项回归。静态页SHA a1074d77126efc8204580c94a4b117c5b82d4e229ec55cede0f7a152741efa0d，备份state/ui-review-fixes-20261112/backup/index.html；仅静态替换，业务HTML字节一致。
+- SSH可经采集机跳转应用机私网10.0.0.7，HostKeyAlias=20.150.145.162；不要把公网SSH间歇断开直接判成应用宕机。详见docs/searchflow-ui-review-fixes-2026-11-12.md。
+
+## 黑白 AI 工作台（2026-11-12）
+
+- 正式静态页使用 shadcn/ui neutral + Vercel AI Elements Task，React图标统一Lucide；BoardUI/Solid Glass/AffectUI 无运行时引用，保留历史源码。6回归、桌面及320/390px导航、真实历史/Maps已存导出一致性通过。
+- 只替换static/index.html，SHA c279274cb74e4b8fbb4dbbd46979ae33b9b46378a448cde3a0b2d0f1ed6ffa5b；备份state/ai-native-mono-20261112/backup。后续重生成需携带component_ui.py及assets；原业务HTML字节未变，不开启采集或宣称Maps中台接通。详情docs/searchflow-ai-native-mono-ui-2026-11-12.md。
+
+## 收藏组件 UI 改造（2026-11-12，最新）
+
+- 已按用户批准的 BoardUI + Solid Glass + AffectUI 改造并发布。新增 `frontend/` 锁版本 React 工程与 `realtime/component_ui.py`/`assets/component-ui.*`；`product_ui.extend()` 改用新层，不再组合被否决的 ObsidianUI。组件来源/许可见 `frontend/README.md`，没有付费 Pro 源码。
+- 首页/导航/API模式与真实进度/数据集和Maps表格组件化，其余业务表单保留并统一样式。Maps白名单桥接不含凭据；流程只读不自动假完成。最终320/390px各12模块、桌面12模块、历史读取/CSV及Maps恢复17家/CSV、图片显式加载验证；6项相关回归与类型检查通过。
+- 仅发布应用机static/index.html，无后端重启/迁移/新搜索/开关写入。最终SHA256 `bb7abdd7057a3ac044523fea1632370970197fb24134b874599b54ab3d5ad06f`；备份`state/boardui-20261112/backup/index.html`。本地生成器钩子已更新，服务器生成器本轮未同步，后续重生成需携带新组件模块及编译资产。Maps中台待办不变。详情`docs/searchflow-boardui-ui-2026-11-12.md`。
+
+## ObsidianUI 全站界面适配（2026-11-12）
+
+- 已发布原生适配层 `realtime/obsidian_ui.py`：导航分组/收起、全站表单表格与指标、宽屏快速请求双栏、真实队列状态、图片画廊、手机来源轨道与减少动效。来源库13项逐项映射见 `designs/searchflow-obsidian-20261112/readme.md`，不是直接安装整个React/WebGL库；MIT许可已保留。
+- 正式静态页SHA256 `57afc5309616b588a2289f88460dccd8d1fa21493a39107acc2d81e054909fe8`；仅追加呈现层，移除新style/script后与原静态页字节一致。应用机备份 `state/obsidian-ui-20261112/backup/index.html`；无服务重启或后端业务变更。本地product_ui组合钩子已增加，线上后端生成器本轮未更新，后续生成页面需带上该模块。
+- 桌面与320px下12模块导航/无溢出通过；真实历史2请求/CSV下载、Maps旧17家恢复、图片25条画廊及390px交互通过；5项现有流程测试通过。详情 `docs/searchflow-obsidian-ui-2026-11-12.md`。不新增采集、模型调用或中台能力。
+
+## Maps 对外 API 优化（2026-11-12，最新）
+
+- API 工具 `/#api` 已增加 Maps 模式，与 `/#maps` 复用表单/任务，支持文本、附近类型、城市/自定义坐标、半径、中文/英语、CSV/JSONL；有动态外部curl示例，Python客户端 `examples/maps_api.py` 真实调用通过。外部仍需站点访问凭据+客户Bearer。
+- 修复零结果null输出误报失败、重试状态误报queued、严格JSON及参数类型、CSV字段遗漏、恢复后旧坐标覆盖新城市；全局最多4个Maps在途、每空间2个，共享原额度/并发，超限429不预留。主capabilities增加独立maps_api；数据OpenAPI补齐字段/响应且隐藏未实现详情。
+- 本地65项/57子测试、正式冻结后端46项/57子测试均通过，无跳过；实际API页20家、修复后伦敦附近牙医17家、独立客户端东京药店12家/零结果0家，浏览器和独立客户端导出深比较、跨租户404、幂等及320/390px通过。首批8成功查询129条商家出现、1.495–5.630秒为短期样本，不是SLA；初始零结果错误和城市切换失败现场保留。
+- **Maps仍未默认存入Marsyoo中台，目标未完成。** 已登录读取最新中台OpenAPI，缺google_maps来源及位置契约，不能冒充google_search。已询问用户中台维护归属及代码入口，等待答复。后续必须补中台契约、回执与固定版本读回再验收全链路。
+- 两机 `state/maps-commercial-20261112/backup/` 和采集机queue-backup保留回退；只重启Web/PRD/Maps，原worker和Web中台运行器未重启。最终SERP40311/pages332768及旧开关false不变，Maps无在途/相关reserved0。详情 `docs/searchflow-maps-api-validation-2026-11-12.md`，证据 `output/maps-commercial-20261112/`。ego工作区253（p1用户参与登录，不关闭；p2网站），等待中台接入继续使用；本地预览p3已关闭。
+
+## Maps 自建商家搜索（2026-11-11）
+
+- 用户否决 Google Cloud 付款资料及第三方注册方案；已上线 `/#maps`，自建 gosom v1.18.2 HTTP fast mode，无需用户填Key。独立Maps服务512MB/0.5CPU，无公网端口，单并发，仅手动任务；不启动内置浏览器。
+- 网站任务 `f793d52d-6b00-42e6-9f59-860bcb4fa42a` 实测17家、charged1、reserved0，CSV/JSONL实际下载与原始字段深比较一致。57测试、52子测试通过，刷新和320/390px验证通过。快照24小时、最多约21条、按距离排序，无完整评论/独立详情。
+- Maps尚未接中台：当前Marsyoo SourcePlatform无google_maps，必须补契约，不能冒充google_search；接口middle_enabled=false。原Web中台链路保留。
+- 两机备份 `state/maps-integration-20261111/backup/`；仅最小后端补丁/静态Maps页，未覆盖web.py/serp_page.py，未重启原worker。SERP requests40311/pages332768/outbox14和全部采集/正文/旧Whale开关false不变。详见 `docs/searchflow-maps-integration-2026-11-11.md`。
+
 # AGENTS.md
+
+## 网站实时中台闭环（2026-11-11，最新）
+
+- `/#api` 快速请求的 Google Web 已默认走 Marsyoo live query → 专属采集运行器 → realtime入库 → accepted回执 → result.document_ids完成 → Consumer固定版本payload/hash校验 → 网站CSV/JSONL。News/Images/Trends仍走原本地路径，Maps未接通；不得称所有来源均已走中台。
+- 独立 `searchflow-middle-live-1` 容器运行采集机冻结代码 `google-workbench-backend/state/middle-live-20261111/code/realtime`，restart unless-stopped；专属PG会话锁。复用sf_jobs租户/额度/幂等；私有campaign与归属同事务建立，不进入旧Whale jobs/outbox。旧worker未重启；持续供给、正文、旧上传/领取仍false。
+- 正式网页job `c23158b6-16ea-467b-96d5-6cf263e6717a`、live query `lq_1bfa7047567d7c5762036fc218576c6d`：一次真实搜索3链接、3 accepted、3固定版本可读且hash匹配，网站成功扣1、reserved0；实际CSV/JSONL深比较、幂等复用、404私有隔离、刷新恢复、服务重启通过。89 passed、68 subtests、0 skipped。不是全部分页SERP契约或SLA验证。
+- Web仅最小补丁product.py/customer_data.py/quick_request_http.py，未覆盖web.py/serp_page.py；备份同目录backup。服务器凭据仅state/private下600，不打印/提交。回退先切路由并排空/取消中台job再停独立运行器，防止旧协调器处理在途中台任务。详情 `docs/searchflow-middle-first-integration-2026-11-11.md`。
 
 ## 真实数据主题分析（2026-11-10，最新）
 
@@ -558,3 +606,20 @@ opt-in Consumer客户端复用既有document/version协议，流式限字节/超
 
 - 用户授权测试，实际Web/News各1条上传，各attempts1、queued，独立处理回执仍queued无persisted_at；Consumer降速复核两文档404、固定版本单项not_found（HTTP200信封不算成功）。不能称上传全流程正常，原因尚未知；未全量上传1385条。
 - 两测试job 3d051465-cc04-4c8e-86fb-7f301bc52192 / 5af9cb4b-8a07-4c0c-a723-a1e07f4d5f3f 已paused，uploads/claims最终false，总旧链接outbox现11 queued（原9+本次2），无新搜索。平台已接收不可撤回，后续可能继续异步处理。见docs/ai-whale-upload-test-2026-11-11.md；ego143已清理，无源码发布。
+
+## 首页采集闭环动画（2026-11-12）
+
+- 首页 React 流程图改为请求→采集器→五种 Google 来源→数据中台→返回结果；12段曲线按6.6秒循环顺序流动，桌面横排、手机纵排，支持减少动态效果。明确目标流程示意：仅Web当前经中台，其余来源独立返回。
+- 仅静态页原子发布，旧业务HTML剥离呈现标签后字节一致，备份 `state/fan-flow-20261112/backup/index.html`。6回归通过；桌面/900/390/320px、12段动画与CTA验证通过，自动采集保持暂停。详情 `docs/searchflow-collector-flow-2026-11-12.md`。
+
+## 工作台精简与开发者文档（2026-11-12，最新）
+
+- 侧栏保留首页/任务/数据集/研究/分析/监测，`#api` 改“快速使用”，Maps仅作其中的地图商家模式；`#developer` 为只读API参数/鉴权/curl/响应文档，加载现有data OpenAPI（44个方法）。旧 `#maps` 转到快速使用；`#capability/#whale/#settings` 转首页。
+- `workspace_refinement.py` 删除三个旧模块的表单与客户端动作代码，创建任务明确 `upload_to_whale:false`；不删除历史数据或中台内部服务，现有外部数据API契约保留。首页移除三处入口、持续采集状态、汇总说明、24小时与运营统计模块；23px字标与首帧骨架，首次读取骨架/后续保留数据，非任务页面60秒复用，任务10秒更新。
+- 任务详情/关键词移入右侧抽屉；搜索弹层完整显示并首次Esc关闭；按钮加载居中，开发者复制异步反馈通过。TypeScript/构建及7回归通过，本地1440/900/390/320、生产1440/390/320无溢出、无脚本错误；首帧骨架且无旧字标闪现。仅原子部署静态页，SHA `984f93d9b26ed7d2fd335f267a48582be2346267366817cc15a27e160d290189`，备份 `state/workspace-simplify-20261112/backup/index.html`。自动采集及正文仍false。详见 `docs/searchflow-workspace-simplify-2026-11-12.md`。
+
+## 刷新旧页面根治（2026-11-12，最新）
+
+- 正式产物生成时移除旧流程图/品牌/采集状态/24小时与运营面板，React明确宿主+来源JSON+hidden/inert数据桥；原生HTML默认骨架，不靠末尾脚本隐藏旧页面。`frontend/src/main.tsx` 与 `workspace_refinement.py` 必须一起构建，不能混搭旧宿主。
+- 应用机static仅保留index.html；旧stats/system-flow/articles/legacy/insights HTML已移出服务目录，旧地址及.html别名用正式HTTPS绝对地址302到对应工作台hash。原访问门和外部数据API保留。
+- SHA `317570007093b0cd0a671cc3260edf1d6858478c49f3d9dfa6fe562878e2c826`；备份 `state/remove-legacy-20261112/backup/`。8回归通过、3次正式刷新无旧DOM/脚本错误、禁用脚本只显骨架。仅静态与gateway配置，无worker/数据库修改。详见 `docs/searchflow-remove-legacy-page-2026-11-12.md`。

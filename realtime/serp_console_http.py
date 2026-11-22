@@ -17,12 +17,20 @@ def settings_payload(store, config):
                 effective='后续采集批次生效；持续供给最多 30 秒读取；已发出请求允许完成')
 
 
+def dispatch_task(queue, task):
+    dispatch = task.pop('_enqueue', 'priority')
+    if dispatch == 'recover':
+        queue.recover(task['campaign_id'])
+    elif dispatch == 'priority' and task['status'] == 'active':
+        queue.enqueue(task['campaign_id'], priority=True)
+
+
 def post(handler):
     from .product_http import handle as product_handle
     if product_handle(handler, 'POST'):
         return True
-    from .whale_serp_http import handle
-    if handle(handler, 'POST'):
+    if urlparse(handler.path).path.startswith('/api/whale/'):
+        handler.send_json({'error': '旧上传接口已退役，请通过中台实时查询获取数据'}, 410)
         return True
     path = urlparse(handler.path).path
     match = re.fullmatch(r'/api/serp/tasks/([0-9a-f-]+)/(start|pause|resume|stop)', path)
@@ -31,12 +39,11 @@ def post(handler):
     store = ConsoleStore(handler.config.database_url)
     try:
         if match:
-            result = store.action(*match.groups())
+            result = store.action(*match.groups(), retry_active_web=True)
             if not result:
                 handler.send_json({'error': '任务不存在'}, 404)
                 return True
-            if result['status'] == 'active':
-                handler.queue.enqueue(result['campaign_id'], priority=True)
+            dispatch_task(handler.queue, result)
             handler.send_json(result)
             return True
         length = int(handler.headers.get('Content-Length', '0'))
@@ -48,8 +55,7 @@ def post(handler):
             handler.send_json(settings_payload(store, handler.config))
         else:
             task = store.create_task(payload, handler.config, idempotency_key=handler.headers.get('Idempotency-Key'))
-            if task['status'] == 'active':
-                handler.queue.enqueue(task['campaign_id'], priority=True)
+            dispatch_task(handler.queue, task)
             handler.send_json(task, 201)
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         handler.send_json({'error': str(exc)}, 400)
@@ -63,8 +69,8 @@ def get(handler):
     from .product_http import handle as product_handle
     if product_handle(handler, 'GET'):
         return True
-    from .whale_serp_http import handle
-    if handle(handler, 'GET'):
+    if urlparse(handler.path).path.startswith('/api/whale/'):
+        handler.send_json({'error': '旧上传接口已退役，请通过中台实时查询获取数据'}, 410)
         return True
     parsed = urlparse(handler.path)
     routes = ('/api/collector-settings', '/api/serp/tasks', '/api/serp/results', '/api/serp/browse-requests', '/api/serp/stats', '/api/serp/export')

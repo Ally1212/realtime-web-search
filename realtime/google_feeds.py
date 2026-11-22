@@ -11,10 +11,12 @@ from uuid import UUID,uuid4
 from xml.etree import ElementTree
 
 from bs4 import BeautifulSoup
+from requests import exceptions as request_exceptions
 
 from .discovery import SearchDiscovery, SearchResult
 from .google_data import news_time
 from .google_news_links import offline_target
+from .proxy_pool import ProxyPoolUnavailable, ProxyTransportFailed
 from .serp_fields import SCHEMA_VERSION, public_serp_url, result_items, link_fields, field_status, public_fields
 
 
@@ -175,7 +177,8 @@ def collect(discovery, store, serp, campaign_id: str, source: str, query: str,
         return rows(cached,source), []
     token = store.acquire_query_lease(key)
     if not token:
-        return [], []
+        waiting = getattr(discovery, 'task_options', {}).get('customer_private')
+        return [], ['feed_query_inflight'] if waiting is True else []
     try:
         cached = serp.cached_feed(key,campaign_id)
         if cached is not None:
@@ -204,7 +207,8 @@ def collect(discovery, store, serp, campaign_id: str, source: str, query: str,
                         search_parameters=dict(engine=source,q=query if source=='google_news' else None,locale=locale))
         url = discovery._news_url(query,locale) if source=='google_news' else 'https://trends.google.com/trending/rss?geo='+locale
         try:
-            http = discovery._external_get(url,timeout=min(discovery.timeout,30),stream=True,allow_redirects=False)
+            http = discovery._external_get(url,timeout=min(discovery.timeout,30),stream=True,
+                                           allow_redirects=False, proxy_failover=True)
             try:
                 status = http.status_code
                 content = discovery._read_limited(http)
@@ -240,6 +244,13 @@ def collect(discovery, store, serp, campaign_id: str, source: str, query: str,
         except Exception as exc:
             classification = 'rate_limited' if status==429 else 'http_error' if status and status!=200 else 'parse_error' if status==200 else 'transport_error'
             error_code = type(exc).__name__
+            if isinstance(exc, ProxyPoolUnavailable):
+                error_code = 'proxy_pool_unavailable'
+            elif status in (None, 200) and isinstance(exc, (
+                    ProxyTransportFailed, request_exceptions.ConnectionError, request_exceptions.Timeout,
+                    request_exceptions.ChunkedEncodingError)):
+                classification = 'transport_error'
+                error_code = 'proxy_transport_failed'
         if resolve_links and classification in ('results','empty'):
             response['feed_retrieval'] = dict(requested_at=requested_at,received_at=rss_received_at,elapsed_seconds=rss_elapsed_seconds,timing_basis='local_http_entity_receipt')
             from .google_news_links import enrich_feed
@@ -263,7 +274,8 @@ def collect(discovery, store, serp, campaign_id: str, source: str, query: str,
                     recorder.saved(request_id=private_observation['request_id'],saved_request_id=str(request_id))
                 except Exception:
                     raise FeedCaptureError('private feed saved marker failed') from None
-        serp.cache_feed(key,request_id,ttl if error_code is None else 120)
+        if error_code not in ('proxy_pool_unavailable', 'proxy_transport_failed'):
+            serp.cache_feed(key,request_id,ttl if error_code is None else 120)
         return rows(response,source), [] if error_code is None else [source+': '+error_code]
     finally:
         store.release_query_lease(key,token)
@@ -287,8 +299,16 @@ def collect_sources(discovery,store,serp,campaign_id,queries,sources,config):
     if 'google_trends' in sources:
         opts = getattr(discovery, 'task_options', {})
         geos = (opts['trends_geo'],) if opts.get('trends_geo') else config.google_trends_geos
-        targets.extend(('google_trends','trending-now',geo.upper(),config.google_trends_interval_seconds)
-                       for geo in dict.fromkeys(geos) if len(geo)==2 and geo.isalpha())
+        if opts.get('trends_mode') == 'keyword':
+            from .keyword_trends import collect_saved
+            for geo in dict.fromkeys(geos):
+                for query in queries:
+                    extra,failures=collect_saved(discovery,store,serp,campaign_id,query,geo,opts.get('trends_time_range','today 3-m'))
+                    errors.extend(failures)
+                    for row in extra:found.setdefault(row.url,row)
+        else:
+            targets.extend(('google_trends','trending-now',geo.upper(),config.google_trends_interval_seconds)
+                           for geo in dict.fromkeys(geos) if len(geo)==2 and geo.isalpha())
     for source,query,locale,ttl in targets:
         check = getattr(discovery, 'should_continue', None)
         if check and not check():

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -550,7 +551,38 @@ class CampaignStore:
                     rows,
                 )
 
-    def get_discovery_cache(self, cache_key: str, source: str = "cache") -> dict[str, Any] | None:
+    def get_discovery_cache(
+        self, cache_key: str, source: str = "cache", *, serp_campaign_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if serp_campaign_id is not None:
+            # Attribute the exact version read by this statement. Reading the
+            # two cache tables in separate snapshots can associate a newer response.
+            with self.connect() as connection:
+                row = connection.execute(
+                    """WITH eligible AS MATERIALIZED (
+                         SELECT q.payload,q.etag,q.last_modified,q.result_count,q.novel_count,f.request_id
+                         FROM discovery_query_cache q JOIN serp_feed_cache f USING(cache_key)
+                         JOIN serp_requests r USING(request_id)
+                         WHERE q.cache_key=%s AND q.expires_at>now() AND f.expires_at>now()
+                         AND (r.campaign_id=%s OR NOT EXISTS (
+                           SELECT 1 FROM serp_task_options o WHERE o.campaign_id=r.campaign_id
+                           AND o.options->>'customer_private'='true'
+                         ))
+                       ), attributed AS (
+                         INSERT INTO serp_campaign_requests(campaign_id,request_id,reused)
+                         SELECT %s,request_id,true FROM eligible ON CONFLICT DO NOTHING
+                       ), counted AS (
+                         INSERT INTO discovery_source_runtime(source,cache_hits,cache_misses)
+                         SELECT %s,count(*),1-count(*) FROM eligible
+                         ON CONFLICT(source) DO UPDATE SET
+                           cache_hits=discovery_source_runtime.cache_hits+EXCLUDED.cache_hits,
+                           cache_misses=discovery_source_runtime.cache_misses+EXCLUDED.cache_misses,
+                           updated_at=now()
+                       )
+                       SELECT payload,etag,last_modified,result_count,novel_count FROM eligible""",
+                    (cache_key, serp_campaign_id, serp_campaign_id, source),
+                ).fetchone()
+            return dict(row) if row else None
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT payload,etag,last_modified,result_count,novel_count "
@@ -570,29 +602,43 @@ class CampaignStore:
         self, cache_key: str, source: str, query_hash: str, locale: str, page: int,
         payload: list[dict[str, Any]], ttl_seconds: int, *, novel_count: int = 0,
         etag: str | None = None, last_modified: str | None = None,
+        serp_request_id: str | None = None,
     ) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                "INSERT INTO discovery_query_cache(cache_key,source,query_hash,locale,page,payload,"
-                "etag,last_modified,result_count,novel_count,expires_at) "
-                "VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,now()+(%s*interval '1 second')) "
-                "ON CONFLICT(cache_key) DO UPDATE SET payload=EXCLUDED.payload,etag=EXCLUDED.etag,"
-                "last_modified=EXCLUDED.last_modified,result_count=EXCLUDED.result_count,"
-                "novel_count=EXCLUDED.novel_count,expires_at=EXCLUDED.expires_at,updated_at=now()",
-                (
-                    cache_key, source, query_hash, locale, page,
-                    json.dumps(payload, ensure_ascii=False), etag, last_modified,
-                    len(payload), novel_count, max(1, ttl_seconds),
-                ),
+        statement = (
+            "INSERT INTO discovery_query_cache(cache_key,source,query_hash,locale,page,payload,"
+            "etag,last_modified,result_count,novel_count,expires_at) "
+            "VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,now()+(%s*interval '1 second')) "
+            "ON CONFLICT(cache_key) DO UPDATE SET payload=EXCLUDED.payload,etag=EXCLUDED.etag,"
+            "last_modified=EXCLUDED.last_modified,result_count=EXCLUDED.result_count,"
+            "novel_count=EXCLUDED.novel_count,expires_at=EXCLUDED.expires_at,updated_at=now()"
+        )
+        params = (
+            cache_key, source, query_hash, locale, page,
+            json.dumps(payload, ensure_ascii=False), etag, last_modified,
+            len(payload), novel_count, max(1, ttl_seconds),
+        )
+        if serp_request_id is not None:
+            # Publish the result list and its attribution together. A failed
+            # snapshot reference must leave any previous cached result intact.
+            statement = (
+                "WITH cached AS (" + statement + " RETURNING cache_key) "
+                "INSERT INTO serp_feed_cache(cache_key,request_id,expires_at) "
+                "SELECT cache_key,%s::uuid,now()+%s*interval '1 second' FROM cached "
+                "ON CONFLICT(cache_key) DO UPDATE SET request_id=EXCLUDED.request_id,"
+                "expires_at=EXCLUDED.expires_at"
             )
+            params += (serp_request_id, max(30, ttl_seconds))
+        with self.connect() as connection:
+            connection.execute(statement, params)
 
-    def acquire_discovery_slot(self, source: str, initial_rps: float, *, maximum_rps: float = 2.0) -> dict[str, Any]:
+    def acquire_discovery_slot(self, source: str, initial_rps: float, *, maximum_rps: float = 2.0,
+                               connection=None, max_wait_seconds=None) -> dict[str, Any]:
         """Reserve one global request slot shared by every crawler process."""
         if not 0 < maximum_rps <= 8:
             raise ValueError('maximum_rps must be >0 and <=8')
         initial_rps = min(max(initial_rps, .01), maximum_rps)
         now = datetime.now(timezone.utc)
-        with self.connect() as connection:
+        with (self.connect() if connection is None else nullcontext(connection)) as connection:
             with connection.transaction():
                 connection.execute(
                     "INSERT INTO discovery_source_runtime(source,current_rps) VALUES(%s,%s) "
@@ -632,6 +678,8 @@ class CampaignStore:
                     rps = max(rps, initial_rps)
                 next_at = max(row["next_request_at"], now)
                 wait = max(0.0, (next_at - now).total_seconds())
+                if max_wait_seconds is not None and wait > max_wait_seconds:
+                    return {"allowed": False, "wait": wait, "state": "rate_wait"}
                 connection.execute(
                     "UPDATE discovery_source_runtime SET next_request_at=%s,current_rps=%s,"
                     "updated_at=now() WHERE source=%s",
@@ -730,10 +778,11 @@ class CampaignStore:
             connection.execute("DELETE FROM discovery_query_leases WHERE cache_key=%s AND token=%s", (cache_key, token))
 
     def reserve_google_proxy(
-        self, proxy_hash: str, locale: str, minimum_interval_seconds: int,
+        self, proxy_hash: str, locale: str, minimum_interval_seconds: int, *, connection=None,
+        recheck_quarantine=False,
     ) -> tuple[bool, float]:
         now = datetime.now(timezone.utc)
-        with self.connect() as connection:
+        with (self.connect() if connection is None else nullcontext(connection)) as connection:
             with connection.transaction():
                 connection.execute(
                     "INSERT INTO google_proxy_sessions(proxy_key_hash,locale) VALUES(%s,%s) "
@@ -746,9 +795,13 @@ class CampaignStore:
                 # Quarantine: a proxy with a long-term low Google success rate
                 # stops participating in scheduling until the window resets.
                 samples = int(row["successes"] or 0) + int(row["failures"] or 0)
-                if samples >= 20 and int(row["successes"] or 0) / samples < 0.2:
-                    return False, 3600.0
                 available_at = row["cooldown_until"] or now
+                if samples >= 20 and int(row["successes"] or 0) / samples < 0.2:
+                    if not recheck_quarantine:
+                        return False, 3600.0
+                    if row["consecutive_failures"]:
+                        last_failure = max(row["updated_at"], row["last_used_at"] or row["updated_at"])
+                        available_at = max(available_at, last_failure + timedelta(hours=1))
                 if row["last_used_at"]:
                     available_at = max(
                         available_at,
@@ -897,62 +950,48 @@ class CampaignStore:
         javascript = error_code == "google_javascript_required"
         http_error = error_code in {"google_http_403", "google_http_429"}
         timeout = error_code == "google_timeout"
+        limited = not success and (captcha or http_error)
+        # The conflicting row supplies the current streak under its write lock.
+        # Keep its latest cooldown even if a concurrent request succeeds.
         with self.connect() as connection:
-            # Serialize retry escalation across workers. Transport/layout errors
-            # neither establish a new block nor erase the last blocking streak.
             connection.execute(
-                "INSERT INTO google_proxy_sessions(proxy_key_hash) VALUES(%s) ON CONFLICT DO NOTHING",
-                (proxy_hash,),
+                """INSERT INTO google_proxy_sessions AS saved (
+                     proxy_key_hash, successes, failures, captcha_count, javascript_verification_count,
+                     http_error_count, timeout_count, consecutive_failures, limited_failure_streak,
+                     latency_seconds_total, latency_count, last_error, last_success_at, cooldown_until
+                   ) VALUES (
+                     %(key)s, %(successes)s, %(failures)s, %(captcha)s, %(javascript)s,
+                     %(http_error)s, %(timeout)s, %(failures)s, %(limited)s, %(elapsed)s, 1, %(error)s,
+                     CASE WHEN %(successes)s=1 THEN now() END,
+                     CASE WHEN %(cooldown)s>0 THEN now()+%(cooldown)s*interval '1 second' END
+                   )
+                   ON CONFLICT(proxy_key_hash) DO UPDATE SET
+                     successes=saved.successes+EXCLUDED.successes,
+                     failures=saved.failures+EXCLUDED.failures,
+                     captcha_count=saved.captcha_count+EXCLUDED.captcha_count,
+                     javascript_verification_count=saved.javascript_verification_count+EXCLUDED.javascript_verification_count,
+                     http_error_count=saved.http_error_count+EXCLUDED.http_error_count,
+                     timeout_count=saved.timeout_count+EXCLUDED.timeout_count,
+                     consecutive_failures=CASE WHEN EXCLUDED.successes=1 THEN 0 ELSE saved.consecutive_failures+1 END,
+                     limited_failure_streak=CASE WHEN EXCLUDED.successes=1 THEN 0
+                                                 ELSE saved.limited_failure_streak+EXCLUDED.limited_failure_streak END,
+                     latency_seconds_total=saved.latency_seconds_total+EXCLUDED.latency_seconds_total,
+                     latency_count=saved.latency_count+1,
+                     last_error=EXCLUDED.last_error,
+                     last_success_at=COALESCE(EXCLUDED.last_success_at,saved.last_success_at),
+                     cooldown_until=GREATEST(
+                       CASE WHEN EXCLUDED.successes=0 OR saved.cooldown_until>now() THEN saved.cooldown_until END,
+                       CASE WHEN EXCLUDED.limited_failure_streak=1 AND %(cooldown)s>0 THEN
+                         now()+LEAST(GREATEST(%(cooldown)s,1800),
+                                     %(cooldown)s*power(2,LEAST(saved.limited_failure_streak,10)))*interval '1 second'
+                         ELSE EXCLUDED.cooldown_until END
+                     ),
+                     updated_at=now()""",
+                dict(key=proxy_hash, successes=int(success), failures=int(not success),
+                     captcha=int(captcha), javascript=int(javascript), http_error=int(http_error),
+                     timeout=int(timeout), limited=int(limited), elapsed=max(0.0, elapsed_seconds),
+                     error=error_code or None, cooldown=cooldown_seconds),
             )
-            previous = connection.execute(
-                "SELECT limited_failure_streak FROM google_proxy_sessions WHERE proxy_key_hash=%s FOR UPDATE",
-                (proxy_hash,),
-            ).fetchone()
-            limited_streak = int(previous['limited_failure_streak'])
-            if success:
-                limited_streak = 0
-            elif captcha or http_error:
-                limited_streak += 1
-                # Preserve an explicitly configured longer base. The aggressive
-                # 300-second base gives 300, 600, 1200, then 1800 seconds.
-                cooldown_seconds = min(max(cooldown_seconds, 1800),
-                                       cooldown_seconds * 2 ** min(limited_streak - 1, 10))
-            connection.execute(
-                'UPDATE google_proxy_sessions SET limited_failure_streak=%s WHERE proxy_key_hash=%s',
-                (limited_streak, proxy_hash),
-            )
-            connection.execute(
-                "INSERT INTO google_proxy_sessions(proxy_key_hash,successes,failures,"
-                "captcha_count,javascript_verification_count,http_error_count,timeout_count,"
-                "consecutive_failures,latency_seconds_total,latency_count,last_error,cooldown_until) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,"
-                "CASE WHEN %s>0 THEN now()+(%s*interval '1 second') END) "
-                "ON CONFLICT(proxy_key_hash) DO UPDATE SET successes=google_proxy_sessions.successes+%s,"
-                "failures=google_proxy_sessions.failures+%s,"
-                "captcha_count=google_proxy_sessions.captcha_count+%s,"
-                "javascript_verification_count=google_proxy_sessions.javascript_verification_count+%s,"
-                "http_error_count=google_proxy_sessions.http_error_count+%s,"
-                "timeout_count=google_proxy_sessions.timeout_count+%s,"
-                "consecutive_failures=CASE WHEN %s THEN 0 ELSE google_proxy_sessions.consecutive_failures+1 END,"
-                "latency_seconds_total=google_proxy_sessions.latency_seconds_total+%s,"
-                "latency_count=google_proxy_sessions.latency_count+1,last_error=%s,"
-                "cooldown_until=CASE WHEN %s>0 THEN GREATEST(google_proxy_sessions.cooldown_until,now()+(%s*interval '1 second')) "
-                "ELSE google_proxy_sessions.cooldown_until END,updated_at=now()",
-                (
-                    proxy_hash, int(success), int(not success), int(captcha), int(javascript),
-                    int(http_error), int(timeout), 0 if success else 1,
-                    max(0.0, elapsed_seconds), error_code or None, cooldown_seconds, cooldown_seconds,
-                    int(success), int(not success), int(captcha), int(javascript),
-                    int(http_error), int(timeout), success, max(0.0, elapsed_seconds),
-                    error_code or None, cooldown_seconds, cooldown_seconds,
-                ),
-            )
-
-            if success:
-                connection.execute(
-                    "UPDATE google_proxy_sessions SET last_success_at=now(),cooldown_until=CASE WHEN cooldown_until>now() THEN cooldown_until END WHERE proxy_key_hash=%s",
-                    (proxy_hash,),
-                )
 
     def acquire_google_page_batch(
         self, campaign_id: str, query: str, locale: str, max_page: int,
@@ -977,11 +1016,12 @@ class CampaignStore:
                     return None
                 now = datetime.now(timezone.utc)
                 state = str(row["state"])
-                connection.execute(
-                    "UPDATE google_page_frontier SET query=%s,max_page=%s,updated_at=now() "
-                    "WHERE campaign_id=%s AND query_hash=%s AND locale=%s",
-                    (query, maximum, campaign_id, query_hash, locale),
-                )
+                if row["query"] != query or row["max_page"] != maximum:
+                    connection.execute(
+                        "UPDATE google_page_frontier SET query=%s,max_page=%s,updated_at=now() "
+                        "WHERE campaign_id=%s AND query_hash=%s AND locale=%s",
+                        (query, maximum, campaign_id, query_hash, locale),
+                    )
                 if state == "running" and row["lease_expires_at"] and row["lease_expires_at"] <= now:
                     state = "pending"
                 if state in {"cooling", "failed"} and row["next_run_at"] <= now:
@@ -1040,13 +1080,15 @@ class CampaignStore:
         with self.connect() as connection:
             connection.execute(
                 "UPDATE google_page_frontier SET enabled=(query_hash=ANY(%s) AND locale=%s) "
-                "WHERE campaign_id=%s", (hashes, locale, campaign_id),
+                "WHERE campaign_id=%s AND enabled IS DISTINCT FROM (query_hash=ANY(%s) AND locale=%s)",
+                (hashes, locale, campaign_id, hashes, locale),
             )
 
     def record_google_page_result(
         self, batch: dict[str, Any], page: int, *, success: bool,
         result_count: int = 0, unique_count: int = 0, novel_count: int = 0,
         error: str | None = None, captcha: bool = False,
+        retry_after_seconds: float | None = None,
     ) -> bool:
         """Advance a leased frontier only after a page was fetched or read from cache."""
         now = datetime.now(timezone.utc)
@@ -1062,6 +1104,18 @@ class CampaignStore:
                 ).fetchone()
                 if not row:
                     return False
+                if not success and error == "google_proxy_unavailable":
+                    # No upstream request was made. Release the slot and leave
+                    # prior page results and the upstream retry budget intact.
+                    delay = max(1.0, retry_after_seconds or 60.0)
+                    connection.execute(
+                        "UPDATE google_page_frontier SET state='pending',next_run_at=%s,"
+                        "last_error=%s,lease_token=NULL,lease_expires_at=NULL,updated_at=now() "
+                        "WHERE campaign_id=%s AND query_hash=%s AND locale=%s AND lease_token=%s",
+                        (now + timedelta(seconds=delay), error, batch["campaign_id"],
+                         batch["query_hash"], batch["locale"], batch["lease_token"]),
+                    )
+                    return True
                 stats = dict(row["page_stats"] or {})
                 stats[str(page)] = {
                     "status": "success" if success else "failed",
@@ -1098,11 +1152,19 @@ class CampaignStore:
                     return True
                 shared_wait = error in {"google_query_inflight", "google_provider_cooling", "google_web_circuit_open"}
                 attempts = int(row["attempts"]) + (0 if shared_wait else 1)
-                limited = captcha or str(error or "") in {
-                    "google_captcha", "google_http_403", "google_http_429",
-                    "google_web_circuit_open",
+                # The proxy registry already quarantines the exact exit that
+                # returned a 403. Cooling the whole query for 30 minutes here
+                # prevents another healthy exit from completing its remaining
+                # pages. Keep 429/CAPTCHA/global circuit events conservative,
+                # but use an exponential half-open probe for exit-scoped 403s.
+                globally_limited = captcha or str(error or "") in {
+                    "google_captcha", "google_http_429", "google_web_circuit_open",
                 }
-                delay = 1800 if limited else min(60 * (2 ** min(attempts - 1, 6)), 3600)
+                exit_blocked = str(error or "") == "google_http_403"
+                limited = globally_limited or exit_blocked
+                delay = (1800 if globally_limited else
+                         min(60 * (2 ** min(attempts - 1, 4)), 900) if exit_blocked else
+                         min(60 * (2 ** min(attempts - 1, 6)), 3600))
                 if error == "google_query_inflight":
                     delay = 3
                 state = "cooling" if limited else ("failed" if attempts >= 8 else "pending")
@@ -1283,60 +1345,6 @@ class CampaignStore:
                 f"UPDATE whale_task_runs SET {','.join(assignments)} WHERE task_id=%s", values
             )
 
-    def queue_whale_message(self, task_id: str, source_record_key: str, payload: dict[str, Any]) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                "INSERT INTO whale_ingest_outbox(task_id,source_record_key,payload) VALUES(%s,%s,%s::jsonb) "
-                "ON CONFLICT (source_record_key) DO NOTHING",
-                (task_id, source_record_key, json.dumps(payload, ensure_ascii=False)),
-            )
-
-    def whale_outbox(self, task_id: str, limit: int) -> list[dict[str, Any]]:
-        with self.connect() as connection:
-            return connection.execute(
-                "SELECT id,source_record_key,payload,attempts FROM whale_ingest_outbox "
-                "WHERE task_id=%s AND status='pending' ORDER BY id LIMIT %s",
-                (task_id, limit),
-            ).fetchall()
-
-    def mark_whale_outbox(self, ids: list[int], *, status: str, error: str | None = None) -> None:
-        if not ids:
-            return
-        delivered = "now()" if status == "delivered" else "NULL"
-        with self.connect() as connection:
-            scrub = ",payload='{}'::jsonb" if status in {"delivered", "rejected"} else ""
-            connection.execute(
-                f"UPDATE whale_ingest_outbox SET status=%s,attempts=attempts+1,last_error=%s,"
-                f"delivered_at={delivered},updated_at=now(){scrub} WHERE id=ANY(%s)",
-                (status, (error or "")[:500] or None, ids),
-            )
-
-    def retry_whale_outbox(self, ids: list[int], error: str) -> None:
-        if not ids:
-            return
-        with self.connect() as connection:
-            connection.execute(
-                "UPDATE whale_ingest_outbox SET attempts=attempts+1,last_error=%s,updated_at=now() "
-                "WHERE id=ANY(%s)", (error[:500], ids),
-            )
-
-    def whale_outbox_counts(self, task_id: str) -> dict[str, int]:
-        with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT status,count(*) AS count FROM whale_ingest_outbox WHERE task_id=%s GROUP BY status",
-                (task_id,),
-            ).fetchall()
-        return {str(row["status"]): int(row["count"]) for row in rows}
-
-    def pending_whale_task_ids(self, prefix: str = "") -> list[str]:
-        with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT DISTINCT task_id FROM whale_ingest_outbox "
-                "WHERE status='pending' AND task_id LIKE %s ORDER BY task_id",
-                (f"{prefix}%",),
-            ).fetchall()
-        return [str(row["task_id"]) for row in rows]
-
     def campaign(self, campaign_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             return connection.execute(
@@ -1431,8 +1439,8 @@ class CampaignStore:
             ).fetchall()
         return {str(row["proxy_profile"]) for row in rows}
 
-    def next_google_frontier_delay(self, campaign_id: str) -> int | None:
-        """Return the delay until the next unfinished page batch is ready."""
+    def next_google_frontier_delay(self, campaign_id: str) -> float | None:
+        """Return the time until the next eligible batch or expired lease."""
         with self.connect() as connection:
             rows = connection.execute(
                 "SELECT state,next_run_at,lease_expires_at FROM google_page_frontier "
@@ -1442,10 +1450,10 @@ class CampaignStore:
         if not rows:
             return None
         now = datetime.now(timezone.utc)
-        delays: list[int] = []
+        delays: list[float] = []
         for row in rows:
             due_at = row["lease_expires_at"] if row["state"] == "running" else row["next_run_at"]
-            delays.append(max(1, int((due_at - now).total_seconds()) + 1) if due_at else 1)
+            delays.append(max(0.0, (due_at - now).total_seconds()) if due_at else 1.0)
         return min(delays)
 
     def set_status(self, campaign_id: str, status: str, error: str | None = None) -> bool:
@@ -1746,10 +1754,6 @@ class CampaignStore:
         self,
         campaign_id: str,
         page: PageRecord,
-        *,
-        whale_task_id: str | None = None,
-        source_record_key: str | None = None,
-        whale_payload: dict[str, Any] | None = None,
     ) -> tuple[int, bool, bool, bool]:
         """Returns (page_id, new association, duplicate content, needs indexing)."""
         if page.content and hashlib.sha256(page.content.encode()).hexdigest() != page.content_hash:
@@ -1786,12 +1790,10 @@ class CampaignStore:
                         and existing["content"] != page.content
                         and existing["url"] != page.url
                     )
-                    preserve_local_body = bool(whale_task_id and existing["content"])
                     # An alias with old text must not roll back a newer canonical body.
                     # A fresh fetch of the canonical URL can legitimately revert text.
-                    # Whale uploads must not overwrite locally retained text or its metadata.
-                    if not historical_version and not preserve_local_body:
-                        stored_content = "" if whale_task_id else page.content
+                    if not historical_version:
+                        stored_content = page.content
                         content_changed = (
                             existing["content_hash"] != page.content_hash
                             or existing["content"] != stored_content
@@ -1808,7 +1810,7 @@ class CampaignStore:
                             ),
                         )
                 else:
-                    stored_content = "" if whale_task_id else page.content
+                    stored_content = page.content
                     row = connection.execute(
                         "INSERT INTO pages(url,content_hash,title,summary,content,language,http_status,fetched_at,source_engines) "
                         "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT DO NOTHING RETURNING id",
@@ -1831,16 +1833,6 @@ class CampaignStore:
                     "ON CONFLICT DO NOTHING RETURNING page_id",
                     (campaign_id, page_id),
                 ).fetchone()
-                if whale_task_id and source_record_key and whale_payload is not None:
-                    connection.execute(
-                        "INSERT INTO whale_ingest_outbox(task_id,source_record_key,payload) "
-                        "VALUES(%s,%s,%s::jsonb) ON CONFLICT (source_record_key) DO NOTHING",
-                        (
-                            whale_task_id,
-                            source_record_key,
-                            json.dumps(whale_payload, ensure_ascii=False),
-                        ),
-                    )
         return page_id, inserted is not None, duplicate_content, needs_indexing
 
     def mark_indexed(self, content_hashes: list[str]) -> None:

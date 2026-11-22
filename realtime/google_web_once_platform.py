@@ -13,7 +13,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from .google_whale_readback import WhaleReadbackClient
-from .whale_serp import processing_receipts, receipt_query
+from .middle_ingest import processing_receipts, receipt_query
 
 
 class PlatformCallError(RuntimeError):

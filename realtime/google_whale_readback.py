@@ -53,24 +53,48 @@ class WhaleReadbackClient:
             raise DomainError('invalid_argument', 'Invalid readback request interval')
         self._interval = min_interval_seconds
         self._last_request = None
+        self._retry_not_before = 0
         self._session = session or requests.Session()
 
     def _request(self, method, path, *, body=None):
-        if self._last_request is not None and self._interval:
-            wait = self._interval - (time.monotonic() - self._last_request)
-            if wait > 0:
-                time.sleep(wait)
-        self._last_request = time.monotonic()
-        try:
-            response = self._session.request(
-                method, self.base_url + path,
-                headers={"Authorization": "Bearer " + self._key,
-                         "Accept": "application/json",
-                         **({"Content-Type": "application/json"} if body is not None else {})},
-                json=body, timeout=15, allow_redirects=False,
-            )
-        except requests.RequestException as exc:
-            raise DomainError("source_error", "Whale readback network failed", 503) from None
+        if time.monotonic() < self._retry_not_before:
+            raise DomainError('rate_limited', 'Middle readback is waiting for retry window', 429)
+        # All calls here read data; POST is permitted only for batch reads.
+        retryable = method == 'GET' or (method == 'POST' and path in (
+            '/v1/documents/batch-get', '/v1/versions/batch-get'))
+        for attempt in range(3 if retryable else 1):
+            if self._last_request is not None and self._interval:
+                wait = self._interval - (time.monotonic() - self._last_request)
+                if wait > 0:
+                    time.sleep(wait)
+            self._last_request = time.monotonic()
+            try:
+                response = self._session.request(
+                    method, self.base_url + path,
+                    headers={"Authorization": "Bearer " + self._key,
+                             "Accept": "application/json",
+                             **({"Content-Type": "application/json"} if body is not None else {})},
+                    json=body, timeout=15, allow_redirects=False,
+                )
+            except requests.RequestException:
+                raise DomainError("source_error", "Whale readback network failed", 503) from None
+            if response.status_code != 429 or not retryable:
+                break
+            if attempt == 2:
+                raise DomainError('rate_limited', 'Middle readback rate limit exceeded', 429)
+            try:
+                delay = float(response.headers.get('Retry-After', '1'))
+            except (TypeError, ValueError):
+                delay = 1
+            # Respect long backoffs by returning to the durable coordinator,
+            # rather than blocking a worker or retrying earlier than allowed.
+            import math
+            if not math.isfinite(delay) or delay < 0:
+                delay = 1
+            if delay > 10:
+                self._retry_not_before = time.monotonic() + delay
+                raise DomainError('rate_limited', 'Middle readback deferred by rate limit', 429)
+            time.sleep(max(1, delay))
         if response.status_code in {401, 403}:
             raise DomainError("not_authorized", "Consumer key lacks document/version read access", 403)
         if response.status_code == 404:

@@ -209,12 +209,12 @@ services:
     restart: unless-stopped
 
   collector:
-    profiles: ["whale"]
+    profiles: ["middle"]
     build: .
     # Run the checked-out module so operational fixes take effect without a
     # Docker image rebuild while the registry is unavailable.
     entrypoint: ["sh", "-c"]
-    command: ["Xvfb :99 -screen 0 1280x900x24 >/tmp/xvfb.log 2>&1 & exec python -m realtime.cli ${COLLECTOR_COMMAND:-whale-worker}"]
+    command: ["exec python -m realtime.middle_live_runtime"]
     environment:
       PROCESS_ROLE: collector
       GOOGLE_FREE_PROVIDERS: ${GOOGLE_FREE_PROVIDERS:-openserp,wml}

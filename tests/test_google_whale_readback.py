@@ -173,3 +173,38 @@ class WhaleReadbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadbackRateLimitTests(unittest.TestCase):
+    def test_read_only_retry_respects_server_delay(self):
+        from unittest.mock import patch
+        session = Mock()
+        throttled = response(429, {})
+        throttled.headers = {'Retry-After': '2'}
+        session.request.side_effect = [throttled, response(200, {'documents': []})]
+        client = WhaleReadbackClient('https://middle.test', 'secret', session=session)
+        with patch('realtime.google_whale_readback.time.sleep') as sleep:
+            self.assertEqual(client._request('POST', '/v1/documents/batch-get', body={}), {'documents': []})
+            sleep.assert_called_once_with(2)
+        self.assertEqual(session.request.call_count, 2)
+
+    def test_bounded_retry_and_long_delay_do_not_spin(self):
+        from unittest.mock import patch
+        for delay, expected_calls in [('1', 3), ('30', 1)]:
+            session = Mock()
+            throttled = response(429, {})
+            throttled.headers = {'Retry-After': delay}
+            session.request.return_value = throttled
+            client = WhaleReadbackClient('https://middle.test', 'secret', session=session)
+            with patch('realtime.google_whale_readback.time.sleep'), self.assertRaises(DomainError) as caught:
+                client._request('GET', '/v1/documents/doc_test')
+            self.assertEqual(caught.exception.code, 'rate_limited')
+            self.assertEqual(session.request.call_count, expected_calls)
+
+    def test_mutation_is_not_retried(self):
+        session = Mock()
+        session.request.return_value = response(429, {})
+        client = WhaleReadbackClient('https://middle.test', 'secret', session=session)
+        with self.assertRaises(DomainError):
+            client._request('POST', '/v1/documents/bulk', body=[])
+        session.request.assert_called_once()

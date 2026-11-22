@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 from realtime.config import Config
 from realtime.experiment_store import ExperimentStore, digest, query_shard
-from realtime.google_experiment import Runner, command, experiment_message, export_report, fetch_one, normalize_languages, publication_metadata, quality, seed_queries, site_queries
+from realtime.google_experiment import Runner, command, export_report, fetch_one, normalize_languages, publication_metadata, quality, seed_queries, site_queries
 
 
 def document(url='https://example.org/ai', text=None):
@@ -194,12 +194,6 @@ class ExperimentTests(unittest.TestCase):
         row=self.store.db.execute("SELECT query FROM queries WHERE family='site'").fetchone()
         self.assertIn('site:example.org',row[0])
 
-    def test_message_keeps_identity_and_does_not_invent_publication_time(self):
-        msg=experiment_message(document(),'run-a','AI',['topic'],Config())
-        again=experiment_message(document(),'run-b','AI news',['event'],Config())
-        self.assertNotIn('published_at',msg['content'])
-        self.assertEqual(msg['source']['source_record_key'],again['source']['source_record_key'])
-        self.assertEqual(msg['discovery']['metadata']['experiment_id'],'run-a')
 
     def test_publication_only_uses_explicit_timezone_aware_published_field(self):
         value,source=publication_metadata(b'<meta property="article:published_time" content="2026-09-01T10:00:00+08:00">')
@@ -211,50 +205,22 @@ class ExperimentTests(unittest.TestCase):
                          '2026-09-01T10:00:00+00:00')
         self.assertEqual(publication_metadata(b'<meta property="article:modified_time" content="2026-09-01T10:00:00Z">'),(None,None))
         self.assertEqual(publication_metadata(b'<meta property="article:published_time" content="2026-09-01">'),(None,None))
-        msg=experiment_message(dict(document(),published_at=value),'run','AI',['topic'],Config())
-        self.assertEqual(msg['content']['published_at'],value)
 
-    def test_missing_publication_is_retained_locally_without_posting(self):
+
+
+
+    def test_legacy_upload_settings_cannot_queue_or_discard_collected_body(self):
+        self.store.set('whale', True)
+        self.store.set('remote_only', True)
         self.discover()
-        runner=Runner(self.store,Config(),Mock(),self.root/'export')
+        runner = Runner(self.store, Config(), Mock(), self.root/'export')
         runner.output.mkdir()
-        runner.whale=Mock()
-        runner.save_body({'document':document(),'requested_url':document()['url'],'status':'success','seconds':1})
-        self.assertEqual(self.store.db.execute('SELECT status FROM outbox').fetchone()[0],'blocked_missing_publication')
-        self.assertEqual(self.store.counts()['new'],1)
-        runner.whale.bulk_ingest.assert_not_called()
-
-    def test_remote_only_scrubs_bodies_after_queue_and_payload_after_receipt(self):
-        self.store.set('whale', True)
-        self.store.set('remote_only', True)
-        self.discover()
-        with patch('realtime.google_experiment.WhaleClient', return_value=Mock()):
-            runner = Runner(self.store, Config(), Mock(), self.root/'export')
-        doc = dict(document(), published_at='2026-09-01T10:00:00+08:00')
+        doc = document()
         runner.save_body({'document': doc, 'requested_url': doc['url'], 'status': 'success', 'seconds': 1})
-        row = self.store.db.execute('SELECT document FROM documents').fetchone()
-        outbox = self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
-        self.assertEqual(row['document'], 'null')
-        self.assertEqual(outbox['status'], 'pending')
-        self.assertIn(doc['content'], outbox['payload'])
-        self.assertFalse((self.root/'export/documents').exists())
-        runner.whale.bulk_ingest.return_value = [{'receipt_status': 'accepted'}]
-        runner.flush_whale()
-        outbox = self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
-        self.assertEqual(outbox['status'], 'accepted')
-        self.assertIsNone(outbox['payload'])
-
-    def test_remote_only_discards_body_without_publication_date(self):
-        self.store.set('whale', True)
-        self.store.set('remote_only', True)
-        self.discover()
-        with patch('realtime.google_experiment.WhaleClient', return_value=Mock()):
-            runner = Runner(self.store, Config(), Mock(), self.root/'export')
-        runner.save_body({'document': document(), 'requested_url': document()['url'], 'status': 'success', 'seconds': 1})
-        self.assertEqual(self.store.db.execute('SELECT document FROM documents').fetchone()[0], 'null')
-        row = self.store.db.execute('SELECT payload,status FROM outbox').fetchone()
-        self.assertIsNone(row['payload'])
-        self.assertEqual(row['status'], 'blocked_missing_publication')
+        saved = json.loads(self.store.db.execute('SELECT document FROM documents').fetchone()[0])
+        self.assertEqual(saved['content'], doc['content'])
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM outbox').fetchone()[0], 0)
+        self.assertTrue(list((self.root/'export/documents').glob('*.md')))
 
     def test_pausing_does_not_change_deadline(self):
         deadline=self.store.get('deadline')
@@ -348,25 +314,6 @@ class ExperimentTests(unittest.TestCase):
         runner.run()
         self.assertEqual(self.store.get('state'),'storage_stopped')
 
-    def test_whale_receipts_and_retry_only_touch_experiment_outbox(self):
-        doc_id,_=self.save()
-        with self.store.db:
-            self.store.db.execute("INSERT INTO outbox(document_id,payload,status) VALUES(?,?,'pending')", (doc_id,'{}'))
-        runner=Runner(self.store,Config(),Mock(),self.root/'export')
-        runner.whale=Mock()
-        runner.whale.bulk_ingest.side_effect=RuntimeError('network')
-        runner.flush_whale()
-        row=self.store.db.execute('SELECT * FROM outbox').fetchone()
-        self.assertEqual(row['status'],'pending')
-        self.assertEqual(row['attempts'],1)
-        runner.next_whale=0
-        self.store.db.execute('UPDATE outbox SET next_attempt=0')
-        self.store.db.commit()
-        runner.whale.bulk_ingest.side_effect=None
-        runner.whale.bulk_ingest.return_value=[{'receipt_status':'duplicate'}]
-        runner.flush_whale()
-        self.assertEqual(self.store.db.execute('SELECT status FROM outbox').fetchone()[0],'duplicate')
-        runner.whale.claim.assert_not_called()
 
     def test_report_has_content_and_keeps_whale_baseline_separate(self):
         self.save()

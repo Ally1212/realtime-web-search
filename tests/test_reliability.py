@@ -1,3 +1,4 @@
+from tests.product_job_fixture import legacy_private_job
 import csv
 import io
 import json
@@ -120,7 +121,7 @@ class SummaryReliabilityTests(unittest.TestCase):
         self.record('google_trends', 'ignored', [
             dict(keyword='Topic', articles=[dict(title='Report', link='https://example.com/b')])])
         self.record('google_web', 'failed', [], status='error')
-        jid = self.store.submit(self.owner, {'query': 'private'}, 'private-summary', self.config)[0]
+        jid, _ = legacy_private_job(self.store, self.owner, {'query': 'private'}, 'private-summary', self.config)
         with self.base.connect() as db:
             cid = db.execute('SELECT campaign_id FROM sf_jobs WHERE id=%s', (jid,)).fetchone()['campaign_id']
         self.console.record(str(cid), source='google_web', provider='openserp', query='private',

@@ -1,5 +1,8 @@
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from realtime.campaign_store import CampaignStore
@@ -7,6 +10,40 @@ from realtime.campaign_store import CampaignStore
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "requires TEST_DATABASE_URL")
 class DiscoveryRuntimeTests(unittest.TestCase):
+    def test_result_records_with_one_statement_and_serializes_concurrent_cooldowns(self):
+        key = uuid4().hex.ljust(64, '0')
+        connect = self.store.connect
+        statements = []
+
+        @contextmanager
+        def count_statements():
+            with connect() as db:
+                execute = Mock(wraps=db.execute)
+                yield Mock(wraps=db, execute=execute)
+                statements.append(execute.call_count)
+
+        try:
+            with patch.object(self.store, 'connect', count_statements):
+                def block(_):
+                    self.store.record_google_proxy_result(key, success=False, cooldown_seconds=300,
+                                                          error_code='google_http_403', elapsed_seconds=.5)
+
+                with ThreadPoolExecutor(max_workers=8) as workers:
+                    list(workers.map(block, range(8)))
+                self.store.record_google_proxy_result(key, success=True, elapsed_seconds=.25)
+            self.assertEqual(statements, [1] * 9)
+            with connect() as db:
+                row = db.execute('SELECT *,extract(epoch FROM cooldown_until-now()) AS wait '
+                                 'FROM google_proxy_sessions WHERE proxy_key_hash=%s', (key,)).fetchone()
+            self.assertEqual((row['successes'], row['failures'], row['http_error_count']), (1, 8, 8))
+            self.assertEqual((row['consecutive_failures'], row['limited_failure_streak']), (0, 0))
+            self.assertEqual((row['latency_count'], row['latency_seconds_total']), (9, 4.25))
+            self.assertIsNotNone(row['last_success_at'])
+            self.assertAlmostEqual(float(row['wait']), 1800, delta=3)
+        finally:
+            with connect() as db:
+                db.execute('DELETE FROM google_proxy_sessions WHERE proxy_key_hash=%s', (key,))
+
     def test_aggressive_proxy_backoff_persists_and_only_success_resets_it(self):
         key=uuid4().hex.ljust(64,'0')
         try:

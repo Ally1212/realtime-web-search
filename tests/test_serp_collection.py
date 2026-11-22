@@ -5,6 +5,7 @@ import os
 import signal
 import threading
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import Mock, patch
 from uuid import uuid4
@@ -12,6 +13,7 @@ from uuid import uuid4
 import psycopg
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from realtime.campaign_store import CampaignStore, _POOLS, _INITIALIZED_DSNS
 from realtime.config import Config
@@ -33,6 +35,28 @@ def envelope(url='https://example.com/article', query='solar research', page=1):
 
 
 class SerpCollectionTests(unittest.TestCase):
+    def test_worker_recovers_after_queue_reads_and_retry_writes_time_out(self):
+        manager = WorkerManager.__new__(WorkerManager)
+        manager.stop = Mock(wraps=threading.Event())
+        manager.stop.wait.return_value = False
+        manager.queue = Mock()
+        manager.queue.pop.side_effect = [RedisTimeoutError(), 'first', 'second']
+        manager.queue.schedule.side_effect = [RedisTimeoutError(), None]
+
+        def run(campaign_id):
+            if campaign_id == 'first':
+                raise RedisTimeoutError()
+            manager.stop.set()
+
+        manager.run_campaign = Mock(side_effect=run)
+        manager.worker_loop()
+        self.assertEqual([call.args[0] for call in manager.run_campaign.call_args_list], ['first', 'second'])
+        self.assertEqual(len(manager.queue.schedule.call_args_list), 2)
+        for call in manager.queue.schedule.call_args_list:
+            self.assertEqual(call.args, ('first', 60))
+            self.assertEqual(call.kwargs, {'only_if_unscheduled': True})
+        self.assertEqual(manager.stop.wait.call_count, 2)
+
     def test_url_registry_preserves_page_identity_without_dns_or_article_http(self):
         self.assertEqual(normalize_serp_url('https://EXAMPLE.com/a?ref=chapter2&page=3&utm_source=google#x'), 'https://example.com/a?ref=chapter2&page=3')
         self.assertEqual(normalize_serp_url('https://example.com/a?article=17&srsltid=token&page=3&SrsLtId=another#x'), 'https://example.com/a?article=17&page=3')
@@ -115,6 +139,25 @@ class SerpCollectionTests(unittest.TestCase):
         with patch('realtime.serp_worker.run_serp_campaign') as collect, patch('realtime.worker.subprocess.Popen', side_effect=AssertionError('no Scrapy')):
             manager.run_campaign(str(uuid4()))
         collect.assert_called_once()
+
+    def test_worker_reuses_proxy_health_only_for_web_only_searches(self):
+        manager = WorkerManager.__new__(WorkerManager)
+        manager.config = Config(content_fetch_enabled=False)
+        manager.store = Mock()
+        manager.store.is_local_campaign.return_value = True
+        manager.store.next_google_frontier_delay.return_value = 300
+        manager.serp = Mock()
+        manager.serp.content_fetch_enabled.return_value = False
+        manager.syncer = Mock()
+        manager.syncer.sync.return_value = 64
+        manager.queue = Mock()
+        manager.web_proxy_pool = Mock()
+        cid = str(uuid4())
+        with patch('realtime.serp_worker.run_serp_campaign') as collect:
+            for sources, expected in ((['google_web'], manager.web_proxy_pool), (['google_news'], None)):
+                manager.store.campaign.return_value = {'status':'active','proxy_profile':'private','sources':sources}
+                manager.run_campaign(cid)
+                self.assertIs(collect.call_args.kwargs.get('proxy_pool'), expected)
 
     def test_inactive_tasks_leave_queue_and_disabled_active_tasks_remain_retryable(self):
         for state in ('stopped', 'paused', 'failed', 'active'):
@@ -280,20 +323,68 @@ class SerpStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(self.serp.request(rid)['search_metadata']['collection_times'], times)
 
     def test_concurrent_workers_count_same_url_once(self):
+        events = []
+        for index in range(4):
+            event = self.event(query=f'search {index}')
+            results = event['response']['organic_results']
+            for slug in ('shared', f'unique-{index}'):
+                results.append(dict(results[0], link=f'https://example.com/{slug}'))
+            if index % 2:
+                results.reverse()
+            events.append(event)
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            ids = list(executor.map(lambda _: self.serp.record(self.cid, **self.event()), range(4)))
-        self.assertEqual(sum(self.serp.request(i)['new_unique_links'] for i in ids), 1)
+            ids = list(executor.map(lambda event: self.serp.record(self.cid, **event), events))
+        saved = [self.serp.request(request_id) for request_id in ids]
+        self.assertEqual(sum(response['new_unique_links'] for response in saved), 6)
+        self.assertEqual([len(response['organic_results']) for response in saved], [3] * 4)
+
+    def test_registry_write_round_trips_do_not_grow_with_result_count(self):
+        connect = self.serp.store.connect
+        statement_counts = []
+
+        @contextmanager
+        def count_statements():
+            with connect() as db:
+                execute = Mock(wraps=db.execute)
+                yield Mock(wraps=db, execute=execute)
+                statement_counts.append(execute.call_count)
+
+        small = self.event()
+        large = self.event(query='larger search')
+        results = large['response']['organic_results']
+        for index in range(9):
+            results.append(dict(results[0], link=f'https://example.com/other/{index}'))
+        with patch.object(self.serp.store, 'connect', count_statements):
+            first = self.serp.record(self.cid, **small)
+            second = self.serp.record(self.cid, **large)
+        self.assertEqual(statement_counts[0], statement_counts[1])
+        self.assertEqual(self.serp.request(first)['new_unique_links'], 1)
+        self.assertEqual(self.serp.request(second)['new_unique_links'], 9)
+
+    def test_serializes_full_page_once_and_keeps_same_request_replay(self):
+        from psycopg.types.json import Jsonb
+
+        event = self.event()
+        with patch('realtime.serp_store.Jsonb', wraps=Jsonb) as encode:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
+                ids = list(workers.map(lambda _: self.serp.record(self.cid, **event), range(2)))
+        self.assertEqual(ids, [event['upstream_request_id']] * 2)
+        full_pages = [entry.args[0] for entry in encode.call_args_list
+                      if entry.args[0].get('organic_results')]
+        self.assertEqual(len(full_pages), 1)
+        self.assertEqual(self.serp.request(ids[0])['new_unique_links'], 1)
 
     def test_write_failure_rolls_back_request_and_url_then_retry_succeeds(self):
         with self.base.connect() as db:
-            db.execute("CREATE FUNCTION reject_serp_url() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$")
-            db.execute("CREATE TRIGGER reject_serp BEFORE INSERT ON serp_urls FOR EACH ROW EXECUTE FUNCTION reject_serp_url()")
+            db.execute("CREATE FUNCTION reject_serp_response() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$")
+            db.execute("CREATE TRIGGER reject_serp BEFORE UPDATE OF response ON serp_requests FOR EACH ROW EXECUTE FUNCTION reject_serp_response()")
         event = self.event()
         with self.assertRaises(psycopg.Error):
             self.serp.record(self.cid, **event)
         self.assertEqual(self.serp.recent(), [])
         with self.base.connect() as db:
-            db.execute('DROP TRIGGER reject_serp ON serp_urls')
+            self.assertEqual(db.execute('SELECT count(*) AS n FROM serp_urls').fetchone()['n'], 0)
+            db.execute('DROP TRIGGER reject_serp ON serp_requests')
         self.assertEqual(self.serp.request(self.serp.record(self.cid, **event))['new_unique_links'], 1)
 
     def test_existing_retained_url_is_seeded_not_counted_as_new(self):

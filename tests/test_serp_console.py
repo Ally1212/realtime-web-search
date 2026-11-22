@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -116,6 +117,53 @@ class ConsoleIntegrationTests(unittest.TestCase):
         self.trends = self.record('google_trends', {'trending_searches':[dict(keyword='Energy topic',approx_traffic='20,000+',articles=[dict(title='New report',link='https://example.org/b')]),dict(keyword='No articles',articles=[])]})
         self.error = self.record('google_web', {}, 'captcha')
 
+    def test_web_cache_rolls_back_results_when_snapshot_mapping_fails(self):
+        discovery = make_discovery(self.config, self.base, self.store, self.base.campaign(self.cid))
+        self.addCleanup(discovery.close)
+        original = [SearchResult('https://example.org/original', 'Original', ('openserp',))]
+        replacement = [SearchResult('https://example.org/replacement', 'Replacement', ('openserp',))]
+        key = discovery._cache_key('google_web', 'energy', discovery.locale)
+        request_id = self.record('google_web', {'organic_results': [{'link': original[0].url}]})
+        discovery._thread_state.last_serp_request_id = request_id
+        discovery._store_cache(key, 'google_web', 'energy', discovery.locale, 1, original, 600)
+
+        discovery._thread_state.last_serp_request_id = str(uuid4())
+        with self.assertRaises(psycopg.errors.ForeignKeyViolation):
+            discovery._store_cache(key, 'google_web', 'energy', discovery.locale, 1, replacement, 600)
+        self.assertEqual(discovery._cached('google_web', 'energy', discovery.locale), (key, original))
+
+    def test_web_cache_read_links_the_snapshot_matching_returned_results(self):
+        origin = make_discovery(self.config, self.base, self.store, self.base.campaign(self.cid))
+        self.addCleanup(origin.close)
+        consumer_id = self.store.create_task({'query':'energy','sources':['google_web'],'start':False},
+                                             self.config)['campaign_id']
+        consumer = make_discovery(self.config, self.base, self.store, self.base.campaign(consumer_id))
+        self.addCleanup(consumer.close)
+        old = SearchResult('https://example.org/old', 'Old', ('openserp',))
+        new = SearchResult('https://example.org/new', 'New', ('openserp',))
+        first = self.record('google_web', {'organic_results': [{'link': old.url}]})
+        second = self.record('google_web', {'organic_results': [{'link': new.url}]})
+        key = origin._cache_key('google_web', 'energy', origin.locale)
+
+        def publish(rid, result):
+            origin._thread_state.last_serp_request_id = rid
+            origin._store_cache(key, 'google_web', 'energy', origin.locale, 1, [result], 600)
+
+        publish(first, old)
+        original_get = consumer.cache_get
+
+        def publish_after_read(*args, **kwargs):
+            result = original_get(*args, **kwargs)
+            publish(second, new)
+            return result
+
+        consumer.cache_get = publish_after_read
+        self.assertEqual(consumer._cached('google_web', 'energy', consumer.locale), (key, [old]))
+        with self.base.connect() as db:
+            linked = db.execute('SELECT request_id FROM serp_campaign_requests WHERE campaign_id=%s AND reused',
+                                (consumer_id,)).fetchall()
+        self.assertEqual([str(row['request_id']) for row in linked], [str(first)])
+
     def test_cooling_once_task_stays_active_and_progress_is_private_safe(self):
         cid = self.store.create_task({'query':'waiting','sources':['google_web']}, self.config)['campaign_id']
         discovery = Mock(locale='test:serp-v1')
@@ -202,6 +250,54 @@ class ConsoleIntegrationTests(unittest.TestCase):
         row = self.store.tasks()['tasks'][0]
         self.assertEqual(row['aliases'], ['research'])
         self.assertEqual(row['options']['web_region'],'GB')
+
+    def test_web_activation_retry_recovers_failed_publish_and_preserves_active_lease(self):
+        cid = self.store.create_task({'query':'dispatch retry','sources':['google_web'],'start':False},
+                                     self.config)['campaign_id']
+        handler = Mock(config=self.config, path=f'/api/serp/tasks/{cid}/start')
+        handler.queue.enqueue.side_effect = ConnectionError('queue reply was lost')
+        self.assertTrue(post(handler))
+        self.assertEqual(handler.send_json.call_args.args[-1], 503)
+        activated = self.base.campaign(cid)
+        self.assertEqual(activated['status'], 'active')
+
+        handler.send_json.reset_mock()
+        self.assertTrue(post(handler))
+        self.assertEqual(handler.send_json.call_args.args, ({'campaign_id':cid, 'status':'active'},))
+        handler.queue.enqueue.assert_called_once_with(cid, priority=True)
+        handler.queue.recover.assert_called_once_with(cid)
+        self.assertEqual(self.base.campaign(cid)['updated_at'], activated['updated_at'])
+
+        self.assertIsNotNone(self.base.acquire_google_page_batch(cid, 'dispatch retry', 'en', 11, 3, 21600))
+        self.assertTrue(post(handler))
+        handler.queue.recover.assert_called_once_with(cid)
+
+    def test_web_creation_retry_recovers_failed_publish_and_preserves_active_lease(self):
+        payload = json.dumps({'query': 'creation retry', 'sources': ['google_web']}).encode()
+        handler = Mock(config=self.config, path='/api/serp/tasks',
+                       headers={'Idempotency-Key': 'retry-create', 'Content-Length': str(len(payload))})
+
+        def submit():
+            handler.rfile = io.BytesIO(payload)
+            self.assertTrue(post(handler))
+            return handler.send_json.call_args.args
+
+        handler.queue.enqueue.side_effect = ConnectionError('queue reply was lost')
+        self.assertEqual(submit()[-1], 503)
+        cid = str(self.store.tasks(q='creation retry')['tasks'][0]['id'])
+
+        result, status = submit()
+        self.assertEqual(status, 201)
+        self.assertEqual(result['campaign_id'], cid)
+        self.assertTrue(result['idempotent_replay'])
+        self.assertNotIn('_enqueue', result)
+        handler.queue.enqueue.assert_called_once_with(cid, priority=True)
+        handler.queue.recover.assert_called_once_with(cid)
+
+        self.assertIsNotNone(self.base.acquire_google_page_batch(cid, 'creation retry', 'en', 11, 3, 21600))
+        self.assertEqual(submit()[0]['campaign_id'], cid)
+        handler.queue.recover.assert_called_once_with(cid)
+        self.assertEqual(self.store.tasks(q='creation retry')['total'], 1)
 
     def test_legacy_article_tasks_cannot_be_reactivated_from_console(self):
         old = self.base.create_campaign('legacy body feed', [], 100, 'direct', ['rss'])
@@ -419,6 +515,28 @@ class ConsoleIntegrationTests(unittest.TestCase):
         with self.base.connect() as db:
             self.assertIsNone(db.execute('SELECT 1 FROM serp_campaign_requests WHERE campaign_id=%s AND request_id=%s', (self.cid, rid)).fetchone())
         self.assertEqual(self.store.browse({'campaign_id': self.cid}, 'requests')['rows'], [])
+
+    def test_atomic_web_cache_reuses_private_snapshot_only_within_its_campaign(self):
+        from psycopg.types.json import Jsonb
+
+        private = self.store.create_task({'query':'energy','sources':['google_web'],'start':False},
+                                         self.config)['campaign_id']
+        with self.base.connect() as db:
+            db.execute('UPDATE serp_task_options SET options=%s WHERE campaign_id=%s',
+                       (Jsonb({'customer_private': True}), private))
+        request = self.record('google_web', {'organic_results':[{'link':'https://example.org/private'}]},
+                              cid=private)
+        key = 'd' * 64
+        payload = [{'url':'https://example.org/private'}]
+        self.base.put_discovery_cache(key, 'google_web', 'e' * 64, 'en', 1, payload, 600,
+                                      serp_request_id=request)
+        self.assertIsNone(self.base.get_discovery_cache(key, 'google_web', serp_campaign_id=self.cid))
+        self.assertEqual(self.base.get_discovery_cache(key, 'google_web', serp_campaign_id=private)['payload'], payload)
+        with self.base.connect() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM serp_campaign_requests WHERE campaign_id=%s AND request_id=%s',
+                                         (self.cid, request)).fetchone())
+            counts = db.execute("SELECT cache_hits,cache_misses FROM discovery_source_runtime WHERE source='google_web'").fetchone()
+        self.assertEqual((counts['cache_hits'], counts['cache_misses']), (1, 1))
 
     def test_actual_http_task_settings_filters_json_and_export(self):
         self.seed_results()

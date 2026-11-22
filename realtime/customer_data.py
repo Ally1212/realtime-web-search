@@ -109,6 +109,11 @@ class CustomerDataStore:
         response = job.get('response')
         if job['status'] != 'succeeded' or not response:
             raise ProductError('job_not_ready', '任务尚未成功完成', 409)
+        if job['parameters']['provider'] == 'middle':
+            record = response.get('middle_record')
+            if not response.get('readback_verified') or not isinstance(record, dict):
+                raise ProductError('job_not_ready', '中台固定版本尚未校验完成', 409)
+            return record
         rid = response.get('origin_request_id')
         if rid:
             # Re-check origin visibility as well as job ownership.

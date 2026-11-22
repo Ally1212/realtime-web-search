@@ -30,7 +30,6 @@ from .fetcher import LiveFetcher, MAX_TEXT_CHARS, normalize_url
 from .keyword_catalog import AI_ANCHORS, base_keyword_specs
 from .markdown_export import literal, quality_warnings
 from .proxy_pool import ProxyPool, ProxySynchronizer
-from .whale_collector import WhaleClient, whale_message
 
 FAMILIES = ('topic', 'event', 'site', 'recent')
 EXCLUDE = ' -site:youtube.com -site:youtu.be'
@@ -236,20 +235,6 @@ def fetch_one(row: dict, domain_lock: threading.Semaphore):
     return result
 
 
-def experiment_message(doc: dict, run_id: str, query: str, families: list[str], config: Config):
-    item = dict(doc, campaign_id=run_id, query=query)
-    task = {'task_id': run_id, 'dataset_id': config.whale_dataset_id,
-            'source_platform': config.whale_source_platform, 'task_type': 'keyword_search'}
-    _, message = whale_message(item, task, config)
-    # The original helper substitutes fetched_at for published_at. Experiments
-    # must never represent a crawl timestamp as a publication timestamp.
-    message['content'].pop('published_at', None)
-    if doc.get('published_at'):
-        message['content']['published_at'] = doc['published_at']
-    message['discovery']['metadata'].update(experiment_id=run_id, query_families=families,
-                                           publication_time_known=bool(doc.get('published_at')),
-                                           publication_source=doc.get('publication_source'))
-    return message
 
 
 def import_baselines(store: ExperimentStore, production: CampaignStore, args):
@@ -367,10 +352,7 @@ class Runner:
         self.store, self.config, self.production, self.output = store, config, production, output
         self.clients = {}
         self.pool = proxy_pool if proxy_pool is not None else ProxyPool(config)
-        self.whale = WhaleClient(config) if store.get('whale') else None
         self.remote_only = bool(store.get('remote_only'))
-        self.registered = False
-        self.next_whale = 0
         self.next_request = 0.0
         self.stop = False
         self.domain_locks = {}
@@ -456,61 +438,8 @@ class Runner:
     def save_body(self, record):
         doc = record.get('document')
         document_id, classification = self.store.save_document(record, quality(doc), self.store.get('deadline'))
-        if self.whale and classification == 'new':
-            rows = self.store.db.execute('SELECT DISTINCT q.family,q.query FROM discoveries x JOIN queries q ON q.id=x.query_id WHERE x.url=?', (record['requested_url'],)).fetchall()
-            message = experiment_message(doc, self.store.get('id'), rows[0]['query'], sorted({r['family'] for r in rows}), self.config)
-            with self.store.db:
-                self.store.db.execute('INSERT OR IGNORE INTO outbox(document_id,payload,status) VALUES(?,?,?)',
-                                      (document_id, json.dumps(message, ensure_ascii=False) if doc.get('published_at') else None,
-                                       'pending' if doc.get('published_at') else 'blocked_missing_publication'))
-        if self.remote_only:
-            with self.store.db:
-                self.store.db.execute("UPDATE documents SET document='null' WHERE id=?", (document_id,))
-        else:
-            export_document(self.store, self.output, document_id)
+        export_document(self.store, self.output, document_id)
 
-    def flush_whale(self):
-        if not self.whale or time.time() < self.next_whale:
-            return
-        self.next_whale = time.time() + self.store.get('upload_interval', 20)
-        try:
-            if not self.registered:
-                self.whale.register()
-                self.registered = True
-            if time.time() >= getattr(self, 'next_heartbeat', 0):
-                self.whale.heartbeat(1)
-                self.next_heartbeat = time.time() + 20
-            rows = self.store.db.execute("SELECT * FROM outbox WHERE status='pending' AND next_attempt<=? LIMIT ?", (time.time(), self.store.get('upload_batch_size', 25))).fetchall()
-            if not rows:
-                return
-            try:
-                receipts = self.whale.bulk_ingest([json.loads(r['payload']) for r in rows])
-                if len(receipts) != len(rows):
-                    raise RuntimeError('receipt_count_mismatch')
-            except Exception as exc:
-                http = getattr(exc, 'status_code', 0)
-                permanent = bool(http and http not in {408,425,429,500,502,503,504})
-                with self.store.db:
-                    for row in rows:
-                        delay = min(300, 5 * 2 ** min(row['attempts'], 6))
-                        self.store.db.execute("UPDATE outbox SET status=?,attempts=attempts+1,next_attempt=?,error=? WHERE document_id=?",
-                            ('rejected' if permanent else 'pending', time.time()+delay, f'{type(exc).__name__}:HTTP{http}', row['document_id']))
-                        if permanent and self.remote_only:
-                            self.store.db.execute('UPDATE outbox SET payload=NULL WHERE document_id=?', (row['document_id'],))
-                self.store.set('whale_last_error', f'{type(exc).__name__}:HTTP{http}')
-                return
-            with self.store.db:
-                for row, receipt in zip(rows, receipts):
-                    status = receipt.get('receipt_status')
-                    state = 'accepted' if status in {'queued','accepted'} else 'duplicate' if status == 'duplicate' else 'rejected'
-                    self.store.db.execute('UPDATE outbox SET status=?,finished=?,attempts=attempts+1,error=? WHERE document_id=?',
-                        (state, time.time(), '' if state != 'rejected' else 'receipt_rejected', row['document_id']))
-                    if self.remote_only:
-                        self.store.db.execute('UPDATE outbox SET payload=NULL WHERE document_id=?', (row['document_id'],))
-            self.store.set('whale_last_error', None)
-        except Exception as exc:
-            self.registered = False
-            self.store.set('whale_last_error', type(exc).__name__)
 
     def storage_ok(self):
         paths = {p.resolve() for root in (self.output, self.store.path.parent) for p in root.rglob('*') if p.is_file()}
@@ -551,10 +480,7 @@ class Runner:
                         drain_until = min(now+300, self.store.get('deadline')+300)
                         self.store.set('state', 'draining')
                         self.store.set('stop_reason', self.store.get('stop_reason') or ('preflight_complete' if complete_early else 'interrupted' if self.stop else 'deadline'))
-                    if time.time() + self.config.request_timeout * 3 < drain_until:
-                        self.flush_whale()
-                    outbox = self.store.db.execute("SELECT count(*) FROM outbox WHERE status='pending'").fetchone()[0]
-                    if (not futures and not outbox) or time.time() >= drain_until:
+                    if (not futures) or time.time() >= drain_until:
                         break
                 elif state == 'running':
                     if now-last_sync >= 300:
@@ -588,7 +514,6 @@ class Runner:
                                 family_index = (index+1) % 4
                                 self.store.set('family_index', family_index)
                                 break
-                    self.flush_whale()
                 if now-last_sample >= 60:
                     metrics = self.store.counts()
                     with self.store.db:
@@ -654,21 +579,19 @@ def command(args):
         raise ValueError('shard_index must be smaller than shard_count')
     requested_languages = normalize_languages(getattr(args, 'languages', None))
     remote_only = bool(getattr(args, 'remote_only', False))
-    if remote_only and not args.whale:
-        raise ValueError('--remote-only requires --whale')
+    if remote_only or getattr(args, 'whale', False):
+        raise ValueError('旧实验上传与remote-only已退役，请使用中台实时查询')
     output.mkdir(parents=True, exist_ok=True)
     lock = (directory / 'runner.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     config = Config()
-    if args.whale and not config.whale_collector_api_key:
-        raise ValueError('Whale credentials are missing')
     production = CampaignStore(config.database_url)
     if not store.get('id'):
         if any(output.iterdir()):
             raise ValueError('new experiment requires an empty output directory')
         store.set('id', 'google-experiment-' + directory.name)
         store.set('output', str(output))
-        store.set('whale', bool(args.whale))
+        store.set('whale', False)
         store.set('remote_only', remote_only)
         store.set('preflight', bool(args.preflight))
         store.set('languages', list(requested_languages))
