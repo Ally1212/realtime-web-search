@@ -31,6 +31,9 @@ class MapsMiddleContractTests(unittest.TestCase):
     def test_hundred_place_request_is_preserved(self):
         request=maps_request(self.parameters(max_places=100))
         self.assertEqual(request['max_items'],100)
+        self.assertEqual(request['deadline_seconds'], 900)
+        text_request = maps_request(dict(self.parameters(max_places=100), city='Seattle'))
+        self.assertEqual(text_request['deadline_seconds'], 900)
 
     def test_hundred_place_claim_must_authorize_hundred_places(self):
         from realtime.middle_maps_contract import task_parameters

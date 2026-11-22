@@ -6,6 +6,7 @@ from .google_data import digest
 from .maps_provider import FAST_MAX_PLACES, prepare
 
 CAPABILITIES = ['identity', 'title', 'condition:location', 'condition:category']
+MAPS_DEEP_DEADLINE_SECONDS = 900
 
 
 def maps_request(parameters):
@@ -17,7 +18,8 @@ def maps_request(parameters):
         query=parameters['query'] + (' in '+parameters['city'] if parameters.get('city') else '')
         return dict(dataset_id='google_maps_raw', resource_kind='content', source_platforms=['google_maps'],
             query=query, language=parameters['language'], region=parameters['region'],
-            max_items=parameters.get('max_places',21),deadline_seconds=1800 if parameters.get('max_places',21)>21 else 300,conditions=[])
+            max_items=parameters.get('max_places',21),
+            deadline_seconds=MAPS_DEEP_DEADLINE_SECONDS if parameters.get('max_places',21)>FAST_MAX_PLACES else 300,conditions=[])
     p = prepare(parameters)
     location = p['location']
     for key, bound in (('lat', 90), ('lng', 180)):
@@ -37,7 +39,9 @@ def maps_request(parameters):
         conditions.append(dict(fact_type='category', name='included_type', op='eq', value=p['included_type']))
     return dict(dataset_id='google_maps_raw', resource_kind='content',
                 source_platforms=['google_maps'], query=p['query'], language=p['language'],
-                region=p['region'], max_items=p.get('max_places',1), deadline_seconds=1800 if p.get('max_places',1)>21 else 300, conditions=conditions)
+                region=p['region'], max_items=p.get('max_places',1),
+                deadline_seconds=MAPS_DEEP_DEADLINE_SECONDS if p.get('max_places',1)>FAST_MAX_PLACES else 300,
+                conditions=conditions)
 
 
 def verify_snapshot(snapshot, *, version_id, expected_payload, expected_hash):
