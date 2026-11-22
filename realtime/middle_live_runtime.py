@@ -195,7 +195,7 @@ def collection_coverage(rows, requested, page_budget, delivered, *, deadline_exc
               else 'partial_failure' if failed
               else 'page_budget_exhausted' if len(pages) >= page_budget
               else 'collection_incomplete')
-    return dict(requested_max_items=requested, delivered_entities=delivered,
+    coverage = dict(requested_max_items=requested, delivered_entities=delivered,
                 entity_unit='links', pages_searched=pages, page_budget=page_budget,
                 stop_reason=reason, has_more=None, deadline_exceeded=deadline_exceeded,
                 partial_failure=bool(failed), scope_complete=scope_complete,
@@ -206,6 +206,29 @@ def collection_coverage(rows, requested, page_budget, delivered, *, deadline_exc
                     http_status=r.get('http_status'), error_code=r.get('error_code'), recovered=r['page'] in successful)
                     for r in rows if r.get('classification') not in ('results', 'empty')],
                 relevance_verified=False)
+    series = next((row['response']['keyword_trends'] for row in rows
+                   if isinstance((row.get('response') or {}).get('keyword_trends'), dict)), None)
+    if series is not None and delivered:
+        coverage.update(entity_unit='trend_series', point_count=series.get('point_count'),
+                        stop_reason='trend_series_collected')
+    return coverage
+
+
+def collection_result(state, document_ids):
+    """Report delivery scope alongside receipt-confirmed document IDs."""
+    result = dict(document_ids=document_ids)
+    if 'web_partial' in state:
+        result.update(partial=state['web_partial'], returned_count=len(document_ids))
+    messages = state.get('messages') or ([state['message']] if 'message' in state else [])
+    if messages:
+        payload = messages[0]['content'].get('platform_payload') or {}
+        coverage = payload.get('collection_coverage')
+        record_coverage = (payload.get('record') or {}).get('collection_coverage') or {}
+        if 'web_partial' in state or record_coverage.get('entity_unit') == 'trend_series':
+            coverage = record_coverage
+        if coverage:
+            result.update(collection_coverage=coverage, stop_reason=coverage.get('stop_reason'))
+    return result
 
 
 def observation_quality(record):
@@ -536,9 +559,7 @@ class LiveRunner:
             state['receipts']=entries;self.save(job,state)
             self.heartbeat(job,state)
             ids=list(dict.fromkeys(e['document_id'] for e in entries))
-            result = dict(document_ids=ids)
-            if 'web_partial' in state:
-                result.update(partial=state['web_partial'], returned_count=len(ids))
+            result = collection_result(state, ids)
             try:
                 self.collector.post('/v1/collection/tasks/'+state['platform_task_ids'][0]+'/complete',
                     dict(agent_id=self.collector.agent_id,collected_count=len(entries),

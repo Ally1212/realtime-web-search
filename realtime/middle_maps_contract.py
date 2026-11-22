@@ -3,7 +3,7 @@ import math
 from copy import deepcopy
 from .product import ProductError
 from .google_data import digest
-from .maps_provider import prepare
+from .maps_provider import FAST_MAX_PLACES, prepare
 
 CAPABILITIES = ['identity', 'title', 'condition:location', 'condition:category']
 
@@ -86,7 +86,6 @@ def task_parameters(task, *, query_id, task_id, expected_parameters):
     """Authorize and translate a claimed task; never execute another app's job."""
     from .google_local_jobs import parameters
     expected = maps_request(parameters(expected_parameters))
-    platform_expected = dict(expected, max_items=min(expected['max_items'],21))
     if (not isinstance(task, dict) or task.get('id') != task_id
             or task.get('task_type') != 'live_query'
             or task.get('dataset_id') != 'google_maps_raw'
@@ -96,8 +95,10 @@ def task_parameters(task, *, query_id, task_id, expected_parameters):
     payload = task.get('payload')
     if not isinstance(payload, dict) or payload.get('live_query_id') != query_id:
         raise ProductError('middle_claim_mismatch', '地图任务查询编号不匹配', 503)
-    for name in ('query', 'language', 'region', 'max_items', 'conditions'):
-        if digest((payload.get(name) or []) if name=='conditions' else payload.get(name)) != digest(platform_expected[name]):
+    if type(payload.get('max_items')) is not int or payload['max_items'] != expected['max_items']:
+        raise ProductError('middle_maps_limit_mismatch', '中台授权的地图数量与本次请求不一致', 503)
+    for name in ('query', 'language', 'region', 'conditions'):
+        if digest((payload.get(name) or []) if name=='conditions' else payload.get(name)) != digest(expected[name]):
             raise ProductError('middle_conditions_mismatch', '地图任务条件未完整透传', 503)
     if not expected['conditions']:
         return parameters(dict(mode='text',query=expected['query'],region=expected['region'],language=expected['language'],max_places=expected['max_items']))
@@ -107,7 +108,8 @@ def task_parameters(task, *, query_id, task_id, expected_parameters):
                            language=expected['language'], location={k:location[k] for k in ('lat','lng')},
                            radius_m=location['radius_m'],
                            included_type=expected['conditions'][1]['value'] if mode == 'nearby' else '')
-    if expected['max_items']!=1:translated['max_places']=expected['max_items']
+    if expected['max_items'] != 1 or expected_parameters.get('max_places') is not None:
+        translated['max_places'] = expected['max_items']
     return parameters(translated)
 
 
@@ -127,13 +129,14 @@ def query_snapshot(*, job_id, query_id, task_id, parameters, result, observed_at
     # Recompute from raw: a normalized result must not silently lose fields.
     if digest(normalize(raw, p)) != digest(places):
         raise ProductError('maps_invalid_response', '地图原始响应与商家列表不一致', 502)
-    coverage=result.get('coverage') or dict(requested_count=p.get('max_places',1),returned_count=len(places),
+    requested_count = p.get('max_places', FAST_MAX_PLACES)
+    coverage=result.get('coverage') or dict(requested_count=requested_count,returned_count=len(places),
         raw_occurrence_count=len(raw),unique_entity_count=len(places),duplicate_occurrence_count=0,
         provider_depth=1,provider_mode='fast',truncated=False,stop_reason='upstream_exhausted',
         coverage_complete=False,coverage_status='not_independently_verified')
     if (not isinstance(coverage,dict) or coverage.get('returned_count')!=len(places)
             or coverage.get('raw_occurrence_count')!=len(raw)
-            or coverage.get('requested_count')!=p.get('max_places',1)):
+            or coverage.get('requested_count')!=requested_count):
         raise ProductError('maps_invalid_response','地图覆盖证明与结果不一致',502)
     payload = dict(schema_version='searchflow-maps-query-2', job_id=str(job_id),
                    live_query_id=query_id, collection_task_id=task_id, observed_at=observed_at,

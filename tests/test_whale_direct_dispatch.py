@@ -70,6 +70,75 @@ class DirectStateTests(unittest.TestCase):
     def receipt(self, status):
         return dict(dataset_id='google_maps_raw',source_platform='google_maps',source_name='test',source_record_key='event',status=status,document_id='doc',version_id='ver')
 
+    def test_web_completion_reports_why_a_hundred_item_query_returned_less(self):
+        runtime = self.runner()
+        runtime.platform = 'google_search'
+        state = self.state()
+        state['web_partial'] = True
+        state['messages'][0]['content']['platform_payload'] = {'record': {'collection_coverage': {
+            'requested_max_items': 100, 'entity_unit': 'links', 'delivered_entities': 1,
+            'stop_reason': 'partial_failure', 'interruption_code': 'google_captcha',
+            'page_budget': 11, 'failed_pages': [3, 7, 11], 'missing_pages': [3, 7, 11],
+        }}}
+        with patch('realtime.middle_direct.processing_receipts', return_value=[self.receipt('accepted')]):
+            runtime.advance(state)
+        result = next(c.args[1]['result'] for c in runtime.collector.post.call_args_list
+                      if c.args[0].endswith('/complete'))
+        self.assertEqual(result['document_ids'], ['doc'])
+        self.assertEqual(result['returned_count'], 1)
+        self.assertTrue(result['partial'])
+        self.assertEqual(result['collection_coverage']['requested_max_items'], 100)
+        self.assertEqual(result['collection_coverage']['failed_pages'], [3, 7, 11])
+        self.assertEqual(result['collection_coverage']['interruption_code'], 'google_captcha')
+
+    def test_maps_direct_reports_the_provider_error_code(self):
+        runtime = self.runner()
+        runtime.base = MagicMock()
+        state = self.state()
+        state.pop('messages')
+        db = runtime.base.connect.return_value.__enter__.return_value
+        db.execute.return_value.fetchone.return_value = {'state': state}
+        with patch.object(runtime, 'advance', side_effect=ProductError('maps_invalid_response', 'provider detail', 502)):
+            runtime.poll(allow_claim=False)
+        report = next(c.args[1] for c in runtime.collector.post.call_args_list if c.args[0].endswith('/fail'))
+        self.assertEqual(report['message'], 'maps_invalid_response')
+        self.assertEqual(state['failure_code'], 'maps_invalid_response')
+
+    def test_keyword_trends_completion_keeps_document_and_point_counts_distinct(self):
+        runtime = self.runner()
+        runtime.platform = 'google_trends'
+        state = self.state()
+        coverage = dict(requested_max_items=100, entity_unit='trend_series', delivered_entities=1,
+                        point_count=93, stop_reason='trend_series_collected')
+        state['messages'][0]['content']['platform_payload'] = {'record': {'collection_coverage': coverage}}
+        with patch('realtime.middle_direct.processing_receipts', return_value=[self.receipt('accepted')]):
+            runtime.advance(state)
+        completion = next(c.args[1] for c in runtime.collector.post.call_args_list if c.args[0].endswith('/complete'))
+        self.assertEqual(completion['collected_count'], 1)
+        self.assertEqual(completion['result']['document_ids'], ['doc'])
+        self.assertEqual(completion['result']['collection_coverage'], coverage)
+
+    def test_invalid_trends_conditions_are_reported_without_contacting_google(self):
+        from realtime.config import Config
+
+        runtime = self.runner()
+        runtime.source = runtime.platform = 'google_trends'
+        runtime.config = Config(whale_supported_task_types=('live_query',),
+                                whale_source_platform='google_trends', whale_dataset_id='social_media_raw')
+        runtime.base = MagicMock()
+        state = {'task': dict(id='ctask_abc', task_type='live_query', dataset_id='social_media_raw',
+                              source_platform='google_trends', payload=dict(resource_kind='content',
+                              live_query_id='lq_abc', query='OpenAI', conditions=[dict(name='unknown')]))}
+        db = runtime.base.connect.return_value.__enter__.return_value
+        db.execute.return_value.fetchone.return_value = {'state': state}
+        with patch.object(runtime, 'collect', wraps=DirectTasks.collect.__get__(runtime)), \
+             patch('realtime.serp_worker.run_serp_campaign') as collect:
+            runtime.poll(allow_claim=False)
+        collect.assert_not_called()
+        report = next(c.args[1] for c in runtime.collector.post.call_args_list if c.args[0].endswith('/fail'))
+        self.assertEqual(report['message'], 'invalid_trends_conditions')
+        self.assertEqual(state['failure_code'], 'invalid_trends_conditions')
+
     def test_queued_receipts_never_complete_and_restart_does_not_recollect(self):
         r=self.runner();state=self.state()
         r.collector.post.side_effect=[{},dict(receipts=[self.receipt('queued')])]
@@ -183,6 +252,46 @@ class DirectDatabaseTests(SearchDatabaseFixture, unittest.TestCase):
 
     def task(self):
         return dict(id='ctask_direct',task_type='live_query',dataset_id='social_media_raw',source_platform='google_search',required_capabilities=['identity','title'],payload=dict(resource_kind='content',live_query_id='lq_direct',query='energy',region='US',language='en',max_items=2))
+
+    def test_generic_trends_claim_completes_with_one_keyword_series(self):
+        config = replace(self.runtime.config, whale_source_platform='google_trends')
+        runtime = DirectTasks(self.base, self.collector, source='google_trends', config=config)
+        task = dict(self.task(), source_platform='google_trends')
+        task['payload']['max_items'] = 5
+        runtime.accept(task)
+
+        def record(cid, config, **kwargs):
+            with self.base.connect() as db:
+                options = db.execute('SELECT options FROM serp_task_options WHERE campaign_id=%s',
+                                     (cid,)).fetchone()['options']
+            self.assertEqual(options['trends_mode'], 'keyword')
+            self.assertEqual(options['trends_time_range'], 'today 3-m')
+            series = dict(point_count=1, points=[dict(timestamp='2026-11-20T00:00:00Z', value=42)])
+            item = dict(link='https://trends.google.com/trends/explore?q=energy', title='Energy trend')
+            self.console.record(cid, source='google_trends', provider='google_trends_explore',
+                                query='energy', page=1, language='en', elapsed_seconds=.1,
+                                classification='results', response=dict(keyword_trends=series,
+                                trending_searches=[dict(keyword='energy', numeric_trend_series=series,
+                                                        articles=[item])]))
+            return ()
+
+        def post(path, payload):
+            if path.endswith('/receipts'):
+                return {'receipts': [{**key, 'status':'accepted', 'document_id':'doc_trends',
+                                      'version_id':'ver_trends'} for key in payload]}
+            return {}
+
+        self.collector.post.side_effect = post
+        with patch('realtime.serp_worker.run_serp_campaign', side_effect=record):
+            self.assertTrue(runtime.poll(allow_claim=False))
+        result = next(c.args[1]['result'] for c in self.collector.post.call_args_list
+                      if c.args[0].endswith('/complete'))
+        self.assertEqual(result['document_ids'], ['doc_trends'])
+        self.assertEqual(result['collection_coverage']['entity_unit'], 'trend_series')
+        self.assertEqual(result['collection_coverage']['point_count'], 1)
+        with self.base.connect() as db:
+            status = db.execute('SELECT status FROM sf_middle_direct_tasks').fetchone()['status']
+        self.assertEqual(status, 'succeeded')
 
     def test_proxy_recovery_resumes_all_eleven_pages_under_same_direct_task(self):
         task = self.task()

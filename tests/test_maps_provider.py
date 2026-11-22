@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from uuid import uuid4
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import psycopg
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
@@ -27,6 +27,55 @@ def result():
 
 
 class MapsTests(unittest.TestCase):
+    def test_browser_scan_keeps_in_radius_places_when_upstream_returns_outside_rows(self):
+        self.check_browser_result(partial_timeout=False)
+
+    def test_browser_timeout_preserves_complete_rows_and_reports_shortfall(self):
+        self.check_browser_result(partial_timeout=True)
+
+    def test_unconfirmed_browser_timeout_still_fails(self):
+        with self.assertRaises(ProductError) as caught:
+            self.check_browser_result(partial_timeout=True, confirmed=False)
+        self.assertEqual(caught.exception.code, 'maps_timeout')
+
+    def check_browser_result(self, *, partial_timeout, confirmed=True):
+        import hashlib
+        import subprocess
+        from tempfile import TemporaryDirectory
+        from realtime import maps_provider
+
+        center = {'lat': 47.6062, 'lng': -122.3321}
+        p = parameters(dict(query='coffee', location=center, radius_m=1500, max_places=100))
+        inside = dict(title='Inside', data_id='id:inside', latitude=47.6062, longitude=-122.3321)
+        outside = dict(title='Outside', data_id='id:outside', latitude=47.6262, longitude=-122.3321)
+
+        def provider(args, *, stdout, **kwargs):
+            response = json.dumps([inside, outside, inside]) + '\n'
+            if partial_timeout:
+                response += '{"truncated":'
+            Path(args[args.index('-results') + 1]).write_text(response)
+            if confirmed:
+                stdout.write(b'{"status":"success"}\n')
+            wait = Mock(side_effect=[subprocess.TimeoutExpired(args, 360), 0]) if partial_timeout else Mock(return_value=0)
+            return Mock(wait=wait, pid=234)
+
+        with TemporaryDirectory() as folder:
+            binary = Path(folder) / 'scraper'
+            binary.write_bytes(b'fixture')
+            with patch.object(maps_provider, 'config', return_value={'enabled': True, 'binary': str(binary)}), \
+                 patch.object(maps_provider, 'BINARY_SHA256', hashlib.sha256(b'fixture').hexdigest()), \
+                 patch.object(maps_provider.subprocess, 'Popen', side_effect=provider), \
+                 patch.object(maps_provider.os, 'killpg') as kill:
+                observed = maps_provider.search(p)
+        self.assertEqual([place['data_id'] for place in observed['places']], ['id:inside'])
+        self.assertEqual(observed['raw_response'], [inside, inside])
+        self.assertEqual(observed['coverage']['provider_occurrence_count'], 3)
+        self.assertEqual(observed['coverage']['out_of_radius_occurrence_count'], 1)
+        self.assertEqual(observed['coverage']['duplicate_occurrence_count'], 1)
+        expected = 'provider_timeout' if partial_timeout else 'provider_scan_ended'
+        self.assertEqual(observed['coverage']['stop_reason'], expected)
+        self.assertEqual(kill.call_count, int(partial_timeout))
+
     def test_normalize_does_not_invent_place_id_rating_or_safe_website(self):
         p=prepare(parameters(dict(query='coffee',city='Singapore')))
         r=result()['places'][0]['source_fields'];r.update(review_rating=0,review_count=0,web_site='javascript:alert(1)')

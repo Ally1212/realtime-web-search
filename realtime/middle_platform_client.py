@@ -294,15 +294,14 @@ class MapsMiddlePlatformClient(MiddlePlatformClient):
         scoped_key = upstream_idempotency_key(account_id, idempotency_key)
         data = self._request('POST', '/v1/live-queries', payload=request,
                              idem='maps-' + scoped_key)
-        # The current platform advertises a legacy Maps authorization cap of 21
-        # even though one query snapshot may contain up to 100 businesses. It
-        # silently clamps max_items. Accept that exact clamp only for Maps and
-        # retain the customer's requested entity count in our claimed-task and
-        # immutable snapshot validation; all spatial conditions remain strict.
-        admitted=dict(request,max_items=min(request['max_items'],21))
-        result = self._live(data, expected_request=admitted)
-        self.check_conditions(data['live_query'], request)
-        result['platform_max_items']=admitted['max_items']
+        result = self._live(data)
+        try:
+            self.check_conditions(data['live_query'], request)
+        except ProductError as exc:
+            if exc.code == 'middle_maps_limit_mismatch' and result['platform_status'] in ('pending', 'collecting'):
+                self.cancel(result['middle_query_id'])
+            raise
+        result['platform_max_items']=request['max_items']
         result['requested_max_items']=request['max_items']
         return result
 
@@ -310,23 +309,23 @@ class MapsMiddlePlatformClient(MiddlePlatformClient):
     def check_conditions(live, expected):
         # Fail closed if the platform silently ignores a requested condition.
         from .google_data import digest
-        # max_items is deliberately excluded: the platform's legacy Maps cap
-        # is an authorization envelope for one query document, not the number
-        # of business entities inside that immutable document.
+        if not isinstance(live, dict):
+            raise ProductError('middle_invalid_response', '中台缺少地图实时查询', 502)
         fields = ('query', 'region', 'language', 'conditions')
         if any(digest((live.get(key) or []) if key=='conditions' else live.get(key)) != digest(expected[key]) for key in fields):
             raise ProductError('middle_conditions_mismatch', '中台查询条件与本次地图请求不一致', 503)
+        if type(live.get('max_items')) is not int or live['max_items'] != expected['max_items']:
+            raise ProductError('middle_maps_limit_mismatch', '中台授权的地图数量与本次请求不一致', 503)
 
     def status_for_request(self, middle_query_id, payload):
         from .middle_maps_contract import maps_request
         from .google_local_jobs import parameters
         expected = maps_request(parameters(payload))
-        admitted=dict(expected,max_items=min(expected['max_items'],21))
         ident = _identifier(middle_query_id)
         data = self._request('GET', '/v1/live-queries/' + ident)
-        result = self._live(data, expected_id=ident, expected_request=admitted)
+        result = self._live(data, expected_id=ident)
         self.check_conditions(data['live_query'], expected)
-        result['platform_max_items']=admitted['max_items']
+        result['platform_max_items']=expected['max_items']
         result['requested_max_items']=expected['max_items']
         return result
 

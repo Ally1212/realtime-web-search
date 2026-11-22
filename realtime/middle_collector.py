@@ -1,5 +1,7 @@
 """Translate the Consumer live-query contract into a bounded SERP task payload."""
 
+from .product import ProductError
+
 
 def image_conditions():
     return [dict(fact_type='other', name='searchflow_vertical', op='eq', value='images')]
@@ -18,14 +20,23 @@ def live_payload(payload, *, source='google_web'):
                'resource_kind', 'url', 'external_id', 'conditions'}
     if not isinstance(payload, dict) or set(payload) - allowed:
         raise ValueError('未支持的中台实时查询参数')
-    conditions = payload.get('conditions') or []
+    conditions = payload.get('conditions')
+    if conditions is None:
+        conditions = []
+    if not isinstance(conditions, list):
+        if source == 'google_trends':
+            raise ProductError('invalid_trends_conditions', '趋势条件必须为数组')
+        raise ValueError('实时查询条件必须为数组')
     mode, window = 'regional_hotlist', 'today 3-m'
     if source == 'google_trends':
-        matches = [(m,w) for m in ('regional_hotlist','keyword')
-                   for w in ('now 7-d','today 1-m','today 3-m','today 12-m','today 5-y')
-                   if conditions == trends_conditions(m,w)]
-        if not matches: raise ValueError('关键词趋势模式或时间范围无效')
-        mode,window = matches[0]
+        if not conditions:
+            mode = 'keyword'
+        elif conditions != trends_conditions('regional_hotlist'):
+            windows = [w for w in ('now 7-d','today 1-m','today 3-m','today 12-m','today 5-y')
+                       if conditions == trends_conditions('keyword', w)]
+            if not windows:
+                raise ProductError('invalid_trends_conditions', '关键词趋势模式或时间范围无效')
+            mode, window = 'keyword', windows[0]
     elif conditions != (image_conditions() if source == 'google_images' else []):
         raise ValueError('查询条件与采集模式不匹配')
     if payload.get('resource_kind') != 'content' or payload.get('url') or payload.get('external_id'):

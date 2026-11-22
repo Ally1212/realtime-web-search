@@ -1,5 +1,11 @@
 # Maps 数量契约与 Trends 限流恢复修复（2026-11-20）
 
+## Trends 直派缺少模式的后续复盘（2026-11-22）
+
+- `lq_f2c19f58a8def76e0c3c3b4e5a7f9857` 和 `lq_5bf0028ab2de75a2eb9f8f9756be900f` 都已被领取，但任务没有 `conditions`，未建立采集记录。用原始入参调用生产容器当前的 `task_spec`，两笔均抛出「关键词趋势模式或时间范围无效」。原直派层把这个输入校验异常压成通用失败消息。
+- 候选对省略条件的关键词请求采用网站默认值 `keyword` 和 `today 3-m`。显式不支持的条件仍拒绝，并回报 `invalid_trends_conditions`。用两笔原始任务在同一个生产容器复放，候选通过校验后走生产代理，分别读到 93 个热度点。本次独立复测未创建 Whale 任务、未写入中台、未重启服务。
+- 在旧版运行器仍在线时，可显式提交 `other/searchflow_trends_mode/eq/keyword` 与 `other/searchflow_trends_time_range/eq/today 3-m`。关闭失败任务后应另发新任务。字段缺失的修复与下文的 429 退避是两处独立变更。
+
 ## 问题与根因
 
 - Google Maps 中台任务允许 `max_items=1..100`，但采集端在执行前静默执行 `min(max_items, 21)`。因此请求100条会被缩减为21条，无法完成百条验证，也没有明确拒绝或部分结果契约。

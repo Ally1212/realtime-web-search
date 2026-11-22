@@ -28,8 +28,11 @@ class GoogleLiveAcceptanceTests(unittest.TestCase):
             self.assertEqual(spec['options']['web_pages'], pages)
 
     def test_keyword_trends_must_not_silently_become_regional_feed(self):
+        result = live_payload(self.payload(), source='google_trends')
+        self.assertEqual(result['trends_mode'], 'keyword')
+        self.assertEqual(result['trends_time_range'], 'today 3-m')
         with self.assertRaisesRegex(ValueError, '关键词|keyword'):
-            live_payload(self.payload(), source='google_trends')
+            live_payload(self.payload(conditions=[dict(name='unknown')]), source='google_trends')
 
 
 class MultiPageSelectionTests(unittest.TestCase):

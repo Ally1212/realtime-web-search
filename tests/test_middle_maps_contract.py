@@ -32,6 +32,21 @@ class MapsMiddleContractTests(unittest.TestCase):
         request=maps_request(self.parameters(max_places=100))
         self.assertEqual(request['max_items'],100)
 
+    def test_hundred_place_claim_must_authorize_hundred_places(self):
+        from realtime.middle_maps_contract import task_parameters
+        params = self.parameters(max_places=100)
+        request = maps_request(params)
+        task = dict(id='ctask_test', task_type='live_query', dataset_id='google_maps_raw',
+                    source_platform='google_maps', payload={
+                        **{key: request[key] for key in ('query', 'language', 'region', 'conditions', 'max_items')},
+                        'live_query_id': 'lq_test', 'resource_kind': 'content',
+                    })
+        binding = dict(query_id='lq_test', task_id='ctask_test', expected_parameters=params)
+        self.assertEqual(task_parameters(task, **binding)['max_places'], 100)
+        task['payload']['max_items'] = 21
+        with self.assertRaises(ProductError):
+            task_parameters(task, **binding)
+
     def test_v2_snapshot_preserves_hundred_place_coverage(self):
         from realtime.middle_maps_contract import query_snapshot
         from realtime.maps_provider import normalize, VERSION
@@ -83,6 +98,27 @@ class MapsMiddleContractTests(unittest.TestCase):
 
 
 class MapsClientTests(unittest.TestCase):
+    def test_website_accepts_hundred_and_cancels_a_new_clamped_request(self):
+        from unittest.mock import Mock
+        from realtime.google_local_jobs import parameters
+        from realtime.middle_platform_client import MapsMiddlePlatformClient
+
+        params = dict(query='coffee', city='Singapore', region='SG', max_places=100)
+        expected = maps_request(parameters(params))
+        run = dict(id='run_test', live_query_id='lq_test', source_platform='google_maps',
+                   collection_task_id='ctask_test', status='pending')
+        client = MapsMiddlePlatformClient('https://middle.test', 'secret')
+        client._request = Mock(return_value=dict(live_query=dict(expected, id='lq_test', status='pending'), runs=[run]))
+        self.assertEqual(client.create('tenant', params, 'one')['platform_max_items'], 100)
+        self.assertEqual(client.status_for_request('lq_test', params)['platform_max_items'], 100)
+
+        client._request.return_value['live_query']['max_items'] = 21
+        client.cancel = Mock()
+        with self.assertRaises(ProductError) as caught:
+            client.create('tenant', params, 'two')
+        self.assertEqual(caught.exception.code, 'middle_maps_limit_mismatch')
+        client.cancel.assert_called_once_with('lq_test')
+
     def test_create_validates_returned_conditions_and_does_not_unlock_download(self):
         from unittest.mock import Mock
         from realtime.middle_platform_client import MapsMiddlePlatformClient
@@ -142,6 +178,10 @@ class MapsClaimTests(unittest.TestCase):
         result = task_parameters(task, query_id='lq_abc', task_id='ctask_abc', expected_parameters=p)
         self.assertEqual(result['location'], dict(lat=51.5074, lng=-0.1278))
         self.assertEqual(result['included_type'], 'cafe')
+        self.assertNotIn('max_places', result)
+        explicit = task_parameters(task, query_id='lq_abc', task_id='ctask_abc',
+                                   expected_parameters=dict(p, max_places=1))
+        self.assertEqual(explicit['max_places'], 1)
         self.assertEqual(result['radius_m'], 1000)
         for field, value in [('id','ctask_other'), ('dataset_id','social_media_raw'), ('source_platform','google_search')]:
             bad = deepcopy(task)

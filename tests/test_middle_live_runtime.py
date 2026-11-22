@@ -10,6 +10,17 @@ from realtime.middle_live_runtime import LiveRunner, verified_record, bind_live_
 from realtime.product import now, parameters, ProductError
 
 
+def test_keyword_trends_counts_documents_and_points_separately():
+    from realtime.middle_live_runtime import collection_coverage
+
+    rows = [dict(page=1, classification='results', response={'keyword_trends': {'point_count': 93}})]
+    coverage = collection_coverage(rows, 100, 1, 1)
+    assert coverage['entity_unit'] == 'trend_series'
+    assert coverage['delivered_entities'] == 1
+    assert coverage['point_count'] == 93
+    assert coverage['stop_reason'] == 'trend_series_collected'
+
+
 def sample():
     record=dict(request_id='request-1',source='google_web',query='battery',occurrences=[{'occurrence_id':'one'}],topics=[])
     payload=dict(schema_version='searchflow-live-links-1',middle_query_id='lq_1',collection_task_id='task_1',record=record)

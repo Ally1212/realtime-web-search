@@ -117,11 +117,12 @@ class MapsPhases:
             self.save(job, state)
         receipt = state['receipt']
         if status['platform_status'] not in ('succeeded', 'partial'):
+            from .middle_live_runtime import collection_result
             self.collector.post('/v1/collection/tasks/' + task_id + '/complete', dict(
                 agent_id=self.collector.agent_id, collected_count=1,
                 ingested_count=int(receipt['status'] == 'accepted'),
                 duplicate_count=int(receipt['status'] == 'duplicate'),
-                result=dict(document_ids=[receipt['document_id']])))
+                result=collection_result(state, [receipt['document_id']])))
             return None
         results = self.middle.results_page(state['middle_query_id'])
         ids = {r['document'].get('id', r['document'].get('ID')) for r in results['items']}

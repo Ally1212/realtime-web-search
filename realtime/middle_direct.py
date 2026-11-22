@@ -267,6 +267,7 @@ class DirectTasks:
         return messages
 
     def advance(self, state):
+        from .middle_live_runtime import collection_result
         task = state['task']
         self.pulse(state)
         retry_at = state.get('completion_retry_at')
@@ -334,11 +335,8 @@ class DirectTasks:
             collected_count=len(rows),
             ingested_count=sum(r['status'] == 'accepted' for r in receipts),
             duplicate_count=sum(r['status'] == 'duplicate' for r in receipts),
-            result=dict(document_ids=list(dict.fromkeys(r['document_id'] for r in receipts))),
+            result=collection_result(state, list(dict.fromkeys(r['document_id'] for r in receipts))),
         )
-        if 'web_partial' in state:
-            completion['result'].update(returned_count=len(completion['result']['document_ids']),
-                                        partial=state['web_partial'])
         try:
             self.collector.post('/v1/collection/tasks/'+task['id']+'/complete', completion)
         except (RuntimeError, ProductError) as exc:
@@ -396,12 +394,14 @@ class DirectTasks:
                 self.save(state)
                 return False
             upstream_failed = bool(deadline and isinstance(exc, ProductError) and code in COLLECTION_ERROR_CODES)
-            if upstream_failed or (isinstance(exc,(ValueError,KeyError,TypeError)) and not isinstance(exc,ProductError)) or (code.startswith('maps_') and code not in ('maps_geocoder_unavailable',)) or code in ('middle_controlled','middle_claim_mismatch','middle_conditions_mismatch','invalid_parameter','invalid_query'):
+            invalid_task = code in ('middle_claim_mismatch', 'middle_conditions_mismatch',
+                                    'invalid_parameter', 'invalid_query', 'invalid_trends_conditions')
+            if upstream_failed or invalid_task or (isinstance(exc,(ValueError,KeyError,TypeError)) and not isinstance(exc,ProductError)) or (code.startswith('maps_') and code not in ('maps_geocoder_unavailable',)) or code == 'middle_controlled':
                 self.stop(state)
                 if code != 'middle_controlled':
                     state['failure_pending'] = True
                     state['failure_code'] = code or 'collection_failed'
-                    if upstream_failed:
+                    if code:
                         state['failure_message'] = code
                     if code in ('maps_location_required','maps_location_not_found','maps_location_ambiguous','maps_location_invalid'):
                         state['failure_message'] = code+': '+str(exc)
