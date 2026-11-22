@@ -38,7 +38,13 @@ class MapsTests(unittest.TestCase):
             self.check_browser_result(partial_timeout=True, confirmed=False)
         self.assertEqual(caught.exception.code, 'maps_timeout')
 
-    def check_browser_result(self, *, partial_timeout, confirmed=True):
+    def test_deep_scan_reserves_delivery_time_and_uses_remaining_budget(self):
+        from datetime import datetime, timedelta, timezone
+
+        self.check_browser_result(partial_timeout=False,
+                                  deadline_at=datetime.now(timezone.utc) + timedelta(seconds=480))
+
+    def check_browser_result(self, *, partial_timeout, confirmed=True, deadline_at=None):
         import hashlib
         import subprocess
         from tempfile import TemporaryDirectory
@@ -49,6 +55,8 @@ class MapsTests(unittest.TestCase):
         inside = dict(title='Inside', data_id='id:inside', latitude=47.6062, longitude=-122.3321)
         outside = dict(title='Outside', data_id='id:outside', latitude=47.6262, longitude=-122.3321)
 
+        wait = Mock(return_value=0)
+
         def provider(args, *, stdout, **kwargs):
             response = json.dumps([inside, outside, inside]) + '\n'
             if partial_timeout:
@@ -56,7 +64,8 @@ class MapsTests(unittest.TestCase):
             Path(args[args.index('-results') + 1]).write_text(response)
             if confirmed:
                 stdout.write(b'{"status":"success"}\n')
-            wait = Mock(side_effect=[subprocess.TimeoutExpired(args, 360), 0]) if partial_timeout else Mock(return_value=0)
+            if partial_timeout:
+                wait.side_effect = [subprocess.TimeoutExpired(args, 360), 0]
             return Mock(wait=wait, pid=234)
 
         with TemporaryDirectory() as folder:
@@ -64,9 +73,12 @@ class MapsTests(unittest.TestCase):
             binary.write_bytes(b'fixture')
             with patch.object(maps_provider, 'config', return_value={'enabled': True, 'binary': str(binary)}), \
                  patch.object(maps_provider, 'BINARY_SHA256', hashlib.sha256(b'fixture').hexdigest()), \
-                 patch.object(maps_provider.subprocess, 'Popen', side_effect=provider), \
+                 patch.object(maps_provider.subprocess, 'Popen', side_effect=provider) as start, \
                  patch.object(maps_provider.os, 'killpg') as kill:
-                observed = maps_provider.search(p)
+                observed = maps_provider.search(p, deadline_at=deadline_at)
+        self.assertEqual(start.call_args.args[0][start.call_args.args[0].index('-depth') + 1], '17')
+        timeout = wait.call_args_list[0].kwargs['timeout']
+        self.assertTrue(418 < timeout <= 420 if deadline_at is not None else timeout == 360)
         self.assertEqual([place['data_id'] for place in observed['places']], ['id:inside'])
         self.assertEqual(observed['raw_response'], [inside, inside])
         self.assertEqual(observed['coverage']['provider_occurrence_count'], 3)

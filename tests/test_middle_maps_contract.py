@@ -1,5 +1,20 @@
 import unittest
+import pytest
 from realtime.middle_maps_contract import maps_request, verify_snapshot, snapshot_message
+
+
+def test_fixed_maps_version_round_trips_equivalent_json_numbers_only():
+    local = {'schema_version':'searchflow-maps-query-3', 'places':[{'distance_m': 1.0}]}
+    remote = {'schema_version':'searchflow-maps-query-3', 'places':[{'distance_m': 1}]}
+    expected_hash = 'sha256:' + digest(local)
+    snapshot = dict(version_id='ver_maps', payload_hash=expected_hash, platform_payload=remote)
+    kwargs = dict(version_id='ver_maps', expected_payload=local, expected_hash=expected_hash)
+    result = verify_snapshot(snapshot, **kwargs)
+    assert digest(result) == digest(local)
+    for wrong in (True, '1', 1.01, None):
+        tampered = dict(snapshot, platform_payload=dict(remote, places=[{'distance_m': wrong}]))
+        with pytest.raises(ProductError):
+            verify_snapshot(tampered, **kwargs)
 from realtime.product import ProductError
 from realtime.google_data import digest
 

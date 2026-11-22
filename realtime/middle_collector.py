@@ -45,10 +45,10 @@ def live_payload(payload, *, source='google_web'):
     if not isinstance(live_id, str) or not live_id.startswith('lq_') or not live_id[3:].isalnum():
         raise ValueError('缺少有效中台实时查询编号')
     count = payload.get('max_items', 100 if source == 'google_web' else 10)
+    if source == 'google_images' and type(count) is int and count > 20:
+        raise ProductError('image_max_items_exceeded', 'Google Images 实时查询最多支持 20 张')
     if type(count) is not int or not 1 <= count <= 100:
         raise ValueError('实时查询数量需要 1–100')
-    if source == 'google_images' and count > 20:
-        raise ValueError('图片实时查询最多20条')
     return dict(query=payload.get('query'), region=payload.get('region') or 'US',
                 language=payload.get('language') or 'en', sources=[source],
                 trends_mode=mode, trends_time_range=window, max_items=count, max_pages=11 if source == 'google_web' else 1,

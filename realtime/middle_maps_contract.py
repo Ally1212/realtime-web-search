@@ -16,6 +16,7 @@ MAPS_DEEP_DEADLINE_SECONDS = 900
 COMPACT_SNAPSHOT_SCHEMA = 'searchflow-maps-query-3'
 MAPS_MESSAGE_BUDGET = 900_000
 MAX_RAW_RESPONSE_BYTES = 16 * 1024 * 1024
+MAPS_SNAPSHOT_SCHEMAS = ('searchflow-maps-query-1', 'searchflow-maps-query-2', COMPACT_SNAPSHOT_SCHEMA)
 
 
 def maps_request(parameters):
@@ -54,13 +55,29 @@ def maps_request(parameters):
 
 
 def verify_snapshot(snapshot, *, version_id, expected_payload, expected_hash):
-    """Never substitute a latest version or treat queued as persisted."""
-    if (not isinstance(snapshot, dict) or snapshot.get('version_id') != version_id
-            or snapshot.get('payload_hash') != expected_hash
-            or snapshot.get('platform_payload') != expected_payload
-            or digest(snapshot.get('platform_payload')) != expected_hash.removeprefix('sha256:')):
-        raise ProductError('middle_snapshot_mismatch', '中台固定版本快照与本次查询不一致', 502)
-    return deepcopy(snapshot['platform_payload'])
+    """Verify the fixed version and its original producer hash before delivery."""
+    if (isinstance(snapshot, dict) and snapshot.get('version_id') == version_id
+            and snapshot.get('payload_hash') == expected_hash
+            and digest(expected_payload) == expected_hash.removeprefix('sha256:')):
+        payload = snapshot.get('platform_payload')
+        if digest(payload) == expected_hash.removeprefix('sha256:'):
+            return deepcopy(payload)
+        if (isinstance(expected_payload, dict) and expected_payload.get('schema_version') in MAPS_SNAPSHOT_SCHEMAS
+                and _same_json_numbers(payload, expected_payload)):
+            # Deliver the hash-verified producer representation for deterministic
+            # decompression, re-normalization and website exports.
+            return deepcopy(expected_payload)
+    raise ProductError('middle_snapshot_mismatch', '中台固定版本快照与本次查询不一致', 502)
+
+
+def _same_json_numbers(left, right):
+    if type(left) is not type(right):
+        return type(left) in (int, float) and type(right) in (int, float) and left == right
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(_same_json_numbers(v, right[k]) for k, v in left.items())
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_same_json_numbers(a, b) for a, b in zip(left, right))
+    return left == right
 
 
 def _raw_json(raw):
@@ -102,7 +119,7 @@ def snapshot_message(*, job_id, task_id, payload):
     if (not isinstance(task_id, str) or not task_id.startswith('ctask_')
             or not task_id[6:].isalnum()):
         raise ProductError('invalid_parameter', '中台任务编号无效')
-    if (not isinstance(payload, dict) or payload.get('schema_version') not in ('searchflow-maps-query-1','searchflow-maps-query-2',COMPACT_SNAPSHOT_SCHEMA)
+    if (not isinstance(payload, dict) or payload.get('schema_version') not in MAPS_SNAPSHOT_SCHEMAS
             or payload.get('job_id') != job_id or payload.get('collection_task_id') != task_id
             or not isinstance(payload.get('places'), list)
             or type(payload.get('place_count')) is not int

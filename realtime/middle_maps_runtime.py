@@ -79,7 +79,9 @@ class MapsPhases:
             pulse.start()
             try:
                 try:
-                    result = self.search(parameters)
+                    deadline = status.get('deadline_at')
+                    result = (self.search(parameters, deadline_at=datetime.fromisoformat(deadline))
+                              if deadline else self.search(parameters))
                 finally:
                     stopped.set()
                     pulse.join()

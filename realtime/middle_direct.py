@@ -180,9 +180,17 @@ class DirectTasks:
             # request after process death (provider has no replay identity).
             if state.get('collection_started'):
                 raise ValueError('Maps collection outcome unknown after restart')
+            deadline = None
+            if self.deadline_lookup:
+                try:
+                    deadline = self.deadline_lookup(task['payload']['live_query_id'], task['id'])
+                except ProductError as exc:
+                    if exc.code not in ('middle_unauthorized', 'middle_entitlement_denied', 'not_found'):
+                        raise
             state['collection_started'] = True
             self.save(state)
-            result = self.search(parameters)
+            result = (self.search(parameters, deadline_at=deadline)
+                      if deadline is not None else self.search(parameters))
             jid = str(uuid5(NAMESPACE_URL, task['id']))
             payload = query_snapshot(job_id=jid, query_id=task['payload']['live_query_id'], task_id=task['id'],
                 parameters=parameters, result=result, observed_at=datetime.now(timezone.utc).isoformat())
@@ -247,12 +255,7 @@ class DirectTasks:
                                   remaining=stop_at-time.time())
         deliver_saved = source == 'google_web' and can_deliver_web_results(
             rows, count, spec['max_items'], collection_finished=cutoff)
-        try:
-            check_collection(source, rows, errors, spec['google_pages'], deliver_saved=deliver_saved)
-        except ProductError:
-            if source != 'google_images':
-                raise
-            raise ValueError('No successful upstream response') from None
+        check_collection(source, rows, errors, spec['google_pages'], deliver_saved=deliver_saved)
         messages = []
         coverage = collection_coverage(rows, spec['max_items'], spec['google_pages'],
                                        count, deadline_exceeded=cutoff)
@@ -403,7 +406,8 @@ class DirectTasks:
                 return False
             upstream_failed = bool(deadline and isinstance(exc, ProductError) and code in COLLECTION_ERROR_CODES)
             invalid_task = code in ('middle_claim_mismatch', 'middle_conditions_mismatch',
-                                    'invalid_parameter', 'invalid_query', 'invalid_trends_conditions')
+                                    'invalid_parameter', 'invalid_query', 'invalid_trends_conditions',
+                                    'image_max_items_exceeded')
             if upstream_failed or invalid_task or (isinstance(exc,(ValueError,KeyError,TypeError)) and not isinstance(exc,ProductError)) or (code.startswith('maps_') and code not in ('maps_geocoder_unavailable',)) or code == 'middle_controlled':
                 self.stop(state)
                 if code != 'middle_controlled':
@@ -411,7 +415,8 @@ class DirectTasks:
                     state['failure_code'] = code or 'collection_failed'
                     if code:
                         state['failure_message'] = code
-                    if code in ('maps_location_required','maps_location_not_found','maps_location_ambiguous','maps_location_invalid'):
+                    if code in ('maps_location_required','maps_location_not_found','maps_location_ambiguous',
+                                'maps_location_invalid','image_max_items_exceeded'):
                         state['failure_message'] = code+': '+str(exc)
                     self.save(state)
                     self.collector.post('/v1/collection/tasks/'+state['task']['id']+'/fail',dict(agent_id=self.collector.agent_id,message=state.get('failure_message','SearchFlow direct collection rejected or failed'),retry=False))

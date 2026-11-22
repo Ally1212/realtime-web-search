@@ -30,7 +30,8 @@ def main():
         leader.commit()
         phases.collector.register()
         from .middle_direct import DirectTasks
-        direct = DirectTasks(store.base, phases.collector, source='google_maps', search=search)
+        direct = DirectTasks(store.base, phases.collector, source='google_maps', search=search,
+                             deadline_lookup=phases.middle.collection_deadline)
         phases.direct = direct
         next_heartbeat = 0
         while True:

@@ -8,6 +8,7 @@ from pathlib import Path
 import signal
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from urllib.parse import urlencode, urlparse
 from .product import ProductError
 
@@ -15,6 +16,8 @@ VERSION = '1.18.2'
 BINARY_SHA256 = '468eec927939b3bcbdd94c59d6d7eef7472b5365409d66545bbe78cc910b309f'
 TTL = 24 * 3600
 FAST_MAX_PLACES = 21
+DEEP_TIMEOUT_SECONDS = 540
+DELIVERY_RESERVE_SECONDS = 60
 CITIES = {'Singapore': (1.29027,103.851959), 'London': (51.5074,-0.1278),
           'New York': (40.7128,-74.0060), 'Tokyo': (35.6762,139.6503),
           'Hong Kong': (22.3193,114.1694), 'Taipei': (25.0330,121.5654),
@@ -128,7 +131,7 @@ def _normalize_observation(raw, p, *, filter_outside=False):
     return places, in_scope, outside
 
 
-def search(p):
+def search(p, *, deadline_at=None):
     if not availability()['enabled']: raise ProductError('maps_disabled','地图查询尚未启用',503)
     p=prepare(p); settings=config(); binary=settings.get('binary','/opt/maps/scraper')
     # A release hash is pinned at worker startup as well as before execution.
@@ -142,7 +145,14 @@ def search(p):
         root=Path(folder); (root/'queries.txt').write_text(query+'\n')
         requested=p.get('max_places',FAST_MAX_PLACES)
         deep=requested>FAST_MAX_PLACES
-        depth=max(1,min(25,math.ceil(requested/8))) if deep else 1
+        depth=min(25,math.ceil(requested/6)) if deep else 1
+        timeout = 360 if deep else 75
+        if deadline_at is not None:
+            remaining = (deadline_at - datetime.now(timezone.utc)).total_seconds()
+            timeout = min(DEEP_TIMEOUT_SECONDS if deep else timeout,
+                          remaining - DELIVERY_RESERVE_SECONDS)
+            if timeout <= 0:
+                raise ProductError('maps_timeout', '地图查询已无剩余采集时间', 504)
         args=[binary,'-input',str(root/'queries.txt'),'-results',str(root/'results.jsonl'),'-json']
         if not deep:args.append('-fast-mode')
         args += ['-geo',f"{p['location']['lat']},{p['location']['lng']}",'-zoom','15','-radius',str(p['radius_m']),
@@ -153,7 +163,7 @@ def search(p):
         with (root/'run.log').open('wb') as log:
             try:process=subprocess.Popen(args,cwd=folder,env=env,stdout=log,stderr=log,start_new_session=True)
             except OSError:raise ProductError('maps_unavailable','地图程序无法启动',503) from None
-            try: code=process.wait(timeout=360 if deep else 75)
+            try: code=process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 try:

@@ -41,8 +41,10 @@ def test_image_request_and_task_keep_distinct_platform_and_bounded_depth():
     assert spec['max_items'] == 20
     assert spec['google_pages'] == 1
     task['payload']['max_items'] = 21
-    with pytest.raises(ValueError):
+    from realtime.product import ProductError
+    with pytest.raises(ProductError) as error:
         task_spec(task, config(), source='google_images')
+    assert error.value.code == 'image_max_items_exceeded'
 
 
 def test_images_preserve_exact_urls_and_payload_has_only_selected_occurrences():
