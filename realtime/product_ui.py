@@ -92,7 +92,9 @@ def extend(page):
     from .google_local_ui import extend as local_ui
     from .quick_request_ui import extend as quick_ui
     from .component_ui import extend as component_ui
-    return component_ui(quick_ui(local_ui(insights_ui(capability_ui(refine_ui(page))))))
+    from .workspace_guides_ui import extend as workspace_guides_ui
+    page = component_ui(quick_ui(local_ui(insights_ui(capability_ui(refine_ui(page))))))
+    return workspace_guides_ui(page)
 
 # Keep subscription controls within the existing API workspace.
 from .subscription_ui import SECTIONS as SUBSCRIPTION_SECTIONS, JS as SUBSCRIPTION_JS
