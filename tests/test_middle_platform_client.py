@@ -44,6 +44,18 @@ class MiddlePlatformTests(unittest.TestCase):
         self.assertNotEqual(upstream_idempotency_key('tenant-a', 'retry-1'), upstream_idempotency_key('tenant-b', 'retry-1'))
         self.assertEqual(upstream_idempotency_key('tenant-a', 'retry-1'), upstream_idempotency_key('tenant-a', 'retry-1'))
 
+    def test_web_deadline_scales_with_requested_items(self):
+        from realtime.middle_platform_client import search_request
+        from realtime.live_collection import web_deadline_seconds
+        self.assertEqual(web_deadline_seconds(10), 300)
+        self.assertEqual(web_deadline_seconds(11), 366)
+        self.assertEqual(web_deadline_seconds(50), 600)
+        self.assertEqual(web_deadline_seconds(100), 900)
+        self.assertEqual(web_deadline_seconds(500), 900)
+        for count, expected in ((10, 300), (50, 600), (100, 900)):
+            with self.subTest(count=count):
+                self.assertEqual(search_request(dict(query='battery', source='google_web', max_items=count))['deadline_seconds'], expected)
+
     def test_unverified_collection_never_unlocks_download(self):
         stages = dict(pending='submitted_to_middle', collecting='collecting', partial='ingest_pending',
                       succeeded='ingest_pending', failed='failed', canceled='cancelled')

@@ -68,3 +68,17 @@ class MessageTests(unittest.TestCase):
             with self.subTest(kind=kind), self.assertRaises(ValueError):
                 task_spec(dict(dataset_id=c.whale_dataset_id, source_platform=c.whale_source_platform,
                                task_type=kind, payload={'keyword': 'one'}), c)
+
+
+class IngestBatchTests(unittest.TestCase):
+    def test_large_batch_is_split_by_count_and_bytes(self):
+        from realtime.middle_ingest import ingest_batches
+        items=[{'n':i} for i in range(120)]
+        chunks=list(ingest_batches(items, 50))
+        self.assertEqual([len(c) for c in chunks], [50, 50, 20])
+        self.assertEqual([i for c in chunks for i in c], items)
+        big=[{'n':i,'blob':'x'*400_000} for i in range(5)]
+        chunks=list(ingest_batches(big, 50, max_bytes=1_000_000))
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual([i for c in chunks for i in c], big)
+        self.assertEqual(list(ingest_batches([], 50)), [])

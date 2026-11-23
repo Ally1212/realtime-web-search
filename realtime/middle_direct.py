@@ -16,11 +16,15 @@ from .product import ProductError
 from .proxy_pool import ProxyPool
 from .live_collection import (
     COLLECTION_ERROR_CODES, RETRYABLE_COLLECTION_CODES, WEB_DELIVERY_RESERVE_SECONDS, WEB_MAX_LIVE_SECONDS,
-    can_deliver_web_results, check_collection, collection_error, needs_collection, recover_web_pages, retry_interval,
+    WEB_RECOVERY_ROUNDS, WebRateWait, blocked_web_pages, can_deliver_web_results, check_collection, collection_error,
+    needs_collection, recover_web_pages, retry_interval,
     wait_for_web_capacity,
 )
 from .middle_collector import image_conditions
-from .middle_ingest import task_spec, link_message, receipt_query, processing_receipts, collector_capabilities, retry_delay
+from .image_collection_config import DEFAULT_IMAGE_LIMIT, DEEP_IMAGE_DEADLINE_SECONDS
+from .image_backoff import IMAGE_DELIVERY_RESERVE_SECONDS, ImageRateWait, check_image_backoff
+from .image_delivery import image_records, image_upload_batch
+from .middle_ingest import task_spec, link_message, receipt_query, processing_receipts, collector_capabilities, retry_delay, ingest_batches
 
 
 LOG = logging.getLogger(__name__)
@@ -54,7 +58,8 @@ def maps_parameters(task):
     conditions=p.get('conditions') or []
     if not isinstance(conditions,list) or len(conditions)>2:
         raise ProductError('middle_conditions_mismatch','Unsupported Maps conditions',400)
-    candidate=dict(mode='text',query=p.get('query'),language=p.get('language') or 'en',region=p.get('region') or 'US')
+    candidate=dict(mode='text',query=p.get('query'),language=p.get('language') or 'en',
+                   region=p.get('region') or 'US',max_places=count)
     if conditions:
         try:
             location=conditions[0]['value']
@@ -65,11 +70,7 @@ def maps_parameters(task):
         result=validate(candidate)
         if digest(maps_request(result)['conditions'])!=digest(conditions):
             raise ProductError('middle_conditions_mismatch','Maps conditions cannot be ignored',400)
-        # Preserve the already deployed one-query-snapshot contract. For text
-        # tasks max_items limits places; legacy max_items=1+conditions is a bundle.
-        if count!=1:result['max_places']=count
         return result
-    candidate['max_places']=count
     return validate(candidate)
 
 
@@ -98,9 +99,10 @@ class DirectTasks:
                     state = row['middle_state']
                     if state['middle_query_id'] != task['payload']['live_query_id']:
                         raise ValueError('Website query identity differs')
-                    from .middle_maps_contract import task_parameters
+                    from .middle_maps_contract import bound_maps_parameters, task_parameters
                     params = db.execute('SELECT parameters FROM sf_google_local_jobs WHERE id=%s', (row['id'],)).fetchone()['parameters']
-                    task_parameters(task, query_id=state['middle_query_id'], task_id=task['id'], expected_parameters=params)
+                    task_parameters(task, query_id=state['middle_query_id'], task_id=task['id'],
+                                    expected_parameters=bound_maps_parameters(params, state))
                     state['task'] = task
                     db.execute('UPDATE sf_google_local_jobs SET middle_state=%s WHERE id=%s', (Jsonb(state), row['id']))
                     return False
@@ -165,7 +167,7 @@ class DirectTasks:
     def collect(self, state):
         task = state['task']
         if self.platform == 'google_maps':
-            from .middle_maps_contract import query_snapshot, snapshot_message
+            from .middle_maps_contract import place_delivery, query_snapshot
             parameters = state.get('resolved_parameters')
             if parameters is None:
                 parameters = maps_parameters(task)
@@ -180,6 +182,8 @@ class DirectTasks:
             # request after process death (provider has no replay identity).
             if state.get('collection_started'):
                 raise ValueError('Maps collection outcome unknown after restart')
+            if 'max_places' not in parameters:
+                parameters['max_places'] = maps_parameters(task)['max_places']
             deadline = None
             if self.deadline_lookup:
                 try:
@@ -197,7 +201,8 @@ class DirectTasks:
             if state.get('location_resolution'):
                 payload['location_resolution'] = copy.deepcopy(state['location_resolution'])
             payload['original_request'] = copy.deepcopy(task['payload'])
-            return [snapshot_message(job_id=jid, task_id=task['id'], payload=payload)]
+            state['maps_context'], messages = place_delivery(payload)
+            return messages
         from .serp_worker import run_serp_campaign
         from .customer_data import project
         from .middle_live_runtime import bind_live_observation, selected_pages, collection_coverage, observation_quality
@@ -222,11 +227,25 @@ class DirectTasks:
                 state.get('collection_deadline_at', deadline), deadline-WEB_DELIVERY_RESERVE_SECONDS)
             self.save(state)
         elif 'collection_deadline_at' not in state:
-            state['collection_deadline_at'] = time.time() + spec['max_duration_minutes'] * 60
+            seconds = (DEEP_IMAGE_DEADLINE_SECONDS if source == 'google_images' and spec['max_items'] > DEFAULT_IMAGE_LIMIT
+                       else spec['max_duration_minutes'] * 60)
+            deadline = time.time() + seconds
+            if source == 'google_images':
+                lookup = getattr(self, 'deadline_lookup', None)
+                try:
+                    platform_deadline = lookup(task['payload']['live_query_id'], task['id']) if lookup else None
+                except ProductError:
+                    platform_deadline = None
+                if platform_deadline is not None:
+                    deadline = min(deadline, platform_deadline.timestamp())
+                deadline -= IMAGE_DELIVERY_RESERVE_SECONDS
+            state['collection_deadline_at'] = deadline
             self.save(state)
         rows = saved()
         errors = ()
         stop_at = state['collection_deadline_at']
+        if source == 'google_images':
+            check_image_backoff(rows, deadline=stop_at, requested=spec['max_items'], now=time.time())
         def run(**resume):
             if getattr(self, 'proxy_pool', None) is not None:
                 resume['proxy_pool'] = self.proxy_pool
@@ -238,12 +257,15 @@ class DirectTasks:
                               should_continue=lambda: time.time() < state['collection_deadline_at'],
                               **resume)
         if time.time() < stop_at and needs_collection(source, rows, spec['google_pages']):
-            pages = {r['page'] for r in rows if r['classification'] == 'results'}
+            pages = {r['page'] for r in rows if r['classification'] in ('results', 'empty')} | blocked_web_pages(rows)
             errors = run(**({'skip_web_pages': pages} if source == 'google_web' and pages else {}))
             rows = saved()
+            if source == 'google_images':
+                check_image_backoff(rows, deadline=stop_at, requested=spec['max_items'], now=time.time())
         if source == 'google_web':
             rows, errors = recover_web_pages(rows, errors, spec=spec, state=state, save=lambda: self.save(state),
-                                             run=run, read=saved, can_start=lambda: time.time()+5 < stop_at)
+                                             run=run, read=saved, can_start=lambda: time.time()+5 < stop_at,
+                                             remaining=lambda: stop_at-time.time())
         cutoff = time.time() >= stop_at
         if cutoff and not errors:
             errors = (state.get('collection_retry_code') or 'search_deadline_exceeded',)
@@ -254,7 +276,7 @@ class DirectTasks:
             wait_for_web_capacity(errors, state=state, count=count, requested=spec['max_items'],
                                   remaining=stop_at-time.time())
         deliver_saved = source == 'google_web' and can_deliver_web_results(
-            rows, count, spec['max_items'], collection_finished=cutoff)
+            rows, count, spec['max_items'], collection_finished=cutoff or bool(state.get('web_recovery_stop_reason')))
         check_collection(source, rows, errors, spec['google_pages'], deliver_saved=deliver_saved)
         messages = []
         coverage = collection_coverage(rows, spec['max_items'], spec['google_pages'],
@@ -263,16 +285,31 @@ class DirectTasks:
             if errors:
                 coverage['interruption_code'] = collection_error(rows, errors)
             coverage['recovery_rounds'] = state.get('web_recovery_rounds', 0)
+            coverage['recovery_limit'] = WEB_RECOVERY_ROUNDS
+            coverage['rate_limit_waits'] = state.get('web_rate_waits', 0)
+            if state.get('web_recovery_stop_reason'):
+                coverage['recovery_stop_reason'] = state['web_recovery_stop_reason']
             state['web_partial'] = 0 < count < spec['max_items']
+        deep_images = source == 'google_images' and spec['max_items'] > DEFAULT_IMAGE_LIMIT
+        if deep_images:
+            if not selections:
+                raise ProductError('upstream_no_successful_result', '图片来源未返回可交付的结果', 502)
+            state['image_partial'] = count < spec['max_items']
+            coverage['scope_complete'] = not state['image_partial']
+            if state['image_partial'] and coverage['stop_reason'] == 'page_budget_exhausted':
+                coverage['stop_reason'] = 'image_scan_ended'
         for row, selected, raw in selections:
             record = project(raw)
             record['page'] = row['page']
             record['quality_observation'] = observation_quality(record)
             record['delivery_scope'] = 'selected_link_observations'
             record['collection_coverage'] = coverage
+            records = image_records(record) if deep_images else None
             for item in selected:
                 _, message = link_message(row,item,self.config,task['id'])
-                message = bind_live_observation(message,query_id=task['payload']['live_query_id'],task_id=task['id'],record=record)
+                part, image_slice = next(records) if records is not None else (record, None)
+                message = bind_live_observation(message,query_id=task['payload']['live_query_id'],task_id=task['id'],
+                                                record=part,image_slice=image_slice)
                 message['discovery'].update(acquisition_type='live_query',collector=self.collector.agent_id)
                 messages.append(message)
         return messages
@@ -281,6 +318,8 @@ class DirectTasks:
         from .middle_live_runtime import collection_result
         task = state['task']
         self.pulse(state)
+        if max(state.get('image_retry_at', 0), state.get('web_rate_retry_at', 0)) > time.time():
+            return
         retry_at = state.get('completion_retry_at')
         if retry_at and datetime.fromisoformat(retry_at) > datetime.now(timezone.utc):
             return
@@ -304,13 +343,28 @@ class DirectTasks:
                         errors.append(exc); self.stop(state); return
             thread = threading.Thread(target=heartbeat,daemon=True)
             thread.start()
+            collection_wait = None
             try:
-                state['messages'] = self.collect(state)
+                try:
+                    state['messages'] = self.collect(state)
+                except (ImageRateWait, WebRateWait) as exc:
+                    collection_wait = exc
             finally:
                 stopped.set(); thread.join()
             if errors:
                 raise errors[0]
+            if collection_wait is not None:
+                state['stage'] = 'waiting_for_collection'
+                if isinstance(collection_wait, WebRateWait):
+                    state['web_rate_retry_at'] = collection_wait.retry_at
+                    state['web_rate_waits'] = state.get('web_rate_waits', 0) + 1
+                else:
+                    state['image_retry_at'] = collection_wait.retry_at
+                self.save(state)
+                return
             state.pop('collection_retry_code', None)
+            state.pop('image_retry_at', None)
+            state.pop('web_rate_retry_at', None)
             state['stage'] = 'ingest_pending'
             self.save(state)
             self.stop(state)
@@ -320,7 +374,17 @@ class DirectTasks:
                 raise ProductError('search_deadline_exceeded', 'search_deadline_exceeded', 503)
             self.pulse(state)
         rows = [dict(payload=m,dataset_id=m['dataset_id'],record_key=m['source']['source_record_key']) for m in state['messages']]
-        receipts = processing_receipts(rows,self.collector.post('/v1/ingest/receipts',[receipt_query(r) for r in rows])) if rows else []
+        if 'maps_context' in state:
+            from .middle_maps_collector import persist_places
+            receipts = persist_places(self.collector, state['messages'])
+            if receipts is None:
+                return
+        else:
+            receipts = []
+            batch_size = getattr(getattr(self, 'config', None), 'whale_ingest_batch_size', 50)
+            for chunk in ingest_batches(rows, batch_size):
+                receipts += processing_receipts(
+                    chunk, self.collector.post('/v1/ingest/receipts', [receipt_query(r) for r in chunk]))
         if any(r['status'] == 'failed' for r in receipts):
             raise ValueError('Persistence failed')
         if any(r['status'] == 'unknown' for r in receipts):
@@ -329,7 +393,8 @@ class DirectTasks:
             if self.platform == 'google_maps':
                 self.collector.upload_realtime(state['messages'])
             else:
-                r = self.collector.session.post(self.collector.base_url+'/v1/documents/bulk',json=state['messages'],headers={'Authorization':'Bearer '+self.config.whale_collector_api_key,'X-Ingest-Class':'realtime'},timeout=20,allow_redirects=False)
+                batch = image_upload_batch(state['messages'], receipts) if 'image_partial' in state else state['messages']
+                r = self.collector.session.post(self.collector.base_url+'/v1/documents/bulk',json=batch,headers={'Authorization':'Bearer '+self.config.whale_collector_api_key,'X-Ingest-Class':'realtime'},timeout=20,allow_redirects=False)
                 if r.status_code not in (200,202):
                     error = RuntimeError('Ingest transport unconfirmed'); error.status_code=r.status_code; raise error
             return
@@ -397,7 +462,8 @@ class DirectTasks:
             code = getattr(exc,'code','')
             status = getattr(exc,'status_code',None)
             deadline = state.get('collection_deadline_at')
-            if code in RETRYABLE_COLLECTION_CODES and deadline and time.time() < deadline:
+            search_rate_limited = code == 'upstream_rate_limited' and self.platform == 'google_search'
+            if code in RETRYABLE_COLLECTION_CODES and not search_rate_limited and deadline and time.time() < deadline:
                 state['collection_retry_code'] = code
                 state['stage'] = 'waiting_for_collection'
                 state['retry_at'] = datetime.fromtimestamp(

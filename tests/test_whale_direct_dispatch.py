@@ -101,7 +101,7 @@ class DirectStateTests(unittest.TestCase):
         with patch.object(runtime, 'advance', side_effect=ProductError('maps_invalid_response', 'provider detail', 502)):
             runtime.poll(allow_claim=False)
         report = next(c.args[1] for c in runtime.collector.post.call_args_list if c.args[0].endswith('/fail'))
-        self.assertEqual(report['message'], 'maps_invalid_response')
+        self.assertEqual(report['message'], 'maps_invalid_response: provider detail')
         self.assertEqual(state['failure_code'], 'maps_invalid_response')
 
     def test_keyword_trends_completion_keeps_document_and_point_counts_distinct(self):
@@ -361,7 +361,7 @@ class DirectDatabaseTests(SearchDatabaseFixture, unittest.TestCase):
                 if number == 1 and page in (3, 6):
                     self.console.record(cid, source='google_web', provider='openserp', query='energy',
                                         page=page, language='en', elapsed_seconds=.1,
-                                        classification='captcha', http_status=429, error_code='google_captcha',
+                                        classification='error', http_status=502, error_code='openserp_engine_error',
                                         response={})
                     continue
                 links = [dict(link=f'https://example.org/{number}-{page}-{i}', title='link', position=i + 1)
@@ -369,11 +369,12 @@ class DirectDatabaseTests(SearchDatabaseFixture, unittest.TestCase):
                 self.console.record(cid, source='google_web', provider='openserp', query='energy',
                                     page=page, language='en', elapsed_seconds=.1, classification='results',
                                     response=dict(organic_results=links))
-            return ('page 3: google web google_captcha',) if number == 1 else ()
+            return ('page 3: google web openserp_engine_error',) if number == 1 else ()
 
         receipts = [dict(status='accepted', document_id=f'doc_{i}', version_id=f'ver_{i}') for i in range(100)]
         with patch('realtime.serp_worker.run_serp_campaign', side_effect=run), \
-             patch('realtime.middle_direct.processing_receipts', return_value=receipts):
+             patch('realtime.middle_direct.processing_receipts', return_value=receipts), \
+             patch('realtime.live_collection.time.sleep'):
             self.runtime.poll(allow_claim=False)
         self.assertEqual(len(passes), 3)
         self.assertEqual(set(range(1, 12)) - passes[1][0], {3, 6})

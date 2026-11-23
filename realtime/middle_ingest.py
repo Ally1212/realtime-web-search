@@ -58,6 +58,33 @@ def receipt_query(row):
     return query
 
 
+def ingest_batches(items, size=50, max_bytes=1_000_000):
+    """Split receipts or documents so a 100-link query cannot exceed the
+    platform body limit. A single oversized item is still sent alone so the
+    failure is explicit instead of silently dropping it."""
+    try:
+        limit = int(size)
+    except (TypeError, ValueError):
+        limit = 50
+    if limit < 1:
+        limit = 50
+    batch, used = [], 2
+    for item in items:
+        try:
+            weight = len(json.dumps(item, ensure_ascii=True, default=str).encode())
+        except (TypeError, ValueError):
+            weight = 0
+        if batch and (len(batch) >= limit or used + 2 + weight > max_bytes):
+            yield batch
+            batch, used = [], 2
+        if batch:
+            used += 2
+        batch.append(item)
+        used += weight
+    if batch:
+        yield batch
+
+
 def processing_receipts(rows, response):
     entries=response.get('receipts') if isinstance(response,dict) else None
     if not isinstance(entries,list) or len(entries)!=len(rows):raise ValueError('Incomplete processing receipt batch')
@@ -186,6 +213,8 @@ def task_spec(task, config, *, source=None):
         opts['trends_time_range'] = p['trends_time_range']
     opts = options(opts)
     opts['customer_private'] = True
+    if source == 'google_images':
+        opts['image_max_items'] = p['max_items']
     return dict(keywords=[query.strip()], sources=[source], options=opts, urls=[],
                 max_items=p['max_items'], max_pages=p['max_pages'], page_size=p['page_size'],
                 google_pages=p['max_pages'],

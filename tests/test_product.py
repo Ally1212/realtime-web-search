@@ -258,3 +258,26 @@ class ProductIntegrationTests(unittest.TestCase):
             status,raw=req('/v1/jobs/'+jid+'/export?format=csv');self.assertEqual(status,200);self.assertIn(b"'=1+1",raw)
             status,raw=req('/api/serp/requests');self.assertEqual(status,200)
         finally:server.shutdown();server.server_close();thread.join()
+
+
+class MiddleExportTests(unittest.TestCase):
+    def test_compact_export_uses_pinned_occurrences_when_no_raw_envelope_exists(self):
+        import io
+        from realtime.product_http import export
+
+        class Handler:
+            headers = {"Accept-Encoding": "identity"}
+            def send_body(self, body, content_type):
+                self.body, self.content_type = body, content_type
+
+        job = dict(parameters=dict(query="q", source="google_web"),
+                   response=dict(middle_record=dict(completed_at="2026-11-23T00:00:00Z", occurrences=[
+                       dict(title="A", ordinal=1, snippet="s", url=dict(original_url="https://e.org/a")),
+                       dict(title="B", ordinal=2, snippet="t", url=dict(original_url="https://e.org/b")),
+                   ])))
+        handler = Handler()
+        export(handler, job, "csv")
+        text = handler.body.decode("utf-8-sig")
+        self.assertEqual(len(text.strip().splitlines()), 3)
+        self.assertIn("https://e.org/a", text)
+        self.assertIn("https://e.org/b", text)

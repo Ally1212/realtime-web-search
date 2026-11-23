@@ -17,6 +17,7 @@ import requests
 
 from .google_whale_readback import WhaleReadbackClient
 from .product import ProductError
+from .image_collection_config import DEFAULT_IMAGE_LIMIT, image_max_items, DEEP_IMAGE_DEADLINE_SECONDS
 from .serp_console import REGIONS
 
 STATUSES = {'pending', 'collecting', 'partial', 'succeeded', 'failed', 'canceled'}
@@ -70,16 +71,18 @@ def search_request(payload, *, dataset_id='social_media_raw'):
     request['max_items'] = 100 if source == 'google_web' else 1 if source == 'google_trends' and mode == 'keyword' else 10
     if source == 'google_images':
         from .middle_collector import image_conditions
-        request['max_items'] = 20
+        request['max_items'] = DEFAULT_IMAGE_LIMIT
         request['conditions'] = image_conditions()
     if 'max_items' in payload:
         count = payload['max_items']
-        if type(count) is not int or not 1 <= count <= (20 if source == 'google_images' else 100):
+        if type(count) is not int or not 1 <= count <= (image_max_items() if source == 'google_images' else 100):
             raise ProductError('invalid_parameter', 'max_items 超出来源支持范围')
         request['max_items'] = count
-    if source == 'google_web' and request['max_items'] == 100:
-        from .live_collection import WEB_MAX_LIVE_SECONDS
-        request['deadline_seconds'] = WEB_MAX_LIVE_SECONDS
+    if source == 'google_images' and request['max_items'] > DEFAULT_IMAGE_LIMIT:
+        request['deadline_seconds'] = DEEP_IMAGE_DEADLINE_SECONDS
+    if source == 'google_web' and request['max_items'] > 10:
+        from .live_collection import web_deadline_seconds
+        request['deadline_seconds'] = web_deadline_seconds(request['max_items'])
     return request
 
 def upstream_idempotency_key(account_id, idempotency_key):

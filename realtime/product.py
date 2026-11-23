@@ -152,8 +152,10 @@ def parameters(payload):
     if source != 'google_trends' and mode is not None:
         raise ProductError('invalid_parameter', 'trends_mode 仅适用于 Google Trends')
     count = payload.get('max_items', 20 if source == 'google_images' else 100 if source == 'google_web' else 1 if source == 'google_trends' and mode == 'keyword' else 10)
-    if type(count) is not int or not 1 <= count <= (20 if source == 'google_images' else 100):
-        raise ProductError('invalid_parameter', 'max_items 必须为有效整数：图片1–20，其他来源1–100')
+    from .image_collection_config import image_max_items
+    maximum = image_max_items() if source == 'google_images' else 100
+    if type(count) is not int or not 1 <= count <= maximum:
+        raise ProductError('invalid_parameter', f'max_items 必须为 1–{maximum} 的整数')
     result = dict(query=query.strip(), source=source, region=region, language=language, provider=provider, depth=count)
     if 'max_items' in payload:
         result['max_items'] = count
@@ -184,6 +186,7 @@ def canonical_parameters(payload):
 
 
 def capability_payload():
+    from .image_collection_config import DEFAULT_IMAGE_LIMIT, image_max_items
     from .data_capability_schema import catalog
     from .maps_provider import availability as maps_availability
     return {
@@ -193,7 +196,7 @@ def capability_payload():
         'schema_version': 'searchflow-v1', 'search_mode': 'asynchronous',
         'regions': list(REGIONS), 'languages': ['en', 'zh'], 'depth': [10],
         'sources': [
-            {'id':'google_images','label':'Google Images','method':'openserp_google_images','depth':[20],'rank_type':'image_grid_order','media_download':False,'new_requests_enabled':middle_images_enabled(),'unavailable_reason':None if middle_images_enabled() else 'middle_images_rollout_pending'},
+            {'id':'google_images','label':'Google Images','method':'openserp_google_images','depth':sorted({DEFAULT_IMAGE_LIMIT, image_max_items()}),'rank_type':'image_grid_order','media_download':False,'new_requests_enabled':middle_images_enabled(),'unavailable_reason':None if middle_images_enabled() else 'middle_images_rollout_pending'},
             {'id': 'google_web', 'label': 'Google Web', 'method': 'openserp', 'rank_type': 'observed_organic'},
             {'id': 'google_news', 'label': 'Google News', 'method': 'google_news_rss', 'rank_type': 'feed_order'},
             {'id': 'google_trends', 'label': 'Trending Now', 'method': 'trending_now_rss', 'keyword_filter': True, 'regional_hotlist_keyword_filter': False,
@@ -341,8 +344,18 @@ class ProductStore:
             reserved = db.execute('UPDATE sf_months SET reserved=reserved+1 WHERE account_id=%s AND month=%s AND used+reserved<%s RETURNING reserved', (aid,month,a['monthly_limit'])).fetchone()
             if not reserved:
                 raise ProductError('quota_exhausted', '本月搜索额度已用尽', 429)
-            db.execute("INSERT INTO sf_jobs(id,account_id,monitor_id,key_id,idempotency_key,fingerprint,parameters,status,campaign_id,quota_month) VALUES(%s,%s,%s,%s,%s,%s,%s,'queued',%s,%s)",
-                       (jid,aid,monitor_id,account.get('key_id'),idem,fingerprint,Jsonb(p),cid,month))
+            # Large Google Web requests page through up to 100 links and were
+            # measured near 10 minutes; keep the 15-minute default elsewhere but
+            # leave delivery time for big web jobs instead of cancelling them
+            # while the collector is still working.
+            window_minutes = 15
+            if p.get('source') == 'google_web':
+                from .live_collection import web_deadline_seconds
+                requested = p.get('max_items', 100)
+                if requested > 10:
+                    window_minutes = (web_deadline_seconds(requested) + 300) / 60
+            db.execute("INSERT INTO sf_jobs(id,account_id,monitor_id,key_id,idempotency_key,fingerprint,parameters,status,campaign_id,quota_month,deadline_at) VALUES(%s,%s,%s,%s,%s,%s,%s,'queued',%s,%s,now()+%s*interval '1 minute')",
+                       (jid,aid,monitor_id,account.get('key_id'),idem,fingerprint,Jsonb(p),cid,month,window_minutes))
         return jid, False
 
     def submit_batch(self, account, payload, idem, config):

@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -22,29 +23,39 @@ from .product import ProductStore, ProductError, now
 from .middle_platform_client import SearchMiddlePlatformClient, SOURCE_PLATFORMS
 from .google_whale_readback import WhaleReadbackClient, ReadbackTarget
 from .google_data import digest
+from .image_collection_config import DEFAULT_IMAGE_LIMIT, DEEP_IMAGE_LIMIT
+from .image_backoff import IMAGE_DELIVERY_RESERVE_SECONDS, ImageRateWait, check_image_backoff
+from .image_delivery import image_records, merge_image_records, image_upload_batch
 from .customer_data import project
-from .middle_ingest import WhaleLinkClient, link_message, receipt_query, processing_receipts, task_spec, collector_capabilities
+from .middle_ingest import WhaleLinkClient, link_message, receipt_query, processing_receipts, task_spec, collector_capabilities, ingest_batches
 from .campaign_store import CampaignStore
 from .serp_worker import run_serp_campaign
-from .serp_fields import result_items, normalize_serp_url
+from .serp_fields import public_fields, result_items, normalize_serp_url
 from .proxy_pool import ProxyPool
 from .live_collection import (
     COLLECTION_ERROR_CODES, RETRYABLE_COLLECTION_CODES, WEB_DELIVERY_RESERVE_SECONDS,
-    can_deliver_web_results, check_collection, collection_error, needs_collection, recover_web_pages, retry_interval,
+    WEB_RECOVERY_ROUNDS, WebRateWait, blocked_web_pages, can_deliver_web_results, check_collection, collection_error,
+    needs_collection, recover_web_pages, retry_interval,
     wait_for_web_capacity,
 )
 
 LOG = logging.getLogger(__name__)
 
 
-def bind_live_observation(message, *, query_id, task_id, record):
+def bind_live_observation(message, *, query_id, task_id, record, image_slice=None):
     """A query observation is distinct from the globally deduplicated URL."""
+    # Share one immutable query record across every link document. Deep-copying
+    # it per link turns a 100-link query into 100 copies of 100 occurrences and
+    # exhausts the collector's memory. The record is never mutated after this
+    # point; each message still receives its own independent envelope.
     envelope = dict(schema_version='searchflow-live-links-1', middle_query_id=query_id,
-                    collection_task_id=task_id, record=copy.deepcopy(record),
+                    collection_task_id=task_id, record=record,
                     platform_metrics=dict(result_count=len(record['occurrences'])))
     message = copy.deepcopy(message)
     if 'assets' in message:
         envelope['assets'] = copy.deepcopy(message['assets'])
+    if image_slice is not None:
+        envelope['image_slice'] = image_slice
     # Keep source/canonical URLs, but do not reuse a previous query's document.
     identity = dict(query_id=query_id, task_id=task_id,
                     external_id=message['content']['external_content_id'])
@@ -56,15 +67,25 @@ def bind_live_observation(message, *, query_id, task_id, record):
     return message
 
 
-def verified_record(reader, state, dataset, source_platform='google_search'):
+def verified_record(reader, state, dataset, source_platform='google_search', *, batch=False):
     """Download payload must come from immutable Consumer versions, never metadata."""
-    records, proofs = [], []
+    targets = []
     for message, receipt in zip(state['messages'], state['receipts'], strict=True):
         if receipt['status'] not in ('accepted', 'duplicate'):
             raise ValueError('Persistence has not completed')
-        target = ReadbackTarget(receipt['document_id'], receipt['version_id'], dataset,
-                               source_platform, expected_platform_payload_hash=digest(message['content']['platform_payload']))
-        document, version = reader._read_pair(target)
+        targets.append(ReadbackTarget(receipt['document_id'], receipt['version_id'], dataset,
+                                     source_platform, expected_platform_payload_hash=digest(message['content']['platform_payload'])))
+
+    def pairs():
+        if batch and len(targets) > 1:
+            for offset in range(0, len(targets), 25):
+                yield from reader.read_pairs(targets[offset:offset + 25])
+        else:
+            for target in targets:
+                yield reader._read_pair(target)
+
+    records, proofs = [], []
+    for message, receipt, target, (document, version) in zip(state['messages'], state['receipts'], targets, pairs(), strict=True):
         if not isinstance(version.get('platform_payload'), dict):
             source = message['content']['platform_payload']['record']['source']
             if SOURCE_PLATFORMS.get(source) != source_platform:
@@ -84,10 +105,32 @@ def verified_record(reader, state, dataset, source_platform='google_search'):
                 or payload.get('middle_query_id') != state['middle_query_id']
                 or payload.get('collection_task_id') != state['platform_task_ids'][0]):
             raise ValueError('Pinned payload task identity differs')
-        records.append(payload['record']); proofs.append(proof)
-    if not records or any(digest(r) != digest(records[0]) for r in records):
+        records.append(payload); proofs.append(proof)
+    if records and all('image_slice' in item for item in records):
+        record = merge_image_records(records)
+    elif records and all('image_slice' not in item and digest(item['record']) == digest(records[0]['record'])
+                         for item in records):
+        record = copy.deepcopy(records[0]['record'])
+    elif records and all('image_slice' not in item and len(item['record'].get('occurrences') or []) == 1
+                         for item in records):
+        # Per-link documents each carry one occurrence; merge them back in the
+        # original page/link order without trusting metadata alone.
+        record = {k: copy.deepcopy(v) for k, v in records[0]['record'].items()
+                  if k not in ('occurrences', 'platform_metrics')}
+        occurrences = [item['record']['occurrences'][0] for item in records]
+        ids = [o.get('occurrence_id') for o in occurrences]
+        if any(not isinstance(value, str) or not value for value in ids) or len(set(ids)) != len(ids):
+            raise ValueError('Pinned occurrence identity differs')
+        record['occurrences'] = occurrences
+        record['platform_metrics'] = dict(result_count=len(occurrences))
+        adaptation = next((item['record']['field_adaptation'] for item in records
+                           if item['record'].get('field_adaptation')), None)
+        if adaptation is None:
+            record.pop('field_adaptation', None)
+        else:
+            record['field_adaptation'] = copy.deepcopy(adaptation)
+    else:
         raise ValueError('Pinned observation differs across links')
-    record = copy.deepcopy(records[0])
     if len(record['occurrences']) != len(records):
         raise ValueError('Pinned result count differs')
     record.update(provenance='middle_consumer_pinned_versions', middle_query_id=state['middle_query_id'],
@@ -97,7 +140,7 @@ def verified_record(reader, state, dataset, source_platform='google_search'):
 
 def selected_observation(row, source, limit):
     """Bound delivery without changing saved results or image URL identities."""
-    if type(limit) is not int or limit < 1 or (source == 'google_images' and limit > 20):
+    if type(limit) is not int or limit < 1 or (source == 'google_images' and limit > DEEP_IMAGE_LIMIT):
         raise ValueError('Invalid result limit')
     selected, seen = [], set()
     fields = {'google_web': 'organic_results', 'google_news': 'news_results',
@@ -220,12 +263,20 @@ def collection_result(state, document_ids):
     result = dict(document_ids=document_ids)
     if 'web_partial' in state:
         result.update(partial=state['web_partial'], returned_count=len(document_ids))
+    if 'image_partial' in state:
+        result.update(partial=state['image_partial'], returned_count=len(document_ids))
+    if 'maps_context' in state:
+        context = state['maps_context']
+        coverage = context['collection_coverage']
+        result.update(returned_count=len(document_ids), collection_coverage=coverage,
+                      stop_reason=coverage.get('stop_reason'), query_snapshot_key=context['query_snapshot_key'])
+        return result
     messages = state.get('messages') or ([state['message']] if 'message' in state else [])
     if messages:
         payload = messages[0]['content'].get('platform_payload') or {}
         coverage = payload.get('collection_coverage')
         record_coverage = (payload.get('record') or {}).get('collection_coverage') or {}
-        if 'web_partial' in state or record_coverage.get('entity_unit') == 'trend_series':
+        if 'web_partial' in state or 'image_partial' in state or record_coverage.get('entity_unit') == 'trend_series':
             coverage = record_coverage
         if coverage:
             result.update(collection_coverage=coverage, stop_reason=coverage.get('stop_reason'))
@@ -249,6 +300,41 @@ def observation_quality(record):
     series=[t.get('numeric_trend_series') for t in record.get('topics',[]) if isinstance(t.get('numeric_trend_series'),dict)]
     if series:result.update(entity_unit='keyword_trend_series',entity_count=len(series),time_point_count=sum(len(s.get('points',[])) for s in series),measurement='relative_interest_index_0_100',ordering='chronological_utc')
     return result
+
+
+def observation_part(record, url, *, keep_adaptation=False):
+    """One link document carries only its own occurrence.
+
+    A 100-link query previously embedded the whole 100-occurrence record in
+    every document (~1.3 MB each, 139 MB per query), which made bulk ingest
+    exceed the platform body limit and exhausted the collector's memory. The
+    readback verifier merges these single-occurrence parts back into one
+    observation. Page-level evidence and the field adaptation are kept once
+    instead of once per link.
+    """
+    wanted = normalize_serp_url(url or '')
+    occurrences = record.get('occurrences') or []
+    match = None
+    if wanted:
+        for occurrence in occurrences:
+            candidate = normalize_serp_url((occurrence.get('url') or {}).get('original_url')
+                                           or occurrence.get('article_url') or '')
+            if candidate and candidate == wanted:
+                match = occurrence
+                break
+    if match is None:
+        return None
+    return occurrence_part(record, match, keep_adaptation=keep_adaptation)
+
+
+def occurrence_part(record, match, *, keep_adaptation):
+    drop = {'page_observations', 'occurrences'}
+    if not keep_adaptation:
+        drop.add('field_adaptation')
+    part = {k: v for k, v in record.items() if k not in drop}
+    part['occurrences'] = [match]
+    part['platform_metrics'] = dict(result_count=1)
+    return part
 
 
 def combined_observation(selections):
@@ -374,10 +460,13 @@ class LiveRunner:
                 return db.execute("SELECT r.* FROM serp_campaign_requests cr JOIN serp_requests r USING(request_id) WHERE cr.campaign_id=%s ORDER BY page, completed_at, request_id", (local['campaign_id'],)).fetchall()
         rows = saved()
         collection_errors = ()
-        stop_at = job['deadline_at'].timestamp() - (WEB_DELIVERY_RESERVE_SECONDS if self.source == 'google_web' else 0)
+        reserve = {'google_web': WEB_DELIVERY_RESERVE_SECONDS, 'google_images': IMAGE_DELIVERY_RESERVE_SECONDS}
+        stop_at = job['deadline_at'].timestamp() - reserve.get(self.source, 0)
+        if self.source == 'google_images':
+            check_image_backoff(rows, deadline=stop_at, requested=spec['max_items'], now=time.time())
         initial_pass = needs_collection(self.source, rows, spec['google_pages'])
         if time.time() < stop_at and (initial_pass or self.source == 'google_web'):
-            pages = {r['page'] for r in rows if r['classification'] == 'results'}
+            pages = {r['page'] for r in rows if r['classification'] in ('results', 'empty')} | blocked_web_pages(rows)
             stopped = threading.Event(); errors = []
             def pulse():
                 while not stopped.wait(10):
@@ -410,10 +499,13 @@ class LiveRunner:
                 if initial_pass:
                     collection_errors = run()
                     rows = saved()
+                    if self.source == 'google_images':
+                        check_image_backoff(rows, deadline=stop_at, requested=spec['max_items'], now=time.time())
                 if self.source == 'google_web':
                     rows, collection_errors = recover_web_pages(
                         rows, collection_errors, spec=spec, state=state, save=lambda: self.save(job, state),
-                        run=run, read=saved, can_start=lambda: time.time()+5 < stop_at and not errors)
+                        run=run, read=saved, can_start=lambda: time.time()+5 < stop_at and not errors,
+                        remaining=lambda: stop_at-time.time())
             finally: stopped.set(); thread.join()
             if errors: raise errors[0]
         cutoff = time.time() >= stop_at
@@ -426,7 +518,7 @@ class LiveRunner:
             wait_for_web_capacity(collection_errors, state=state, count=count, requested=spec['max_items'],
                                   remaining=stop_at-time.time())
         deliver_saved = self.source == 'google_web' and can_deliver_web_results(
-            rows, count, spec['max_items'], collection_finished=cutoff)
+            rows, count, spec['max_items'], collection_finished=cutoff or bool(state.get('web_recovery_stop_reason')))
         check_collection(self.source, rows, collection_errors, spec['google_pages'], deliver_saved=deliver_saved)
         if not selections:
             raise ProductError('middle_empty_results', '本次搜索没有可入库链接', 409)
@@ -438,16 +530,56 @@ class LiveRunner:
             if collection_errors:
                 coverage['interruption_code'] = collection_error(rows, collection_errors)
             coverage['recovery_rounds'] = state.get('web_recovery_rounds', 0)
+            coverage['recovery_limit'] = WEB_RECOVERY_ROUNDS
+            coverage['rate_limit_waits'] = state.get('web_rate_waits', 0)
+            if state.get('web_recovery_stop_reason'):
+                coverage['recovery_stop_reason'] = state['web_recovery_stop_reason']
             state['web_partial'] = 0 < count < spec['max_items']
-        messages = []
+        deep_images = self.source == 'google_images' and spec['max_items'] > DEFAULT_IMAGE_LIMIT
+        if deep_images:
+            state['image_partial'] = count < spec['max_items']
+            coverage['scope_complete'] = not state['image_partial']
+            if state['image_partial'] and coverage['stop_reason'] == 'page_budget_exhausted':
+                coverage['stop_reason'] = 'image_scan_ended'
+        records = image_records(record) if deep_images else None
+        web_occurrences = ({(o['request_id'], o['source_record_hash']): o for o in record['occurrences']}
+                           if self.source == 'google_web' else {})
+        built = []
+        sliced = 0
         for row, selected, raw in selections:
             for item in selected:
                 _, message = link_message(row, item, self.config, state['platform_task_ids'][0])
-                message = bind_live_observation(message, query_id=state['middle_query_id'],
-                                                task_id=state['platform_task_ids'][0], record=record)
-                message['discovery']['acquisition_type'] = 'live_query'
-                message['discovery']['collector'] = self.collector.agent_id
-                messages.append(message)
+                image_slice = None
+                if records is not None:
+                    part, image_slice = next(records)
+                elif self.source == 'google_web':
+                    match = web_occurrences.get((str(row['request_id']), digest(public_fields(item))))
+                    if match is None:
+                        raise ProductError('middle_ingest_rejected', '网页结果与采集记录无法一一对应', 503)
+                    part = occurrence_part(record, match, keep_adaptation=not built)
+                else:
+                    part = observation_part(
+                        record,
+                        (message['content'].get('source_url')
+                         or message['content'].get('canonical_url') or ''),
+                        keep_adaptation=(sliced == 0))
+                    if part is not None:
+                        sliced += 1
+                    else:
+                        part = record
+                built.append((message, part, image_slice))
+        if records is None and sliced and sliced < len(built):
+            # Mixed shapes cannot be merged deterministically; fall back to the
+            # shared full record so the fixed-version contract stays exact.
+            built = [(message, record, None) for message, _, _ in built]
+        messages = []
+        for message, part, image_slice in built:
+            message = bind_live_observation(message, query_id=state['middle_query_id'],
+                                            task_id=state['platform_task_ids'][0], record=part,
+                                            image_slice=image_slice)
+            message['discovery']['acquisition_type'] = 'live_query'
+            message['discovery']['collector'] = self.collector.agent_id
+            messages.append(message)
         state.update(messages=messages, stage='ingest_pending')
         state.pop('collection_retry_at', None)
         state.pop('collection_retry_code', None)
@@ -458,18 +590,32 @@ class LiveRunner:
 
     def upload(self, state):
         # No global uploads flag and no unrelated outbox: only this owned batch.
+        # Large 100-link queries must be split so the platform does not reject
+        # the whole batch with HTTP 413.
+        size = getattr(getattr(self, 'config', None), 'whale_ingest_batch_size', 50)
+        for chunk in ingest_batches(state['messages'], size):
+            self.upload_batch(chunk)
+
+    def upload_batch(self, chunk):
+        if len(chunk) == 1 and len(json.dumps(chunk, default=str).encode()) > 1_000_000:
+            raise ProductError('middle_ingest_rejected', '单条网页观察超出中台上传限制', 503)
         r = self.collector.session.post(self.collector.base_url+'/v1/documents/bulk',
-                json=state['messages'], headers={'Authorization':'Bearer '+self.config.whale_collector_api_key,
-                                                'X-Ingest-Class':'realtime'}, timeout=20, allow_redirects=False)
-        if r.status_code in (400,401,403):
-            raise ProductError('middle_ingest_rejected', '中台拒绝入库，请检查任务契约', 503)
+                json=chunk, headers={'Authorization':'Bearer '+self.config.whale_collector_api_key,
+                                     'X-Ingest-Class':'realtime'}, timeout=20, allow_redirects=False)
+        if r.status_code == 413 and len(chunk) > 1:
+            middle = len(chunk) // 2
+            self.upload_batch(chunk[:middle])
+            self.upload_batch(chunk[middle:])
+            return
+        if r.status_code in (400,401,403,413):
+            raise ProductError('middle_ingest_rejected', '中台拒绝入库，请检查任务契约与上传大小', 503)
         if r.status_code not in (200, 202):
             raise ProductError('middle_ingest_'+str(r.status_code), '中台入库尚未确认', 503)
         response = r.json()
-        if not isinstance(response, list) or len(response) != len(state['messages']):
+        if not isinstance(response, list) or len(response) != len(chunk):
             raise ValueError('Bulk response length differs')
 
-    def advance(self, job):
+    def advance(self, job, *, admission_only=False, defer_readback=False):
         state = job['response'] or {}
         if not state.get('middle_query_id'):
             if job['status'] == 'cancelled': return
@@ -479,6 +625,8 @@ class LiveRunner:
             p = {k:v for k,v in job['parameters'].items() if k in ('query','source','region','language','trends_mode','trends_time_range','max_items')}
             state = self.middle.create(str(job['account_id']), p, job['idempotency_key'])
             self.save(job, state)
+            if admission_only:
+                return
         if job['status'] == 'cancelled' or job['deadline_at'] < now():
             code = state.get('collection_failure_code') or state.get('collection_retry_code')
             if job['status'] != 'cancelled' and code and state.get('task'):
@@ -499,7 +647,7 @@ class LiveRunner:
             code = (state.get('collection_failure_code') or state.get('collection_retry_code')
                     if status['platform_status'] == 'failed' else None)
             self.store.finish(job['id'], 'failed' if status['platform_status']=='failed' else 'cancelled', state, code or 'middle_'+status['platform_status']); return
-        if self.source == 'google_web' and status.get('deadline_at') and status['platform_status'] not in ('succeeded','partial'):
+        if self.source in ('google_web', 'google_images') and status.get('deadline_at') and status['platform_status'] not in ('succeeded','partial'):
             deadline = min(job['deadline_at'], datetime.fromisoformat(status['deadline_at']))
             if deadline <= now():
                 if state.get('task'):
@@ -544,17 +692,38 @@ class LiveRunner:
                 if not code:
                     try:
                         self.collect(job,state)
+                    except (ImageRateWait, WebRateWait) as exc:
+                        state.update(stage='waiting_for_collection', collection_retry_code=exc.code,
+                                     collection_retry_at=exc.retry_at)
+                        if isinstance(exc, WebRateWait):
+                            state['web_rate_waits'] = state.get('web_rate_waits', 0) + 1
+                        self.save(job, state)
+                        return
                     except ProductError as exc:
-                        if exc.code not in COLLECTION_ERROR_CODES or self.source == 'google_images':
+                        if exc.code not in COLLECTION_ERROR_CODES:
                             raise
-                        if exc.code in RETRYABLE_COLLECTION_CODES:
+                        if (exc.code in RETRYABLE_COLLECTION_CODES and self.source != 'google_images'
+                                and not (self.source == 'google_web' and exc.code == 'upstream_rate_limited')):
                             delay = retry_interval(exc.code)
-                            state.update(stage='waiting_for_collection', collection_retry_code=exc.code,
-                                         collection_retry_at=min(time.time()+delay,
-                                             job['deadline_at'].timestamp()-WEB_DELIVERY_RESERVE_SECONDS)
-                                             if self.source=='google_web' else time.time()+delay)
-                            self.save(job, state)
-                            return
+                            now_ts = time.time()
+                            limit = job['deadline_at'].timestamp()
+                            if self.source == 'google_web':
+                                limit -= WEB_DELIVERY_RESERVE_SECONDS
+                            # Never schedule a retry at (or past) the delivery
+                            # deadline: that turns a transient wait into a silent
+                            # multi-minute sleep and hides the real reason. If no
+                            # useful time remains, fail now with the actual code.
+                            if limit - now_ts <= 5:
+                                code = exc.code
+                                state.update(stage='collection_failure_pending',
+                                             collection_failure_code=code)
+                                self.save(job, state)
+                            else:
+                                state.update(stage='waiting_for_collection',
+                                             collection_retry_code=exc.code,
+                                             collection_retry_at=min(now_ts + delay, limit - 1))
+                                self.save(job, state)
+                                return
                         code = exc.code
                         state.update(stage='collection_failure_pending', collection_failure_code=code)
                         self.save(job, state)
@@ -563,11 +732,16 @@ class LiveRunner:
                     return
             self.heartbeat(job,state)
             rows=[dict(payload=m, dataset_id=m['dataset_id'], record_key=m['source']['source_record_key']) for m in state['messages']]
-            entries=processing_receipts(rows,self.collector.post('/v1/ingest/receipts',[receipt_query(r) for r in rows]))
+            entries=[]
+            size = getattr(getattr(self, 'config', None), 'whale_ingest_batch_size', 50)
+            for chunk in ingest_batches(rows, size):
+                entries += processing_receipts(
+                    chunk, self.collector.post('/v1/ingest/receipts', [receipt_query(r) for r in chunk]))
             if any(e['status']=='failed' for e in entries):
                 raise ProductError('middle_persistence_failed','中台持久化失败',503)
             if any(e['status'] in ('unknown',) for e in entries):
-                self.upload(state)
+                batch = image_upload_batch(state['messages'], entries) if 'image_partial' in state else state['messages']
+                self.upload({**state, 'messages': batch})
                 return
             if any(e['status'] not in ('accepted','duplicate') for e in entries): return
             state['receipts']=entries;self.save(job,state)
@@ -592,16 +766,23 @@ class LiveRunner:
         returned={i['document'].get('ID',i['document'].get('id')) for i in results['items']}
         if returned != {e['document_id'] for e in state['receipts']}:
             raise ValueError('Consumer live result identity differs')
-        record=verified_record(self.reader,state,self.config.whale_dataset_id,self.config.whale_source_platform)
+        if defer_readback:
+            state['stage'] = 'readback_pending'
+            self.save(job, state)
+            return
+        self.finish_readback(job, state)
+
+    def finish_readback(self, job, state):
+        record=verified_record(self.reader,state,self.config.whale_dataset_id,self.config.whale_source_platform,batch=True)
         response=dict(provider='middle',middle_query_id=state['middle_query_id'],
                       platform_task_ids=state['platform_task_ids'],readback_verified=True,
                       download_ready=True,stage='readback_verified',middle_record=record,
                       fetched_at=record['completed_at'], persistence_receipts=state['receipts'])
-        self.stop_campaign(state, 'succeeded')
-        self.store.finish(job['id'],'succeeded',response)
+        if self.store.finish(job['id'],'succeeded',response):
+            self.stop_campaign(state, 'succeeded')
 
     def run(self):
-        with self.store.base.connect() as leader:
+        with self.store.base.connect() as leader, ThreadPoolExecutor(max_workers=1, thread_name_prefix='live-readback') as pool:
             lock_id = {'google_search': 11, 'google_news': 12, 'google_trends': 13}[SOURCE_PLATFORMS[self.source]]
             if not leader.execute('SELECT pg_try_advisory_lock(20261111,%s) acquired', (lock_id,)).fetchone()['acquired']:
                 raise RuntimeError('Middle runner is already running')
@@ -627,9 +808,22 @@ class LiveRunner:
             for runner in runners.values():
                 runner.direct = self.direct
             next_heartbeat = 0
+            delivery = None
+            retry_delivery_at = {}
             while True:
                 with self.store.base.connect() as db:
                     jobs=db.execute("SELECT * FROM sf_jobs WHERE parameters->>'provider'='middle' AND coalesce(parameters->>'source','google_web')=ANY(%s) AND (status IN('queued','running') OR (status='cancelled' AND response IS NOT NULL AND response->>'stage'<>'cancelled_synced')) ORDER BY created_at LIMIT 10", (list(sources),)).fetchall()
+                if delivery and delivery[1].done():
+                    job_id, future = delivery
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        retry_delivery_at[job_id] = time.monotonic() + 15
+                        LOG.warning('middle readback %s: %s %s', job_id, type(exc).__name__, getattr(exc, 'code', ''))
+                    delivery = None
+                active_ids = {job['id'] for job in jobs}
+                retry_delivery_at = {key: value for key, value in retry_delivery_at.items()
+                                     if key in active_ids and value > time.monotonic()}
                 if time.monotonic() >= next_heartbeat:
                     try:
                         self.collector.heartbeat(int(any(job['status'] in ('queued', 'running') for job in jobs)))
@@ -644,8 +838,17 @@ class LiveRunner:
                         continue
                 except Exception as exc:
                     LOG.warning('direct dispatch: %s', type(exc).__name__)
-                for job in jobs:
-                    try: runners[job['parameters'].get('source', 'google_web')].advance(job)
+                for job in sorted(jobs, key=lambda row: row['status'] != 'queued'):
+                    runner = runners[job['parameters'].get('source', 'google_web')]
+                    state = job['response'] or {}
+                    if delivery and delivery[0] == job['id']:
+                        continue
+                    if job['status'] == 'running' and job['deadline_at'] > now() and state.get('stage') == 'readback_pending':
+                        if delivery is None and job['id'] not in retry_delivery_at:
+                            delivery = (job['id'], pool.submit(runner.finish_readback, job, state))
+                        continue
+                    try:
+                        runner.advance(job, admission_only=job['status'] == 'queued', defer_readback=True)
                     except Exception as exc:
                         if isinstance(exc, ProductError) and exc.code in ('middle_unauthorized','middle_entitlement_denied','middle_credit_required','middle_persistence_failed','middle_empty_results','middle_completion_invalid','middle_ingest_rejected'):
                             current = self.store.job(job['account_id'],str(job['id']))
@@ -656,7 +859,9 @@ class LiveRunner:
                             self.stop_campaign(state,'failed')
                             self.store.finish(job['id'],'failed',state,exc.code)
                         # No upstream bodies, credentials or exception strings.
-                        LOG.warning('middle job %s: %s %s', job['id'], type(exc).__name__, getattr(exc,'code',getattr(exc,'status_code','')))
+                        LOG.warning('middle job %s: %s %s', job['id'], type(exc).__name__,
+                                    getattr(exc, 'code', getattr(exc, 'status_code', '')),
+                                    exc_info=not isinstance(exc, ProductError))
                 time.sleep(5)
 
 

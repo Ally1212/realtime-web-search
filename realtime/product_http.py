@@ -123,7 +123,8 @@ def body(handler, *, reject_duplicates=False):
 
 def handle(handler, method):
     parsed=urlparse(handler.path);path=parsed.path
-    if path in ('/app', '/app.js', '/app.css') or path.startswith('/api/account/'):
+    if path in ('/app', '/app.js', '/app.css', '/app/research', '/app/research.js',
+                '/app/research.css') or path.startswith('/api/account/'):
         from .self_service import handle as public_handle
         return public_handle(handler, method, parsed)
     if path == '/api/quick-request' or path.startswith('/api/quick-request/'):
@@ -259,6 +260,21 @@ def handle(handler, method):
 
 
 def export(handler,job,fmt):
+    response=job.get('response') or {}
+    if 'data' not in response and isinstance(response.get('middle_record'),dict):
+        # Middle-platform jobs keep one verified observation instead of a raw
+        # SERP envelope; compact export must still deliver the saved links.
+        record=response['middle_record'];p0=job['parameters']
+        field={'google_web':'organic_results','google_news':'news_results',
+               'google_trends':'trending_searches','google_images':'image_results'}.get(p0.get('source','google_web'))
+        rows=[]
+        for occurrence in record.get('occurrences') or []:
+            url=occurrence.get('url') or {}
+            rows.append(dict(title=occurrence.get('title'),
+                             link=url.get('original_url') or occurrence.get('article_url'),
+                             snippet=occurrence.get('snippet'),position=occurrence.get('ordinal')))
+        job=dict(job);job['response']={**response,'data':({field:rows} if field else {}),
+                                       'fetched_at':record.get('completed_at')}
     data=job['response']['data'];p=job['parameters']
     if fmt=='jsonl':out=(json.dumps(job,ensure_ascii=False,default=str)+'\n').encode();ctype='application/x-ndjson; charset=utf-8'
     elif fmt=='csv':
