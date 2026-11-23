@@ -14,6 +14,11 @@
       "name": "google_trends",
       "url": "https://www.gstatic.com/trends/favicon.ico",
       "sha256": "1b439272e0223c9a983821ba61cb9ebc82081b24a1624ad00bf4bfcb37e3888e"
+    },
+    {
+      "name": "google_maps",
+      "url": "https://play-lh.googleusercontent.com/B8pdO_2K5nBsF0g1h6dKwV_jQFLP-XombGDEQGtJT-mw1EUKCKJpa9lBGCF4rP_MwCsozSXyvI3z19g9R3J4=w64-h64",
+      "sha256": "8bec451e07590d57c7c9345dd62003c77732712f6964e3040d9ff87a7ebe7e14"
     }
   ],
   "material_repository": "https://github.com/google/material-design-icons",

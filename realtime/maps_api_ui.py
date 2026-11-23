@@ -1,5 +1,23 @@
 """Reuse the Maps workflow inside the API tool; one form and one job state."""
 
+from .ui_icons import icon, source_icon
+
+TASK_CARD = (
+    '<a id="mapsTaskSource" class="maps-task-source" href="#maps" aria-describedby="mapsTaskSourceDescription">'
+    '<strong translate="no">' + source_icon('google_maps', 32) + 'Google Maps</strong>'
+    '<span id="mapsTaskSourceDescription">按关键词或位置查找商家，下载地址、电话与评分。</span>'
+    + icon('chevron_right') + '</a>'
+)
+
+TASK_CARD_CSS = '''
+.source-cards .maps-task-source{position:relative;display:block;background:#fff;border:1px solid #e5e5e5;border-radius:12px;padding:18px 36px 18px 18px;color:#171717;text-decoration:none}
+.source-cards .maps-task-source:hover{background:#fafafa;border-color:#a3a3a3}
+.source-cards .maps-task-source:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+.source-cards .maps-task-source strong{display:flex;align-items:center;gap:8px;margin:0 0 4px}
+.source-cards .maps-task-source .google-source-icon{flex:none}
+.source-cards .maps-task-source .mi{position:absolute;top:22px;right:14px;width:18px;height:18px;color:#646464}
+'''
+
 DEVELOPER = '''<details class="panel" id="mapsDeveloper"><summary>将 Maps 数据接入你的产品</summary>
 <p class="help">1 创建任务 → 2 轮询状态 → 3 读取结果或下载。以下示例使用上方条件，不含任何真实密钥。</p>
 <p class="help">外部调用需配置 SEARCHFLOW_ACCESS_KEY（网站访问凭据）和 SEARCHFLOW_API_KEY（客户 Bearer）。网络中断时沿用原 Idempotency-Key，避免重复任务。状态为 failed 时查看 error_code；429 请降低频率，勿不断新建任务。</p>
@@ -10,6 +28,11 @@ DEVELOPER = '''<details class="panel" id="mapsDeveloper"><summary>将 Maps 数�
 JS = r'''
 const mapsOriginalParent=$('mapsView');
 const mapsWorkspaceNodes=[...mapsOriginalParent.children];
+$('mapsTaskSource')?.addEventListener('click',event=>{
+ if(!quickBusy)return;
+ event.preventDefault();
+ notice('当前快速请求正在运行，请在请求结束后打开 Google Maps。',true);
+});
 function mapsMountInAPI(){
  const workspace=$('quickMapsWorkspace');
  if(!workspace)return;
@@ -75,6 +98,9 @@ try{if(sessionStorage.getItem('sf-api-mode')==='maps')document.querySelector('[d
 
 
 def extend(page):
+    source_cards = '<div class="source-cards">'
+    page = page.replace(source_cards, source_cards + TASK_CARD, 1)
+    page = page.replace('</style>', TASK_CARD_CSS + '</style>', 1)
     anchor='<button type="button" data-quick-mode="history"'
     assert anchor in page
     page=page.replace(anchor,'<button type="button" data-quick-mode="maps" aria-pressed="false">Google Maps<span>商家资料、附近搜索与导出</span></button>'+anchor,1)

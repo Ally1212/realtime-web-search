@@ -1,11 +1,26 @@
 import subprocess
 import unittest
 
+from bs4 import BeautifulSoup
+
 from realtime.google_local_ui import JS
 from realtime.maps_api_ui import JS as MAPS_WORKSPACE_JS
+from realtime.serp_page import PAGE
 
 
 class MapsUIFlowTests(unittest.TestCase):
+    def test_create_source_opens_maps_without_adding_it_to_batch_tasks(self):
+        page = BeautifulSoup(PAGE, 'html.parser')
+        card = page.select_one('#taskForm .source-cards #mapsTaskSource')
+        self.assertEqual(card['href'], '#maps')
+        self.assertTrue(card.img['src'].startswith('data:image/jpeg;base64,'))
+        self.assertEqual(
+            [source['value'] for source in page.select('#taskForm [name=taskSource]')],
+            ['google_web', 'google_news', 'google_trends'],
+        )
+        self.assertIsNotNone(page.select_one('#quickForm input[value=google_images]'))
+        self.assertEqual(len(page.select('#mapsForm')), 1)
+
     def test_absent_optional_developer_panel_does_not_stop_quick_request_navigation(self):
         setup=r'''
 const assert=require('node:assert/strict');
