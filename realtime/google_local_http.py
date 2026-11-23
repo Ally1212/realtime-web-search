@@ -11,10 +11,12 @@ from .maps_provider import availability
 from .product import ProductError, ProductStore
 
 
-def handle(handler, method):
+def handle(handler, method, *, public=None):
     from .product_http import body, secure
     parsed = urlparse(handler.path)
     path = parsed.path
+    if public is not None:
+        path = path.replace('/api/account/maps/', '/api/maps/', 1)
     website = path.startswith('/api/maps/')
     if website:
         path = path.replace('/api/maps/', '/v1/google/local/', 1)
@@ -29,17 +31,21 @@ def handle(handler, method):
         if not secure(handler):
             raise ProductError("https_required", "请通过 HTTPS 使用客户密钥", 403)
         auth = handler.headers.get("Authorization", "")
-        store = ProductStore(handler.config.database_url)
+        store = public.store if public is not None else ProductStore(handler.config.database_url)
         site_key = None
         if website:
             from .quick_request_http import secret, receipt
             origin = handler.headers.get('Origin')
-            if handler.headers.get('X-SearchFlow-Quick') != '1' or (origin and origin != 'https://'+handler.headers.get('Host','')):
+            if ((public is None and handler.headers.get('X-SearchFlow-Quick') != '1')
+                    or (origin and origin != 'https://'+handler.headers.get('Host',''))):
                 raise ProductError('forbidden','请从本站地图页面操作',403)
-            site_key = secret()
-            if not site_key:
-                raise ProductError('unavailable','地图查询正在准备',503)
-            account = store.authenticate(site_key)
+            if public is not None:
+                account = public.account
+            else:
+                site_key = secret()
+                if not site_key:
+                    raise ProductError('unavailable','地图查询正在准备',503)
+                account = store.authenticate(site_key)
         else:
             account = store.authenticate(auth[7:] if auth.startswith("Bearer ") else "")
         jobs = LocalJobStore(store.base)
@@ -49,11 +55,20 @@ def handle(handler, method):
             handler.send_json(availability())
             return True
         if path == "/v1/google/local/jobs" and method == "POST":
-            jid, reused = jobs.submit(account, body(handler, reject_duplicates=True),
-                                      handler.headers.get("Idempotency-Key"))
+            payload = body(handler, reject_duplicates=True)
+            idem = handler.headers.get("Idempotency-Key")
+            if public is not None:
+                from .self_service import MAPS_ITEMS
+                limit = payload.setdefault('max_places', MAPS_ITEMS)
+                if type(limit) is not int or not 1 <= limit <= MAPS_ITEMS:
+                    raise ProductError('invalid_parameter', f'Choose 1–{MAPS_ITEMS} places per search.')
+                jid, reused = public.submit(lambda db: jobs.submit(account, payload, idem, _db=db))
+            else:
+                jid, reused = jobs.submit(account, payload, idem)
             job = jobs.job(account['id'], jid)
-            token = {"token": receipt(site_key, 'maps:'+jid)} if website else {}
-            prefix = '/api/maps/jobs/' if website else '/v1/google/local/jobs/'
+            token = {"token": receipt(site_key, 'maps:'+jid)} if site_key else {}
+            prefix = '/api/account/maps/jobs/' if public is not None else (
+                '/api/maps/jobs/' if website else '/v1/google/local/jobs/')
             handler.send_json({**token,"id": jid, "reused": reused, "status": job['status'],
                                "status_url": prefix + jid,
                                "results_url": prefix + jid + "/results",
@@ -62,7 +77,7 @@ def handle(handler, method):
             return True
         match = re.fullmatch(r"/v1/google/local/jobs/([^/]+)(/(?:results|export))?", path)
         if match and method == "GET":
-            if website and not hmac.compare_digest(handler.headers.get('X-Quick-Token',''), receipt(site_key,'maps:'+match.group(1))):
+            if site_key and not hmac.compare_digest(handler.headers.get('X-Quick-Token',''), receipt(site_key,'maps:'+match.group(1))):
                 raise ProductError('not_found','Maps 任务不存在',404)
             if match.group(2)=='/export':
                 query=parse_qs(parsed.query,keep_blank_values=True)

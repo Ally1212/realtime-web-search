@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -88,7 +89,7 @@ class LocalJobStore:
     def __init__(self, base):
         self.base = base
 
-    def submit(self, account, payload, idem):
+    def submit(self, account, payload, idem, *, _db=None):
         if not availability()["enabled"]:
             raise ProductError("google_places_disabled", "地图自建查询尚未启用", 503)
         p = parameters(payload)
@@ -99,7 +100,7 @@ class LocalJobStore:
             raise ProductError("idempotency_required", "请提供 1–120 字符的 Idempotency-Key")
         fingerprint = hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest()
         aid, jid = account["id"], str(uuid4())
-        with self.base.connect() as db:
+        with (nullcontext(_db) if _db is not None else self.base.connect()) as db:
             a = db.execute("SELECT * FROM sf_accounts WHERE id=%s AND enabled FOR UPDATE", (aid,)).fetchone()
             if not a:
                 raise ProductError("unauthorized", "空间已停用", 401)

@@ -1,0 +1,37 @@
+* {box-sizing:border-box}
+:root {color-scheme:light;font-family:system-ui,-apple-system,sans-serif;color:#171717;background:#fafafa}
+body {margin:0}
+[hidden] {display:none !important}
+header,main,footer {width:min(100% - 32px,760px);margin-inline:auto}
+header {display:flex;align-items:center;gap:8px;padding:14px 0;border-bottom:1px solid #ddd}
+.brand {font-size:20px;font-weight:650;color:inherit;text-decoration:none;margin-inline-end:auto}
+main {padding-block:32px}
+h1 {font-size:clamp(25px,4vw,36px);letter-spacing:-.025em;margin:0 0 10px}
+h2 {font-size:21px}
+p {line-height:1.55;color:#525252;margin:0 0 16px}
+#notice:empty {display:none}
+#notice {min-height:1.5em}
+#notice[data-error=true] {color:#9f1a1a}
+section#welcome,form#search,#output {background:#fff;border:1px solid #ddd;border-radius:12px;padding:20px}
+#welcome p {margin:16px 0 0;font-size:14px}
+a {color:#171717}
+.action,select,input,button {font:inherit;min-height:44px;border-radius:8px}
+.action {display:inline-flex;align-items:center;border:1px solid #171717;background:#171717;color:#fff;padding:8px 14px;font-weight:600;text-decoration:none;cursor:pointer}
+.action:hover {background:#333}
+.action:disabled {opacity:.55;cursor:default}
+.action.google {gap:12px;background:#fff;border-color:#747775;color:#1f1f1f;font-size:14px;font-weight:500}
+.action.google:hover {background:#f5f8ff}
+.quiet {min-width:44px;border:0;padding:4px 8px;background:transparent;color:inherit;cursor:pointer}
+.quiet:hover {background:#eee}
+:focus-visible {outline:2px solid #255ac1;outline-offset:3px}
+.fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,155px),1fr));gap:12px}
+label {display:grid;gap:5px;font-size:14px;font-weight:550;margin:0 0 14px}
+input,select {width:100%;min-width:0;padding:8px 10px;border:1px solid #aaa;background:#fff;color:#171717}
+#output {margin-top:18px}
+.result-header,#downloads,footer {display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.result-header h2 {margin:0}
+#rows {list-style:none;padding:0}
+#rows li {padding:12px 0;border-bottom:1px solid #eee;overflow-wrap:anywhere}
+#rows li p {margin:4px 0 0}
+pre {white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
+footer {justify-content:flex-start;font-size:13px;border-top:1px solid #ddd;padding:14px 0 28px;color:#525252}

@@ -22,24 +22,30 @@ def receipt(key, job_id):
     return hmac.new(key.encode(), ('quick-request:'+job_id).encode(), hashlib.sha256).hexdigest()
 
 
-def handle(handler, method):
+def handle(handler, method, *, public=None):
     from .product_http import body, secure
     parsed = urlparse(handler.path)
+    if public is not None:
+        parsed = parsed._replace(path=parsed.path.replace('/api/account/search', '/api/quick-request', 1))
     if not (parsed.path == '/api/quick-request' or parsed.path.startswith('/api/quick-request/')):
         return False
     try:
         if os.getenv('SEARCHFLOW_PRODUCT_ENABLED') != 'true' or not secure(handler):
             raise ProductError('unavailable', '快速请求暂不可用', 503)
-        if handler.headers.get('X-SearchFlow-Quick') != '1':
+        if public is None and handler.headers.get('X-SearchFlow-Quick') != '1':
             raise ProductError('forbidden', '请从网站快速请求页面操作', 403)
         origin = handler.headers.get('Origin')
         if origin and origin != 'https://' + handler.headers.get('Host', ''):
             raise ProductError('forbidden', '请求来源不匹配', 403)
-        key = secret()
-        if not key:
-            raise ProductError('unavailable', '快速请求正在准备，请稍后重试', 503)
-        store = ProductStore(handler.config.database_url)
-        account = store.authenticate(key)
+        if public is not None:
+            store, account = public.store, public.account
+            key = None
+        else:
+            key = secret()
+            if not key:
+                raise ProductError('unavailable', '快速请求正在准备，请稍后重试', 503)
+            store = ProductStore(handler.config.database_url)
+            account = store.authenticate(key)
         if parsed.path == '/api/quick-request/catalog' and method == 'GET' and not parsed.query:
             from .serp_console import REGIONS, NEWS_LOCALES
             from .customer_data import field_catalog
@@ -90,9 +96,21 @@ def handle(handler, method):
             payload = body(handler)
             if set(payload) - {'query', 'source', 'region', 'language', 'trends_mode', 'trends_time_range', 'max_items'}:
                 raise ProductError('invalid_parameter', '只支持关键词、来源、地区和语言')
-            payload = middle_search_payload(payload)
-            jid, reused = store.submit(account, payload, handler.headers.get('Idempotency-Key'), handler.config)
-            handler.send_json({'id': jid, 'token': receipt(key, jid), 'reused': reused}, 202)
+            idem = handler.headers.get('Idempotency-Key')
+            if public is not None:
+                from .self_service import SEARCH_ITEMS
+                limit = payload.setdefault('max_items', SEARCH_ITEMS)
+                if type(limit) is not int or not 1 <= limit <= SEARCH_ITEMS:
+                    raise ProductError('invalid_parameter', f'Choose 1–{SEARCH_ITEMS} results per search.')
+                payload = middle_search_payload(payload)
+                jid, reused = public.submit(lambda db: store.submit(account, payload, idem, handler.config, _db=db))
+            else:
+                payload = middle_search_payload(payload)
+                jid, reused = store.submit(account, payload, idem, handler.config)
+            result = {'id': jid, 'reused': reused}
+            if key:
+                result['token'] = receipt(key, jid)
+            handler.send_json(result, 202)
             return True
         if parsed.path == '/api/quick-request/cancel-submission':
             if method != 'POST' or parsed.query:
@@ -110,7 +128,7 @@ def handle(handler, method):
         if not match:
             raise ProductError('not_found', '任务不存在', 404)
         jid, action = match.groups()
-        if not hmac.compare_digest(handler.headers.get('X-Quick-Token', ''), receipt(key, jid)):
+        if key and not hmac.compare_digest(handler.headers.get('X-Quick-Token', ''), receipt(key, jid)):
             raise ProductError('not_found', '任务不存在', 404)
         if action == 'cancel' and method == 'POST' and not parsed.query:
             handler.send_json(store.cancel(account['id'], jid))
@@ -135,7 +153,10 @@ def handle(handler, method):
             from .customer_data import CustomerDataStore
             handler.send_json(CustomerDataStore(store, account['id']).job_data(jid, 'prd-v1'))
         else:
-            handler.send_json(store.job(account['id'], jid))
+            job = store.job(account['id'], jid)
+            if public is not None:
+                job = {name: job[name] for name in ('id', 'status', 'error_code')}
+            handler.send_json(job)
     except ProductError as exc:
         handler.send_json({'error': str(exc), 'code': exc.code}, exc.status)
     except DomainError as exc:

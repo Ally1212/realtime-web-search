@@ -123,6 +123,9 @@ def body(handler, *, reject_duplicates=False):
 
 def handle(handler, method):
     parsed=urlparse(handler.path);path=parsed.path
+    if path in ('/app', '/app.js', '/app.css') or path.startswith('/api/account/'):
+        from .self_service import handle as public_handle
+        return public_handle(handler, method, parsed)
     if path == '/api/quick-request' or path.startswith('/api/quick-request/'):
         from .quick_request_http import handle as quick_handle
         return quick_handle(handler, method)
