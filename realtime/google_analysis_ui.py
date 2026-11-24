@@ -13,13 +13,11 @@ SECTION = '''
     <label>地区<select id="gaRegion"></select></label>
     <button type="submit">查看分析</button>
   </form>
-  <div class="ga-entry" id="gaExamples">
-    <span>试试已有记录</span>
-    <button type="button" class="secondary mini" id="gaMixedExample" aria-pressed="false">AI coding assistants</button>
-    <button type="button" class="secondary mini" id="gaWebExample" aria-pressed="false">china</button>
+  <div class="ga-entry">
+    <span>示例</span><button type="button" class="secondary mini" id="gaExample">AI coding assistants</button>
   </div>
   <details class="ga-options" open>
-    <summary>更多筛选</summary>
+    <summary>筛选条件</summary>
     <div class="ga-filters">
       <label>语言<select id="gaLanguage"><option value="">全部</option><option value="en">英语</option><option value="zh">中文</option></select></label>
       <label>网页设备<select id="gaDevice"><option value="">自动选择</option><option value="desktop">桌面端</option><option value="mobile">移动端</option></select></label>
@@ -97,7 +95,7 @@ CARD_CSS = '''
 #googleAnalysis #gaForm{gap:12px;margin-block:14px 10px}
 #googleAnalysis .ga-query input{background:var(--ga-paper)}
 #googleAnalysis #gaForm>button{background:var(--ga-accent);color:#fff;border-color:var(--ga-accent)}
-#googleAnalysis .ga-overview{gap:20px}
+#googleAnalysis .ga-overview{gap:14px}
 #googleAnalysis .ga-view-heading{justify-content:space-between;padding-block-start:12px;border-block-start:1px solid var(--ga-edge)}
 #googleAnalysis .ga-view-heading h3{font-size:clamp(1.2rem,2.4vw,1.65rem);letter-spacing:-.02em;overflow-wrap:anywhere}
 #googleAnalysis .ga-charts{grid-template-columns:repeat(3,minmax(0,1fr));gap:13px;align-items:start}
@@ -128,13 +126,15 @@ CARD_CSS = '''
 
 /* Conclusions lead the report. Supporting charts and request data expand in place. */
 #googleAnalysis {--ga-accent:#225b47;--ga-wash:#e8f1eb;min-width:0;max-width:1150px}
-#googleAnalysis .ga-modes{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+#googleAnalysis .ga-modes{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
 #googleAnalysis .ga-modes button{margin:0;min-height:42px;border:0;background:transparent;color:#43594b}
 #googleAnalysis .ga-modes button[aria-pressed=true]{background:var(--ga-wash);color:#164735}
 #googleAnalysis .ga-feedback{display:flex;align-items:center;gap:10px;min-height:27px}
 #googleAnalysis .ga-feedback:has(#gaStatus:empty){min-height:0}
+#googleAnalysis .ga-entry>button{min-block-size:34px}
+#googleAnalysis .ga-options{margin-block:8px 12px}
 #googleAnalysis progress{width:30px;height:8px;flex:none;accent-color:var(--ga-accent)}
-#googleAnalysis .ga-report{margin-top:20px;padding:clamp(16px,3vw,28px);min-width:0;background:#fff;border:1px solid #dbe4db;border-radius:15px;overflow-wrap:anywhere}
+#googleAnalysis .ga-report{margin-top:14px;padding:clamp(14px,2.7vw,24px);min-width:0;background:#fff;border:1px solid #dbe4db;border-radius:15px;overflow-wrap:anywhere}
 #googleAnalysis .ga-report .ga-view-heading{display:block;padding:0;border:0}
 #googleAnalysis .ga-report h2{font-size:clamp(1.3rem,2.8vw,1.8rem);line-height:1.25;letter-spacing:-.025em}
 #googleAnalysis .ga-report h3{font-size:1.05rem}
@@ -142,7 +142,7 @@ CARD_CSS = '''
 #googleAnalysis .ga-keyword-layout:has(#gaLeadChart[hidden]){grid-template-columns:minmax(0,1fr)}
 #googleAnalysis .ga-site-layout{grid-template-columns:minmax(0,1fr) minmax(0,.48fr)}
 #googleAnalysis .ga-findings{border:0;margin-top:6px}
-#googleAnalysis .ga-findings li{padding-block:13px}
+#googleAnalysis .ga-findings li{padding-block:10px}
 #googleAnalysis .ga-findings .ga-pending-source{font-size:.85rem;color:#4b6254}
 #googleAnalysis #gaLeadChart .ga-chart{background:#edf4ee;border-color:#edf4ee;box-shadow:none}
 #googleAnalysis .ga-site-highlight{padding:13px 15px;border-radius:10px;background:var(--ga-wash);margin-bottom:16px}
@@ -194,8 +194,8 @@ def extend(page):
     close = page.rindex('</section>', start, end)
     existing = page[start:close].replace("<details>", "<details open>")
     page = (page[:start] + SECTION
-            + '<details class="ga-disclosure" id="gaReports" open><summary>高级分析与数据总览</summary>'
-            + existing + '</details><details class="ga-disclosure" id="gaHistory" open><summary>搜索历史与证据</summary></details>'
+            + '<details class="ga-disclosure" id="gaReports" open><summary>数据总览</summary>'
+            + existing + '</details><details class="ga-disclosure" id="gaHistory" open><summary>搜索历史</summary></details>'
             + page[close:])
     page = page.replace('<a href="#research" data-view="research"', '<a hidden href="#research" data-view="research"', 1)
     page = page.replace('id="insightsView" hidden data-screen-label="数据分析"',

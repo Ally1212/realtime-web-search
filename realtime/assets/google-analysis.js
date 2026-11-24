@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const examples = {gaMixedExample:'AI coding assistants',gaWebExample:'china'};
+  const examples = {keyword:'AI coding assistants',website:'augmentcode.com'};
   const input = $('gaInput');
   const result = $('gaResult');
   const status = $('gaStatus');
@@ -10,7 +10,7 @@
   const advanced = $('gaReports');
   let controller;
   let applied = null;
-  let initialized = false;
+  const startedModes = new Set();
   let historyRequested = false;
   let researchReads = Promise.resolve();
   let lastResearchStart = 0;
@@ -530,14 +530,15 @@
 
   let mode = 'keyword';
   let pending = null;
-  const drafts = {keyword: '', website: ''};
+  const drafts = new Map();
+  const fields = ['gaInput','gaDays','gaRegion','gaLanguage','gaDevice','gaDomain','gaCompetitors'];
   const visited = new Map();
   function setMode(next) {
     if (mode === next) return;
     controller?.abort();
     pending = null;
     loading('');
-    drafts[mode] = input.value;
+    drafts.set(mode,fields.map(id => $(id).value));
     if (applied) {
       if (applied.jobs) {
         for (const [id,state] of applied.states) {
@@ -552,10 +553,11 @@
     }
     const previous = visited.get(next);
     mode = next;
-    input.value = drafts[next];
+    const values = drafts.get(next) || ['','30','','','','',''];
+    fields.forEach((id,index) => { $(id).value = values[index]; });
     input.placeholder = next === 'website' ? '例如 example.com' : '例如 solar energy';
     $('gaInputLabel').textContent = next === 'website' ? '网站域名' : '关键词';
-    $('gaExamples').hidden = next === 'website';
+    $('gaExample').textContent = examples[next];
     document.querySelectorAll('[data-ga-keyword-filter]').forEach(element => { element.hidden = next === 'website'; });
     document.querySelectorAll('[data-ga-mode]').forEach(button => {
       button.setAttribute('aria-pressed',String(button.dataset.gaMode === next));
@@ -573,7 +575,7 @@
   function reportHeading(report) {
     const {query, criteria, mode} = report;
     return `<header class="ga-view-heading">${report.example ? '<span class="ga-example-mark">示例 · 已保存的记录</span>' : ''}<h2 id="gaResultHeading">${esc(query)}</h2>
-      <p class="ga-meta">近 ${esc(criteria.days)} 天 · ${esc(regionNames[criteria.region] || criteria.region || '全部地区')} · 已保存的${mode === 'website' ? '网页' : '搜索'}快照</p></header>`;
+      <p class="ga-meta">近 ${esc(criteria.days)} 天 · ${esc(regionNames[criteria.region] || criteria.region || '全部地区')} · ${report.example && mode === 'website' ? '示例关键词：' + esc(examples.keyword) : '历史快照'}</p></header>`;
   }
 
   function resultActions(monitor = false) {
@@ -620,16 +622,17 @@
   function siteRow(query, data, domain) {
     const top = data.top10 || {};
     const ranks = top.domains?.find(item => lower(item.domain) === domain);
+    const observedRank = data.domains?.find(item => lower(item.domain) === domain)?.latest_rank ?? null;
     return {query, scope:data.scope || {}, samples:top.samples || 0, observed:data.samples || 0,
-      hits:ranks?.hits || 0, latest:ranks?.latest_rank ?? null, previous:ranks?.previous_rank ?? null, pair:top.pair || []};
+      hits:ranks?.hits || 0, observedRank, latest:ranks?.latest_rank ?? null, previous:ranks?.previous_rank ?? null, pair:top.pair || []};
   }
 
   async function websiteReport(report, filters, signal) {
     const {query:domain, criteria} = report;
-    const data = await read(observationsPath, {...filters,source:'google_web',domain,...(criteria.device && {device:criteria.device})}, signal);
-    const matching = (data.requests || []).filter(row => row.query &&
-      (!criteria.device || row.query_conditions?.device === criteria.device));
-    const terms = [...new Set(matching.map(row => row.query))];
+    // The example deliberately shows one known keyword from the saved report.
+    const data = report.example ? {requests:[{query:examples.keyword}]} :
+      await read(observationsPath, {...filters,source:'google_web',domain,...(criteria.device && {device:criteria.device})}, signal);
+    const terms = [...new Set((data.requests || []).map(row => row.query).filter(Boolean))];
     const rows = [];
     const failed = [];
     for (const query of terms.slice(0, 6)) {
@@ -653,32 +656,32 @@
     const summary = change ? `<div class="ga-site-highlight"><h3>「${esc(change.query)}」从${rank(change.previous)}变为${rank(change.latest)}</h3>
       <p class="ga-meta">${when(change.pair[1].observed_at)} → ${when(change.pair[0].observed_at)} · ${siteScope(change.scope)}</p></div>`
       : `<p class="ga-meta">${comparable.length ? '可直接对比的关键词没有观察到名次变化。'
-        : '这些关键词还缺少可直接比较的名次。每个关键词需要两次同条件的完整首页快照。'}</p>`;
+        : '排名变化需要两次同条件的完整首页快照。'}</p>`;
     const table = rows.length ? `<div class="ga-table" role="region" aria-label="按关键词查看排名" tabindex="0">
       <table><caption>按关键词查看排名</caption><thead><tr><th scope="col">关键词与条件</th><th scope="col">上一次</th>
       <th scope="col">最近一次</th><th scope="col">进入前 10 名</th></tr></thead><tbody>
       ${rows.map(row => `<tr><th scope="row">
         <button type="button" class="secondary mini" data-ga-keyword="${esc(row.query)}" data-ga-domain="${esc(report.query)}">${esc(row.query)}</button>
         <p class="ga-meta">${siteScope(row.scope)}</p></th>
-        <td>${row.pair.length > 1 ? rank(row.previous) : '—'}</td><td>${row.samples ? rank(row.latest) : '—'}</td>
+        <td>${row.pair.length > 1 ? rank(row.previous) : '—'}</td><td>${row.samples ? rank(row.latest) : row.observedRank !== null ? rank(row.observedRank) + '（单次观测）' : '—'}</td>
         <td>${row.samples ? row.hits + '/' + row.samples + ' 次' : '样本不足'}</td></tr>`).join('')}</tbody></table></div>` : '';
     const references = rows.filter(row => row.pair.length).map(row =>
       evidence(row.query + ' · 原始搜索',row.pair.map(sample =>
         `<button type="button" class="secondary mini" aria-expanded="false" data-ga-request="${esc(sample.request_id)}">查看 ${when(sample.observed_at)} 的快照</button>`).join(' '))).join('');
-    const tracked = change || rows.find(row => row.latest !== null) || rows[0];
+    const tracked = change || rows.find(row => row.latest !== null || row.observedRank !== null) || rows[0];
     const count = rows.reduce((sum,row) => sum+row.samples,0);
     return `<div class="ga-site-layout">
       <div>${rows.length ? summary + table : failed.length ? '' : '<p>当前范围内没有找到包含这个域名的公开网页快照。可以扩大时间范围，或用已知关键词查看排名。</p>'}
       ${references}</div>
-      <aside class="ga-site-summary"><h3>样本概况</h3>
-        <dl><div><dt>已核对的关键词</dt><dd>${rows.length} 个</dd></div><div><dt>完整首页快照</dt><dd>${count} 次</dd></div></dl>
+      <section class="ga-site-summary"><h3>样本概况</h3>
+        <dl><div><dt>关键词</dt><dd>${rows.length} 个</dd></div><div><dt>完整首页快照</dt><dd>${count} 次</dd></div></dl>
         ${hasMore || candidates > 6 ? '<p class="ga-meta">从最近匹配记录中核对最多 6 个关键词。</p>' : ''}
         ${tracked ? `<button type="button" class="secondary mini" data-ga-monitor="${esc(report.query)}"
           data-ga-monitor-query="${esc(tracked.query)}" data-ga-monitor-region="${esc(tracked.scope.region || '')}"
           data-ga-monitor-language="${esc(tracked.scope.language || '')}">跟踪「${esc(tracked.query)}」</button>` : ''}
       </section></div>
       ${failed.length ? '<p class="ga-meta">有 '+failed.length+' 个关键词暂时无法读取。 <button type="button" class="secondary mini" data-ga-retry="report">重试</button></p>' : ''}
-      ${evidence('怎么统计的','<p class="ga-meta">每个关键词独立选取同条件的首页快照。完整首页包含 10 个已知自然名次，缓存重复不计。未观测表示该次首页快照中没有看到这个网站。</p>')}
+      ${evidence('怎么统计的','<p class="ga-meta">前 10 名仅统计完整首页，重复缓存不计。单次观测表示最近已知名次。</p>')}
       ${resultActions()}`;
   }
 
@@ -687,7 +690,7 @@
 
   function keywordContent() {
     return `<div class="ga-keyword-layout">
-      <div><h3>这组数据有什么变化</h3><ul class="ga-findings" id="gaFindings"></ul>
+      <div><h3>主要发现</h3><ul class="ga-findings" id="gaFindings"></ul>
       <div id="gaSourceStates"></div></div><div id="gaLeadChart" hidden></div></div>
       ${resultActions(true)}
       <details open class="ga-disclosure" id="gaAllData"><summary>图表和原始证据</summary>
@@ -735,7 +738,7 @@
   async function analyze(text, criteria = baseCriteria(), {scope = '', reportMode = mode, example = false} = {}) {
     const query = reportMode === 'website' ? hostname(text) : text;
     if (!query) { loading('请输入有效的网站域名，例如 example.com。'); return; }
-    for (const [id,term] of Object.entries(examples)) $(id).setAttribute('aria-pressed',String(lower(term)===lower(query)));
+    startedModes.add(reportMode);
     controller?.abort();
     controller = new AbortController();
     const {signal} = controller;
@@ -755,7 +758,7 @@
     } else {
       result.innerHTML = '<div class="ga-report ga-skeleton" aria-hidden="true"><div></div><div></div><div></div></div>';
     }
-    loading('正在读取「' + query + '」的已保存数据…',true);
+    loading('正在读取' + (example ? '示例' : '「' + query + '」') + '…',true);
     const timeout = setTimeout(() => { if (controller.signal === signal) controller.abort('timeout'); },30000);
     try {
       if (reportMode === 'website') {
@@ -765,7 +768,7 @@
           [row.query + ' · 进入前 10 名',row.hits,row.samples,siteScope(row.scope)],
           [row.query + ' · 最近名次',row.latest,null,siteScope(row.scope)],
           [row.query + ' · 上一次名次',row.previous,null,siteScope(row.scope)],
-        ] : [])});
+        ] : row.observedRank !== null ? [[row.query + ' · 单次观测名次',row.observedRank,null,siteScope(row.scope)]] : [])});
         showReport(report,siteContent(report,data));
         updateDownloads(report);
       } else {
@@ -792,7 +795,7 @@
       clearTimeout(timeout);
       if (pending === report) {
         pending = null;
-        if (applied === report) loading('「' + query + '」报告已更新。');
+        if (applied === report) loading('');
         else {
           if (!applied) result.replaceChildren();
           loading('暂时无法读取「' + query + '」。' + (applied ? '下方仍是上一份报告。' : '请点击「查看分析」重试。'));
@@ -802,7 +805,10 @@
   }
 
   document.querySelectorAll('[data-ga-mode]').forEach(button => {
-    button.onclick = () => setMode(button.dataset.gaMode);
+    button.onclick = () => {
+      setMode(button.dataset.gaMode);
+      loadInitialExample();
+    };
   });
   $('gaForm').addEventListener('submit', event => {
     event.preventDefault();
@@ -814,18 +820,15 @@
     }
     analyze(value);
   });
-  function loadExample(query) {
-    setMode('keyword');
-    input.value = query;
-    $('gaDays').value = '90';
-    $('gaDomain').value = '';
-    $('gaCompetitors').value = '';
-    $('gaDevice').value = '';
-    region.value = '';
-    $('gaLanguage').value = '';
+  function loadExample() {
+    const query = examples[mode];
+    fields.forEach((id,index) => { $(id).value = [query,'90','','','','',''][index]; });
     analyze(query,baseCriteria(),{example:true});
   }
-  for (const [id,query] of Object.entries(examples)) $(id).onclick = () => loadExample(query);
+  function loadInitialExample() {
+    if (!startedModes.has(mode) && !input.value.trim() && !pending && !applied) loadExample();
+  }
+  $('gaExample').onclick = loadExample;
   result.addEventListener('change', event => {
     if (event.target.id === 'gaScope' && applied)
       analyze(applied.query, applied.criteria, {scope:event.target.value,example:applied.example});
@@ -862,7 +865,7 @@
       if (pending && pending !== applied) return;
       const report = applied;
       const id = button.dataset.gaRetry;
-      if (id === 'report') { await analyze(report.query,report.criteria); return; }
+      if (id === 'report') { await analyze(report.query,report.criteria,{example:report.example}); return; }
       const job = report.jobs?.[id];
       if (!job) return;
       button.disabled = true;
@@ -965,10 +968,7 @@
       $('pageTitle').textContent = 'Google 分析';
       $('pageSubtitle').textContent = '查看已保存的搜索变化与依据';
       legacyHistory.hidden = false;
-      if (!initialized) {
-        initialized = true;
-        if (!input.value.trim() && !pending && !applied) loadExample(examples.gaMixedExample);
-      }
+      loadInitialExample();
       loadOpenHistory();
     } else if (view === 'insights') {
       $('pageTitle').textContent = '文本分析';
