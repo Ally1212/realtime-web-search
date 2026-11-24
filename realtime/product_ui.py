@@ -94,7 +94,8 @@ def extend(page):
     from .component_ui import extend as component_ui
     from .workspace_guides_ui import extend as workspace_guides_ui
     page = component_ui(quick_ui(local_ui(insights_ui(capability_ui(refine_ui(page))))))
-    return workspace_guides_ui(page)
+    from .google_analysis_ui import extend as google_analysis_ui
+    return google_analysis_ui(workspace_guides_ui(page))
 
 # Keep subscription controls within the existing API workspace.
 from .subscription_ui import SECTIONS as SUBSCRIPTION_SECTIONS, JS as SUBSCRIPTION_JS

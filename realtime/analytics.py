@@ -182,9 +182,50 @@ def history_report(base,query='',domain='',region='',language='',days='30',compe
     report=compare_snapshots(selected,domains)
     auto_domains=[x['domain'] for x in report['competitors'][:3]] if not domains else []
     if auto_domains:report=compare_snapshots(selected,auto_domains)
+    top10 = top10_observations(selected, domains or auto_domains, group)
     return dict(**report,query=query,queries=choices,scope={k:group[k] for k in ('provider','region','language','device','page')} if group else {},scope_id=group['id'] if group else '',scope_choices=groups,
                 request_summary=request_summary,excluded_incompatible_samples=sum(g['samples'] for g in groups if g is not group),window_days=int(days),sample_limit=1000,truncated=truncated,
-                projection=projection,auto_domains=auto_domains,fetched_records=len(selected),cache_duplicates_removed=len(selected)-report['samples'],since=start,until=end,generated_at=end)
+                projection=projection,auto_domains=auto_domains,fetched_records=len(selected),cache_duplicates_removed=len(selected)-report['samples'],since=start,until=end,generated_at=end,
+                top10=top10)
+
+
+def top10_observations(snapshots, domains, scope):
+    """Use only fully observed, distinct first pages for comparative Top 10 metrics."""
+    eligible = []
+    seen = set()
+    complete_scope = bool(scope and scope['page'] == 1 and all(
+        scope.get(key) and str(scope[key]).lower() != 'unknown'
+        for key in ('provider', 'region', 'language', 'device')
+    ))
+    for snapshot in snapshots if complete_scope else ():
+        stamp = snapshot['completed_at']
+        metadata = snapshot['response'].get('search_metadata') or {}
+        if stamp in seen or (isinstance(metadata, dict) and (
+            metadata.get('cache_hit') is True or metadata.get('cache_status') in ('hit', 'cache_hit', 'cached')
+        )):
+            continue
+        first_page = [item for item in _items(snapshot).values()
+                      if item['position'] is not None and item['position'] <= 10]
+        ranked = {item['position']: item for item in first_page}
+        if len(first_page) != 10 or len(ranked) != 10:
+            continue
+        seen.add(stamp)
+        eligible.append((snapshot, ranked))
+
+    def observed(domain, ranked):
+        return min((rank for rank, item in ranked.items()
+                    if item['domain'] == domain or item['domain'].endswith('.' + domain)), default=None)
+
+    pair = eligible[:2]
+    latest_links = {item['link'] for item in pair[0][1].values()} if len(pair) == 2 else set()
+    previous_links = {item['link'] for item in pair[1][1].values()} if len(pair) == 2 else set()
+    return {'complete_scope': complete_scope, 'samples': len(eligible),
+            'pair': [{'request_id': str(s['id']), 'observed_at': s['completed_at']} for s, _ in pair],
+            'new_urls': sorted(latest_links - previous_links), 'missing_urls': sorted(previous_links - latest_links),
+            'domains': [{'domain': domain, 'hits': sum(observed(domain, ranked) is not None for _, ranked in eligible),
+                         'latest_rank': observed(domain, pair[0][1]) if pair else None,
+                         'previous_rank': observed(domain, pair[1][1]) if len(pair) == 2 else None}
+                        for domain in domains]}
 
 
 REQUEST_REPORT = r"""

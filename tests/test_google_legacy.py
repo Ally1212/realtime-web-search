@@ -148,6 +148,29 @@ class LegacyPreviewTests(unittest.TestCase):
         self.assertFalse(two["has_more"])
         self.assertEqual(read_public_request(self.dsn,first)["request"]["request_id"],first)
         with self.assertRaises(DomainError): read_public_request(self.dsn,private)
+        self.assertEqual(read_public_requests(self.dsn, {**params, 'query_match':'exact'})['requests'], [])
+        exact = read_public_requests(self.dsn, {**params, 'query':'TEST QUERY', 'query_match':'exact'})
+        self.assertEqual(len(exact['requests']), 1)
+
+    def test_keyword_trend_points_are_distinct_from_hotlist(self):
+        saved = self.insert('google_trends', {'trending_searches': [{
+            'keyword':'example',
+            'data_kind':'keyword_interest_over_time',
+            'numeric_trend_series': {
+                'query':'example', 'region':'US', 'time_range':'today 3-m', 'internal':'private',
+                'points': [{'timestamp':'2026-11-01T00:00:00Z', 'value':42, 'is_partial':False,
+                            'source_fields': {'private':True}},
+                           {'timestamp':'2026-11-02T00:00:00Z', 'value':101}],
+            },
+        }]})
+        item, = read_public_request(self.dsn, saved)['request']['items']
+        self.assertEqual(item['kind'], 'keyword_interest_over_time')
+        self.assertNotIn('approx_traffic_label', item)
+        series = item['numeric_trend_series']
+        self.assertNotIn('internal', series)
+        self.assertEqual(len(series['points']), 1)
+        self.assertEqual(series['points'][0]['value'], 42)
+        self.assertNotIn('source_fields', series['points'][0])
 
     def test_source_analysis_keeps_news_and_trends_separate(self):
         self.insert("google_news", {"news_results": [

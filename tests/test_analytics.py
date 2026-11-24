@@ -4,11 +4,34 @@ import unittest
 from datetime import datetime,timezone,timedelta
 
 from realtime.product import ProductError,compare_snapshots
-from realtime.analytics import filters,sync_projection,projection_status
+from realtime.analytics import filters,sync_projection,projection_status,top10_observations
 from tests import test_product as product_tests
 
 
 class AnalyticsMathTests(unittest.TestCase):
+    def test_top10_compares_only_distinct_complete_first_pages(self):
+        def snapshot(identifier, day, lead, *, missing=False, cached=False):
+            rows = [dict(position=rank, link=f'https://others.test/{rank}') for rank in range(2, 11)]
+            if not missing:
+                rows.insert(0, dict(position=1, link=lead))
+            return dict(id=identifier, completed_at=f'2026-11-{day:02d}', response={
+                'organic_results': rows, 'search_metadata': {'cache_hit': cached},
+            })
+
+        latest = snapshot('latest', 13, 'https://blog.example.com/news')
+        old = snapshot('old', 12, 'https://competitor.test/news')
+        rows = [snapshot('partial', 15, '', missing=True),
+                snapshot('cache', 14, 'https://irrelevant.test/', cached=True), latest, latest, old]
+        scope = dict(page=1, provider='test', region='US', language='en', device='desktop')
+        report = top10_observations(rows, ['example.com', 'competitor.test'], scope)
+        self.assertEqual(report['samples'], 2)
+        self.assertEqual([item['request_id'] for item in report['pair']], ['latest', 'old'])
+        self.assertEqual(report['new_urls'], ['https://blog.example.com/news'])
+        self.assertEqual(report['missing_urls'], ['https://competitor.test/news'])
+        self.assertEqual(report['domains'][0], dict(domain='example.com', hits=1, latest_rank=1, previous_rank=None))
+        self.assertEqual(top10_observations(rows, [], {**scope, 'device': None})['samples'], 0)
+        self.assertEqual(top10_observations(rows, [], {**scope, 'page': 2})['samples'], 0)
+
     def test_missing_ranks_reentry_and_content_changes(self):
         def snap(i,items):return dict(id=str(i),provider='test',completed_at=f'2026-10-{i:02d}T00:00:00+00:00',response={'organic_results':items})
         def item(rank,title='First',snippet='summary'):

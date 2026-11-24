@@ -19,7 +19,7 @@ CLASSIFICATIONS = frozenset({'results','empty','error','timeout','unknown','capt
 LIMITATIONS = [
     '旧库直接读取；Whale 旧上传样本核查见交付状态，尚未完成正式观测投影。',
     'News 列表顺序不是 Google 自然排名；新闻结果不代表完整媒体报道数量。',
-    'Trends 是 Trending Now RSS 热门话题，不是关键词历史热度曲线或绝对搜索量。',
+    'Trends 地区热榜和关键词相对热度曲线分别记录，均不提供绝对搜索量。',
     '汇总发布时间 provided 仅表示字段存在；有效 RSS 时间须核对原始 pubDate，不等于出版者网页验证。',
     '缺失设备、精确位置、登录态、缓存状态及源观测时间均为未知。',
 ]
@@ -72,6 +72,22 @@ def _item(item, source):
                     feed_position=_rank(item.get('feed_position')),
                     published_at=_news_published_at(item), publication=news_time(item),
                     organic_position=None)
+    if item.get('data_kind') == 'keyword_interest_over_time':
+        series = item.get('numeric_trend_series')
+        if not isinstance(series, dict):
+            series = {}
+        points = series.get('points')
+        public = {key: _text(series.get(key)) for key in ('query', 'region', 'time_range', 'observed_at')}
+        public['points'] = [
+            dict(timestamp=point['timestamp'], value=point['value'],
+                 is_partial=point.get('is_partial') is True,
+                 has_data=point['has_data'] if type(point.get('has_data')) is bool else None)
+            for point in (points if isinstance(points, list) else [])[:2000]
+            if isinstance(point, dict) and isinstance(point.get('timestamp'), str)
+            and type(point.get('value')) is int and 0 <= point['value'] <= 100
+        ]
+        return dict(kind='keyword_interest_over_time', topic=_text(item.get('keyword')),
+                    numeric_trend_series=public if public['points'] else None)
     articles = item.get('articles')
     return dict(kind='trending_now_topic', topic=_text(item.get('keyword')),
                 approx_traffic_label=_text(item.get('approx_traffic')),
@@ -137,7 +153,7 @@ def _cursor_decode(value):
 
 
 def _filters(parameters):
-    allowed = {'source', 'query', 'domain', 'from', 'to', 'classification', 'limit', 'cursor',
+    allowed = {'source', 'query', 'query_match', 'domain', 'from', 'to', 'classification', 'limit', 'cursor',
                'country', 'language', 'device', 'page', 'field_contract'}
     if set(parameters) - allowed:
         raise DomainError('invalid_argument', 'Unknown legacy filter')
@@ -153,6 +169,9 @@ def _filters(parameters):
     if not 1 <= limit <= 50:
         raise DomainError('invalid_argument', 'Legacy limit must be 1–50')
     query = parameters.get('query') or None
+    query_match = parameters.get('query_match', 'contains')
+    if query_match not in ('contains', 'exact'):
+        raise DomainError('invalid_argument', 'Unsupported query match mode')
     if query and len(query) > 300:
         raise DomainError('invalid_argument', 'Query is too long')
     domain = parameters.get('domain') or None
@@ -174,7 +193,9 @@ def _filters(parameters):
     if source:
         where.append('r.source=%s'); args.append(source)
     if query:
-        where.append('r.query ILIKE %s'); args.append('%' + query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%')
+        escaped = query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        where.append('r.query ILIKE %s')
+        args.append(escaped if query_match == 'exact' else '%' + escaped + '%')
     if classification:
         where.append('r.classification=%s'); args.append(classification)
     if start:

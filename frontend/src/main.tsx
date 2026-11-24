@@ -27,8 +27,8 @@ function useDOM<T>(node: Node | null, read: () => T, options: MutationObserverIn
 }
 const activeView = () => location.hash.slice(1).split('?')[0] || 'overview';
 const groups = [
-  {label:'数据工作台',items:[['overview','首页概览',RiDashboardLine],['tasks','采集任务',RiPlayList2Line],['results','数据集',RiDatabase2Line],['research','深度搜索',RiSearchLine]]},
-  {label:'分析与监测',items:[['insights','数据分析',RiBarChartBoxLine],['analysis','搜索分析',RiLineChartLine],['monitors','关键词监测',RiRadarLine]]},
+  {label:'数据工作台',items:[['overview','首页概览',RiDashboardLine],['tasks','采集任务',RiPlayList2Line],['results','数据集',RiDatabase2Line]]},
+  {label:'分析与监测',items:[['analysis','Google 分析',RiLineChartLine],['insights','文本分析',RiBarChartBoxLine],['monitors','关键词监测',RiRadarLine]]},
   {label:'开发与管理',items:[['api','快速使用',RiPlayList2Line],['developer','API 工具',RiCodeSSlashLine]]}
 ] as const;
 function Navigation() {
