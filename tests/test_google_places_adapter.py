@@ -97,7 +97,11 @@ class PlacesAdapterTests(unittest.TestCase):
         self.assertIsNotNone(source_data)
         self.assertIn('google_maps', {item['id'] for item in json.loads(source_data.group(1))})
         self.assertIn('下载 CSV', section)
-        self.assertIn('无需填写 API 密钥', section)
+        from bs4 import BeautifulSoup
+        form = BeautifulSoup(section, 'html.parser').select_one('#mapsForm')
+        self.assertSetEqual({field['id'] for field in form.select('input,select')},
+                            {'mapsMode', 'mapsType', 'mapsQuery', 'mapsCity', 'mapsRadius',
+                             'mapsLanguage', 'mapsLat', 'mapsLng'})
         self.assertNotIn('Whale 同步</button>', section)
 
 

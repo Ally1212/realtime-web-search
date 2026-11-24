@@ -8,9 +8,9 @@ def test_home_stays_visible_while_summary_is_loading():
     code = source[source.index('const viewRead=new Map();'):source.index('// One task drawer;')]
     harness = r'''
 const assert=require('node:assert/strict');
-const classes=new Set(),attrs={};
+const classes=new Set(),attrs={};let taskInteraction=false;
 const section={classList:{add:x=>classes.add(x),remove:x=>classes.delete(x)},setAttribute:(k,v)=>attrs[k]=v};
-const $=id=>id.endsWith('View')?section:{textContent:'',setAttribute(){},innerHTML:''};
+const $=id=>id.endsWith('View')?section:{textContent:'',setAttribute(){},innerHTML:'',querySelector:()=>id==='taskRows'&&taskInteraction};
 const removed=[],productViews=[],refreshing=new Set();let refreshView,view='overview';
 let releaseSummary,latestFinished=false;
 const loadLatest=async()=>{latestFinished=true;};
@@ -26,7 +26,9 @@ CODE
  assert.equal(attrs['aria-busy'],'true');
  releaseSummary();await pending;
  assert.equal(attrs['aria-busy'],'false');
- view='tasks';refreshView();
+ view='tasks';taskInteraction=true;await refreshView();
+ assert.equal(classes.has('sf-view-loading'),false,'refresh must preserve task confirmation or focus');
+ taskInteraction=false;refreshView();
  assert.equal(classes.has('sf-view-loading'),true,'other views retain their initial loading state');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''.replace('CODE', code)
