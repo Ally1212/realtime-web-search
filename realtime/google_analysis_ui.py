@@ -202,6 +202,7 @@ def extend(page):
                         'id="insightsView" hidden data-screen-label="文本分析"', 1)
     page = page.replace('</style>', CSS + CARD_CSS + '</style>', 1)
     marker = "window.addEventListener('hashchange',showView);showView();"
-    script = Path(__file__).with_name('assets').joinpath('google-analysis.js').read_text()
+    assets = Path(__file__).with_name('assets')
+    script = (assets / 'google-research-fetch.js').read_text() + (assets / 'google-analysis.js').read_text()
     assert marker in page
     return page.replace(marker, script + '\n' + marker, 1)

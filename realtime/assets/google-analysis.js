@@ -12,8 +12,6 @@
   let applied = null;
   const startedModes = new Set();
   let historyRequested = false;
-  let researchReads = Promise.resolve();
-  let lastResearchStart = 0;
   region.replaceChildren(new Option('全部', ''), ...Array.from($('analysisRegion').options)
     .filter(option => option.value).map(option => new Option(option.text, option.value)));
   history.append(legacyHistory);
@@ -122,33 +120,18 @@
     if (response.status === 401) throw Error('登录已过期，请重新登录。');
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
-      throw Error(payload.errors?.[0]?.message || payload.error || '读取失败，请重试。');
+      throw Error(googleResearchError(payload,response.status) || payload.errors?.[0]?.message || payload.error || '读取失败，请重试。');
     }
     const payload = await response.json();
     return payload.data ?? payload;
   }
 
   function readResearch(url, signal) {
-    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-    const next = researchReads.then(async () => {
-      for (let attempt = 0; ; attempt++) {
-        signal?.throwIfAborted();
-        const delay = 240 - (performance.now() - lastResearchStart);
-        if (delay > 0) await sleep(delay);
-        signal?.throwIfAborted();
-        lastResearchStart = performance.now();
-        const siteSession = legacyHistory.dataset.auth === 'site';
-        const response = await fetch(siteSession ? url : url.replace('/api/site/research/', '/v1/google/'), {
-          signal,
-          ...(siteSession || !productKey ? {} : {headers: {Authorization: 'Bearer ' + productKey}}),
-        });
-        if (response.status !== 429 || attempt === 2) return response;
-        await response.body?.cancel();
-        await sleep(Math.min(3000, 1000 * (Number(response.headers.get('Retry-After')) || 1)));
-      }
+    const siteSession = legacyHistory.dataset.auth === 'site';
+    return googleResearchRead(siteSession ? url : url.replace('/api/site/research/', '/v1/google/'), {
+      signal,
+      ...(siteSession || !productKey ? {} : {headers:{Authorization:'Bearer ' + productKey}}),
     });
-    researchReads = next.catch(() => {});
-    return next;
   }
 
   function hostname(value) {
