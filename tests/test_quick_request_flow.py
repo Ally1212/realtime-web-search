@@ -34,6 +34,9 @@ const fetch=async(url,opt)=>{calls.push({url,body:opt.body,headers:opt.headers})
         checks = r'''
 (async()=>{
 const searches=qSearches();assert.equal(searches.length,2);
+quickRun={entries:[{params:searches[0],intent:'not-automatically-submitted',status:'pending'}],stopped:false};
+await qRunNext(true);
+assert.equal(calls.length,0);assert.equal($('quickContinue').hidden,false);
 quickRun={entries:searches.map((params,i)=>({params,intent:'intent-'+i,status:'pending'})),stopped:false};
 await qRunNext();assert.equal(calls.filter(x=>x.url==='/api/quick-request').length,1);assert.equal(quickRecords.length,1);
 submissionFailure=true;await qRunNext();assert.equal(quickRun.entries[1].status,'failed');
@@ -62,6 +65,9 @@ assert.equal(quickRun.entries[0].id,'original-job');
 assert.deepEqual(calls.slice(start).map(x=>[x.url,x.headers['Idempotency-Key']]),
   Array(2).fill(['/api/quick-request/cancel-submission','lost-receipt']));
 source.value='google_trends';$('quickQuery').value='OpenAI';$('quickTrendsMode').value='keyword';$('quickTrendsTime').value='today 12-m';
+$('quickWebAfter').value='2026-12-02';$('quickWebBefore').value='2026-12-01';
+qPreview();assert.equal($('quickWebOptions').hidden,true);
+assert.doesNotThrow(()=>qValidateLive(qSearches()));
 const keyword=qSearches();assert.equal(keyword.length,1);assert.equal(keyword[0].query,'OpenAI');assert.equal(keyword[0].trends_mode,'keyword');assert.equal(keyword[0].trends_time_range,'today 12-m');
 $('quickTrendsMode').value='regional_hotlist';const hotlist=qSearches();assert.equal(hotlist[0].query,'current trends');assert.equal(hotlist[0].trends_mode,'regional_hotlist');
 const chart=qTrendChart({numeric_trend_series:{query:'OpenAI',region:'US',time_range:'today 3-m',points:[{timestamp:'2026-11-01',value:42,is_partial:false}]}});assert.ok(chart.includes('role="img"'));assert.ok(chart.includes('关键词热度时间序列'));assert.ok(chart.includes('42'));

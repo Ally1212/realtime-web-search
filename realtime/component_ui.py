@@ -20,7 +20,6 @@ BRIDGE = r'''
   const original=renderMapPlaces;
   renderMapPlaces=function(rows){const html=original(rows);publish(rows);return html;};
  }
- document.getElementById('mapsForm')?.addEventListener('submit',()=>publish([]),true);
 })();
 '''
 

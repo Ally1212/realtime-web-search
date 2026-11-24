@@ -15,7 +15,7 @@ RESULT_SINGLE_FLIGHT_JS = r'''
 let pendingResultRead=null,pendingResultKey=null;
 const concurrentSafeResults=loadResults;
 loadResults=function(...args){
- const key=resultMode+'|'+resultOffset+'|'+resultParams().toString();
+ const key=resultMode+'|'+resultOffset+'|'+requestResultFilters().toString();
  if(pendingResultRead&&pendingResultKey===key)return pendingResultRead;
  pendingResultKey=key;
  const read=concurrentSafeResults(...args);pendingResultRead=read;
@@ -98,27 +98,16 @@ loadTasks=async function(...args){
 };
 loadResults=async function(...args){
  const seq=++reliableResultsSeq;readStatus('resultReadStatus','loading','正在读取当前筛选的数据…');
- try{await reliableLoadResults(...args);if(seq!==reliableResultsSeq)return;resultsShown=true;clearReadNotice(lastResultReadError);lastResultReadError='';readStatus('resultReadStatus','ready','数据读取于 '+new Date().toLocaleTimeString('zh-CN')+'；导出包含全部符合已应用筛选条件的结果，不限当前页。');}
+ try{await reliableLoadResults(...args);if(seq!==reliableResultsSeq)return;resultsShown=true;clearReadNotice(lastResultReadError);lastResultReadError='';readStatus('resultReadStatus','ready','数据读取于 '+new Date().toLocaleTimeString('zh-CN')+'；下载包含当前结果的全部页。');}
  catch(e){if(seq!==reliableResultsSeq)return;lastResultReadError=e.message;readStatus('resultReadStatus','error',e.message+(resultsShown?' 当前保留上次成功读取的数据，不代表最新条件。':''),()=>loadResults());if(!resultsShown)$('resultRows').innerHTML='<div class="panel empty">暂时无法读取数据，请重试；这不表示没有结果。</div>';throw e;}
  finally{if(seq===reliableResultsSeq)$('resultRows').setAttribute('aria-busy','false');}
 };
 $('overviewView').addEventListener('click',e=>{if(e.target.closest('[data-archive-retry]'))loadArchiveOverview(true);});
 
-// Export the last applied filters, not unsubmitted edits in the filter form.
-let appliedResultFilters=null;
-const reliableResultParams=resultParams;
-const reliableReadResults=loadResults;
-loadResults=async function(...args){
- const filters=reliableResultParams().toString(),seq=resultSeq+1;
- await reliableReadResults(...args);
- if(seq===resultSeq&&$('resultReadStatus').dataset.state==='ready')appliedResultFilters=filters;
-};
+// Match the displayed dataset even when the form contains unapplied edits.
 downloadExport=async function(format){
  if(exportController)return;
- if(appliedResultFilters===null){notice('请先成功读取数据，再导出当前筛选结果。',true);return;}
- if(reliableResultParams().toString()!==appliedResultFilters||$('resultReadStatus').dataset.state!=='ready'){
-  notice('筛选条件尚未成功应用，请先点击“应用”或重新读取，再导出。',true);return;
- }
+ if(appliedResultFilters===null){notice('请先读取数据，再下载结果。',true);return;}
  const p=new URLSearchParams(appliedResultFilters);p.set('mode','results');p.set('format',format);if(format==='csv')p.set('view','user');
  const controller=new AbortController();exportController=controller;
  $('exportCsv').disabled=$('exportJson').disabled=true;$('cancelExport').hidden=false;

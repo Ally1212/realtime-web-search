@@ -280,8 +280,7 @@
     controller = new AbortController();
     const signal = controller.signal;
     status.textContent = '正在读取已保存的 Google 数据…';
-    result.replaceChildren();
-    applied = null;
+    const hadResults = result.childElementCount > 0;
     const timeout = setTimeout(() => {
       if (controller.signal === signal) controller.abort('timeout');
     }, 30000);
@@ -300,6 +299,8 @@
         const suggestions = terms.length ? '<p>这些已存搜索中看到了该域名。选择关键词，查看它与竞品的可见度。</p>'
           + list(terms, term => `<button type="button" class="secondary mini" data-ga-keyword="${esc(term)}" data-ga-domain="${esc(domain)}">${esc(term)}</button>`)
           : '<p>当前范围没有查到该域名的公开网页快照。可以输入一个关键词，并把此域名设为对比目标。</p>';
+        if (signal.aborted) return;
+        applied = null;
         result.innerHTML = section('domain', `查看 ${esc(domain)} 的已存搜索`, suggestions);
         status.textContent = `已读取 ${rows.length} 次匹配请求 · 最近 ${criteria.days} 天（UTC）`;
         $('gaDomain').value = domain;
@@ -317,11 +318,11 @@
         if (!query) throw Error('当前范围没有可试用的网页关键词。');
         input.value = query;
       }
-      applied = {query, criteria, scope};
+      const next = {query, criteria, scope};
       const exact = {...filters, query, query_match:'exact'};
       const jobs = [
         ['web', 'Google Web', initialWeb, data => {
-          applied.web = data;
+          next.web = data;
           return web(data, criteria);
         }],
         ['news', 'Google News', read(observationsPath, {...exact, source:'google_news'}, signal), data => news(data, query)],
@@ -333,22 +334,27 @@
         ['images', 'Google Images', read(observationsPath, {...exact, source:'google_images', limit:'5'}, signal), data => images(data, query)],
         ['maps', 'Google Maps', maps(), value => value],
       ];
-      result.innerHTML = jobs.map(([id, title]) => `<div id="gaSource-${id}"><p class="ga-meta">正在读取 ${title}…</p></div>`).join('')
-        + '<div id="gaRequestEvidence" tabindex="-1"></div>';
       let errors = 0;
-      await Promise.all(jobs.map(async ([id, title, job, render]) => {
+      let mainErrors = 0;
+      const content = await Promise.all(jobs.map(async ([id, title, job, render]) => {
         try {
           const data = await job;
-          if (!signal.aborted) $('gaSource-' + id).innerHTML = render(data);
+          if (!signal.aborted) return render(data);
         } catch (error) {
-          if (controller.signal !== signal || (signal.aborted && signal.reason !== 'timeout')) return;
           errors++;
-          $('gaSource-' + id).innerHTML = section(id, title,
-            `<p>${esc(signal.aborted ? '读取超时，请缩小范围后重试。' : error.message)}</p>`);
+          if (id !== 'maps') mainErrors++;
+          return section(id, title, `<p>${esc(error.message)}</p>`);
         }
       }));
-      if (controller.signal === signal && (!signal.aborted || signal.reason === 'timeout'))
-        status.textContent = `最近 ${criteria.days} 天（UTC）· 已保存的搜索样本${errors ? ' · ' + errors + ' 个来源读取失败' : ''}`;
+      if (controller.signal !== signal || (signal.aborted && signal.reason !== 'timeout')) return;
+      if (signal.aborted || mainErrors === jobs.length - 1) {
+        status.textContent = hadResults ? '这次分析暂时无法读取，仍显示上次结果。' : '暂时无法读取分析，请重试。';
+        return;
+      }
+      applied = next;
+      result.innerHTML = content.join('') + '<div id="gaRequestEvidence" hidden role="status"></div>';
+      status.textContent = `最近 ${criteria.days} 天（UTC）· 已保存的搜索样本${errors ? ' · ' + errors + ' 个来源读取失败' : ''}`;
+
     } catch (error) {
       if (controller.signal === signal && (!signal.aborted || signal.reason === 'timeout'))
         status.textContent = signal.aborted ? '读取超时，请重试。' : error.message;
@@ -375,6 +381,7 @@
     if (event.target.id === 'gaScope' && applied)
       analyze(applied.query, applied.criteria, {scope:event.target.value, asKeyword:true});
   });
+  let evidenceRead = 0;
   result.addEventListener('click', async event => {
     const button = event.target.closest('button');
     if (!button) return;
@@ -383,6 +390,11 @@
       $('gaDomain').value = button.dataset.gaDomain;
       analyze(input.value, baseCriteria(), {asKeyword:true});
     } else if (button.hasAttribute('data-ga-monitor') && applied) {
+      const draft = ['monitorQuery','monitorDomain','monitorCompetitors'].some(id => $(id).value.trim());
+      if (draft) {
+        status.textContent = '监测表单里已有草稿。打开关键词监测可继续编辑。';
+        return;
+      }
       const scope = applied.web?.scope || {};
       $('monitorQuery').value = applied.query;
       $('monitorDomain').value = button.dataset.gaMonitor;
@@ -399,22 +411,31 @@
       location.hash = 'monitors';
     } else if (button.dataset.gaRequest) {
       const id = button.dataset.gaRequest;
+      const attempt = ++evidenceRead;
       const target = $('gaRequestEvidence');
+      const previous = result.querySelector('[data-ga-request][aria-expanded="true"]');
+      previous?.setAttribute('aria-expanded', 'false');
+      previous?.removeAttribute('aria-controls');
+      if (previous === button) {
+        target.hidden = true;
+        return;
+      }
+      button.setAttribute('aria-expanded', 'true');
+      button.setAttribute('aria-controls', target.id);
       button.closest('.ga-section').after(target);
-      button.disabled = true;
+      target.hidden = false;
+      target.textContent = '正在读取证据…';
+      const current = () => evidenceRead === attempt && target.isConnected && button.getAttribute('aria-expanded') === 'true';
       try {
-        const {request} = await read(requestPath + encodeURIComponent(id), null, controller.signal);
-        if (!target.isConnected) return;
+        const {request} = await read(requestPath + encodeURIComponent(id), null);
+        if (!current()) return;
         const original = (request.items || []).map(item => item.kind === 'image'
           ? '<p>' + display(item) + ' · ' + link(item.source_page_url, '来源网页') + '</p>'
           : item.kind === 'keyword_interest_over_time' ? qTrendChart(item) : grHistoryItem(item));
         target.innerHTML = section('request', '原始请求证据',
           `<p>${esc(request.query || '关键词未知')} · ${when(request.completed_at)} · ${scopeText(request.query_conditions)} · ${esc(id)}</p>${original.join('')}`);
-        target.focus();
       } catch (error) {
-        target.textContent = error.message;
-      } finally {
-        button.disabled = false;
+        if (current()) target.textContent = '证据暂时无法读取。收起后可以重新打开。';
       }
     }
   });

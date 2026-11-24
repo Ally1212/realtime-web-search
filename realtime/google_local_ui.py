@@ -9,33 +9,73 @@ CSS = r'''
 
 SECTION = r'''
 <section id="mapsView" hidden>
-<div class="panel"><div class="product-panel-head"><h2>Google Maps 商家搜索</h2><p>输入关键词、选择城市，一次查询商家资料并下载。无需填写 API 密钥。</p></div>
+<div class="panel"><div class="product-panel-head"><h2>Google Maps 商家搜索</h2><p>输入关键词、选择城市，搜索商家并下载地址、电话等资料。</p></div>
 <form id="mapsForm"><div class="maps-location-grid" style="margin-top:0;margin-bottom:12px"><label>查询方式<select id="mapsMode"><option value="text">关键词搜索</option><option value="nearby">附近商家</option></select></label><label id="mapsTypeLabel" hidden>商家类型关键词<input id="mapsType" maxlength="80" placeholder="例如 cafe、dentist、酒店"></label></div><div class="maps-form-grid"><label>商家关键词<input id="mapsQuery" maxlength="300" required placeholder="例如 coffee、牙医、共享办公"></label><label>城市<select id="mapsCity"></select></label><label>搜索半径<select id="mapsRadius"><option value="1000">1 公里</option><option value="5000" selected>5 公里</option><option value="10000">10 公里</option><option value="25000">25 公里</option></select></label><label>语言<select id="mapsLanguage"><option value="en">英语</option><option value="zh">中文</option></select></label></div>
 <details id="mapsLocationDetails" style="margin-top:14px"><summary>其他位置</summary><p class="help">自定义经纬度会覆盖城市中心；重新选择城市时清除自定义坐标。</p><div class="maps-location-grid"><label>中心点纬度<input id="mapsLat" inputmode="decimal" placeholder="-90 至 90"></label><label>中心点经度<input id="mapsLng" inputmode="decimal" placeholder="-180 至 180"></label></div></details>
 <div class="product-row" style="margin-top:18px"><button id="mapsSubmit">搜索商家</button><span id="mapsStatus" class="help" aria-live="polite"></span></div></form><p id="mapsCapability" class="help" aria-live="polite">正在检查地图查询…</p></div>
-<div class="panel"><div class="section-head"><div><h2>商家结果</h2><p class="help">按距离排序，每次最多约 21 条。缺失字段显示未知；不提供完整评论。</p></div><div class="product-row" id="mapsDownloads" hidden><button type="button" class="secondary mini" data-map-export="csv">下载 CSV</button><button type="button" class="secondary mini" data-map-export="jsonl">下载 JSONL</button></div></div><div id="mapsResults"><p class="product-empty">搜索后在这里查看名称、地址、电话、网站、评分和营业时间。</p></div></div>
+<div class="panel"><div class="section-head"><div><h2>商家结果</h2><p class="help">按距离排序。</p></div><div class="product-row" id="mapsDownloads" hidden><button type="button" class="secondary mini" data-map-export="csv">下载 CSV</button><button type="button" class="secondary mini" data-map-export="jsonl">下载 JSONL</button></div></div><div id="mapsResults"><p class="product-empty">搜索后在这里查看名称、地址、电话、网站、评分和营业时间。</p></div></div>
 </section>
 '''
 
 JS = r'''
-let mapsJob=null,mapsPoll=null,mapsPending=null,mapsInFlight=false,mapsCenters={};
+let mapsJob=null,mapsDisplayed=null,mapsPoll=null,mapsReadFailures=0,mapsPending=null,mapsInFlight=false,mapsCenters={};
 try{mapsPending=JSON.parse(localStorage.getItem('sf-maps-intent')||'null')}catch(e){}
 function mapsSaveIntent(){try{localStorage.setItem('sf-maps-intent',JSON.stringify(mapsPending))}catch(e){}}
 const mapsCities={Singapore:['新加坡','SG'],London:['伦敦','GB'],'New York':['纽约','US'],Tokyo:['东京','JP'],'Hong Kong':['香港','HK'],Taipei:['台北','TW'],Sydney:['悉尼','AU'],Berlin:['柏林','DE']};
 for(const [v,label] of Object.entries(mapsCities))$('mapsCity').add(new Option(label[0],v));
 function mapsSave(){try{localStorage.setItem('sf-maps-last',JSON.stringify(mapsJob))}catch(e){}}
-async function mapsRequest(path,payload){const r=await fetch('/api/maps/'+path,{method:payload===undefined?'GET':'POST',headers:{'X-SearchFlow-Quick':'1',...(mapsJob?.token?{'X-Quick-Token':mapsJob.token}:{}),...(payload===undefined?{}:{'Content-Type':'application/json','Idempotency-Key':mapsPending.idem})},...(payload===undefined?{}:{body:JSON.stringify(payload)})});if(!r.ok){const d=await r.json();throw Error(d.error||'地图请求失败 '+r.status)}return r;}
+async function mapsRequest(path,payload,receipt=mapsJob){const r=await fetch('/api/maps/'+path,{method:payload===undefined?'GET':'POST',headers:{'X-SearchFlow-Quick':'1',...(receipt?.token?{'X-Quick-Token':receipt.token}:{}),...(payload===undefined?{}:{'Content-Type':'application/json','Idempotency-Key':mapsPending.idem})},...(payload===undefined?{}:{body:JSON.stringify(payload)})});if(!r.ok){const d=await r.json().catch(()=>({}));const error=Error(d.error||'地图请求失败 '+r.status);error.status=r.status;throw error}return r;}
 async function mapsApi(path,payload){const r=await mapsRequest(path,payload);try{return await r.json()}catch(e){throw Error('地图服务暂不可用，请稍后重试')}}
 function mapsBusy(b){mapsInFlight=b;$('mapsSubmit').disabled=b;$('mapsSubmit').textContent=b?'正在搜索…':'搜索商家';}
-async function loadMaps(){try{const d=await mapsApi('capabilities');mapsCenters=Object.fromEntries((d.cities||[]).map(c=>[c.name,{lat:c.lat,lng:c.lng}]));$('mapsSubmit').disabled=!d.enabled||mapsInFlight;$('mapsCapability').textContent=d.enabled?'自建 Maps 查询已就绪 · 结果保留 24 小时 · CSV / JSONL 可下载':'地图查询暂不可用，请稍后重试。';if(!mapsJob){try{mapsJob=JSON.parse(localStorage.getItem('sf-maps-last')||'null')}catch(e){}if(mapsJob?.id&&mapsJob?.token){mapsBusy(true);await pollMaps(mapsJob.id)}}}catch(e){$('mapsCapability').textContent=e.message}}
+async function loadMaps(){try{const d=await mapsApi('capabilities');mapsCenters=Object.fromEntries((d.cities||[]).map(c=>[c.name,{lat:c.lat,lng:c.lng}]));$('mapsSubmit').disabled=!d.enabled||mapsInFlight;$('mapsCapability').textContent=d.enabled?'自建 Maps 查询已就绪 · 结果保留 24 小时 · CSV / JSONL 可下载':'地图查询暂不可用，请稍后重试。';if(!mapsJob){try{mapsJob=JSON.parse(localStorage.getItem('sf-maps-last')||'null')}catch(e){}if(mapsJob?.id&&mapsJob?.token){mapsBusy(true);await pollMaps(mapsJob.id,true)}}}catch(e){$('mapsCapability').textContent=e.message}}
 function mapHours(value){return value&&typeof value==='object'?Object.entries(value).map(([k,v])=>k+': '+(Array.isArray(v)?v.join(', '):String(v))).join('；'):'营业时间未知';}
 function renderMapPlaces(rows){return rows.length?`<div class="maps-results">${rows.map(p=>`<article class="maps-card"><h3>${esc(p.name||'名称未知')}</h3><p>${esc(p.formatted_address||'地址未知')}</p><div class="maps-card-meta"><span>${esc(p.primary_type||'类型未知')}</span><span>${p.rating==null?'评分未知':esc(p.rating)+' ★'}</span><span>${p.user_rating_count==null?'评价数未知':fmt(p.user_rating_count)+' 条评价'}</span><span>距中心 ${(p.distance_m/1000).toFixed(1)} 公里</span></div><p>${esc(p.national_phone_number||'电话未知')}</p><details><summary>营业时间</summary><p>${esc(mapHours(p.regular_opening_hours))}</p></details><div class="maps-card-actions" style="margin-top:14px">${safeLink(p.website_uri)?`<a class="button-link secondary mini" href="${esc(safeLink(p.website_uri))}" target="_blank" rel="noopener noreferrer">访问网站</a>`:''}<a class="button-link secondary mini" href="${esc(safeLink(p.google_maps_uri))}" target="_blank" rel="noopener noreferrer">在地图中查找</a></div></article>`).join('')}</div><p class="maps-attribution">来源：Google Maps · 自建采集 · 按距离排序</p>`:'<p class="product-empty">本次没有符合条件的商家，可更换关键词或扩大半径。</p>';}
-async function pollMaps(id){clearTimeout(mapsPoll);try{const d=await mapsApi('jobs/'+id);if(mapsJob?.id!==id)return;if(d.status==='succeeded'){const r=await mapsApi('jobs/'+id+'/results'),q=r.parameters;$('mapsMode').value=q.mode;$('mapsType').value=q.included_type||'';$('mapsMode').onchange();$('mapsQuery').value=q.query||'';if(mapsCities[q.city])$('mapsCity').value=q.city;$('mapsLanguage').value=q.language;$('mapsRadius').value=String(q.radius_m);const center=mapsCenters[q.city],custom=q.location&&(!center||q.location.lat!==center.lat||q.location.lng!==center.lng);$('mapsLat').value=custom?q.location.lat:'';$('mapsLng').value=custom?q.location.lng:'';$('mapsLocationDetails').open=!!custom;$('mapsResults').innerHTML=renderMapPlaces(r.result_cache.places);$('mapsDownloads').hidden=false;$('mapsStatus').textContent='找到 '+r.result_cache.places.length+' 家商家 · 可下载至 '+time(r.result_expires_at);mapsBusy(false);return;}if(d.status==='failed'){mapsBusy(false);$('mapsStatus').textContent='查询未完成：'+({maps_timeout:'来源响应超时',maps_upstream_failed:'来源暂不可用',worker_interrupted:'运行中断，请重新查询'}[d.error_code]||'来源未返回有效数据')+'，可重新搜索。';return;}mapsBusy(true);$('mapsStatus').textContent=d.status==='queued'?'等待执行…':'正在获取商家资料…';mapsPoll=setTimeout(()=>pollMaps(id),2500)}catch(e){mapsBusy(false);$('mapsStatus').textContent=e.message+'；刷新页面可继续查看。'}}
+function mapsRestoreForm(q){$('mapsMode').value=q.mode;$('mapsType').value=q.included_type||'';$('mapsMode').onchange();$('mapsQuery').value=q.query||'';if(mapsCities[q.city])$('mapsCity').value=q.city;$('mapsLanguage').value=q.language;$('mapsRadius').value=String(q.radius_m);const center=mapsCenters[q.city],custom=q.location&&(!center||q.location.lat!==center.lat||q.location.lng!==center.lng);$('mapsLat').value=custom?q.location.lat:'';$('mapsLng').value=custom?q.location.lng:'';$('mapsLocationDetails').open=!!custom;}
+async function pollMaps(id,restoring=false){
+ clearTimeout(mapsPoll);
+ try{
+  const d=await mapsApi('jobs/'+id);
+  if(mapsJob?.id!==id)return;
+  if(d.status==='succeeded'){
+   const r=await mapsApi('jobs/'+id+'/results');
+   if(mapsJob?.id!==id)return;
+   if(restoring&&!mapsFormEdited)mapsRestoreForm(r.parameters);
+   mapsDisplayed=mapsJob;
+   $('mapsResults').innerHTML=renderMapPlaces(r.result_cache.places);
+   $('mapsDownloads').hidden=false;
+   $('mapsStatus').textContent='找到 '+r.result_cache.places.length+' 家商家 · 可下载至 '+time(r.result_expires_at);
+   mapsReadFailures=0;
+   mapsBusy(false);
+   return;
+  }
+  if(d.status==='failed'||d.status==='cancelled'){
+   mapsBusy(false);
+   $('mapsStatus').textContent='查询未完成：'+({maps_timeout:'来源响应超时',maps_upstream_failed:'来源暂不可用',worker_interrupted:'运行中断'}[d.error_code]||'来源未返回有效数据')+'，可以重新搜索。';
+   return;
+  }
+  mapsReadFailures=0;
+  mapsBusy(true);
+  $('mapsStatus').textContent=d.status==='queued'?'正在排队…':'正在获取商家资料…';
+  mapsPoll=setTimeout(()=>pollMaps(id,restoring),2500);
+ }catch(e){
+  if(mapsJob?.id!==id)return;
+  if(![401,403,404,410].includes(e.status)){
+   mapsReadFailures++;
+   $('mapsStatus').textContent='暂时无法读取，正在重新查看同一个查询…';
+   mapsPoll=setTimeout(()=>pollMaps(id,restoring),Math.min(30000,2500*2**mapsReadFailures));
+   return;
+  }
+  mapsBusy(false);
+  $('mapsStatus').textContent='这次查询已无法读取，可以开始新查询。';
+ }
+}
+let mapsFormEdited=false;
+for(const event of ['input','change'])$('mapsForm').addEventListener(event,()=>{mapsFormEdited=true});
 function mapsFormPayload(){const mode=$('mapsMode').value,p={mode,query:$('mapsQuery').value.trim(),city:$('mapsCity').value,region:mapsCities[$('mapsCity').value][1],language:$('mapsLanguage').value,radius_m:Number($('mapsRadius').value)},lat=$('mapsLat').value.trim(),lng=$('mapsLng').value.trim();if(mode==='nearby'){p.included_type=$('mapsType').value.trim();p.query='';if(!p.included_type)throw Error('请输入商家类型关键词')}if(lat||lng){if(!lat||!lng)throw Error('请同时填写纬度和经度');const a=Number(lat),b=Number(lng);if(!Number.isFinite(a)||!Number.isFinite(b)||Math.abs(a)>90||Math.abs(b)>180)throw Error('请填写有效经纬度');p.location={lat:a,lng:b}}return p;}
 $('mapsCity').onchange=()=>{$('mapsLat').value='';$('mapsLng').value='';$('mapsLocationDetails').open=false;};
-$('mapsMode').onchange=()=>{const nearby=$('mapsMode').value==='nearby';$('mapsTypeLabel').hidden=!nearby;$('mapsQuery').required=!nearby;$('mapsQuery').disabled=nearby;$('mapsType').required=nearby;};
-$('mapsForm').onsubmit=async e=>{e.preventDefault();mapsBusy(true);clearTimeout(mapsPoll);$('mapsDownloads').hidden=true;try{const p=mapsFormPayload();if(!mapsPending||JSON.stringify(mapsPending.payload)!==JSON.stringify(p))mapsPending={payload:p,idem:'maps-ui-'+crypto.randomUUID()};mapsSaveIntent();const d=await mapsApi('jobs',p);mapsJob={id:d.id,token:d.token};mapsSave();mapsPending=null;mapsSaveIntent();$('mapsResults').innerHTML='<p class="product-empty">正在获取商家资料…</p>';await pollMaps(d.id)}catch(e){mapsBusy(false);$('mapsStatus').textContent=e.message;}};
-$('mapsDownloads').onclick=async e=>{const b=e.target.closest('[data-map-export]');if(!b||!mapsJob)return;b.disabled=true;try{const fmt=b.dataset.mapExport,r=await mapsRequest('jobs/'+mapsJob.id+'/export?format='+fmt),url=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=url;a.download='maps-'+mapsJob.id+'.'+fmt;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(e){notice(e.message,true)}finally{b.disabled=false}};
+$('mapsMode').onchange=()=>{const nearby=$('mapsMode').value==='nearby';$('mapsTypeLabel').hidden=!nearby;$('mapsQuery').closest('label').hidden=nearby;$('mapsQuery').required=!nearby;$('mapsQuery').disabled=nearby;$('mapsType').required=nearby;};
+$('mapsForm').onsubmit=async e=>{e.preventDefault();if(mapsInFlight)return;mapsBusy(true);mapsReadFailures=0;clearTimeout(mapsPoll);$('mapsStatus').textContent='正在提交查询…';try{const p=mapsFormPayload();if(!mapsPending||JSON.stringify(mapsPending.payload)!==JSON.stringify(p))mapsPending={payload:p,idem:'maps-ui-'+crypto.randomUUID()};mapsSaveIntent();const d=await mapsApi('jobs',p);mapsJob={id:d.id,token:d.token};mapsSave();mapsPending=null;mapsSaveIntent();await pollMaps(d.id)}catch(e){mapsBusy(false);$('mapsStatus').textContent=e.message;}};
+$('mapsDownloads').onclick=async e=>{const b=e.target.closest('[data-map-export]');if(!b||!mapsDisplayed)return;const receipt=mapsDisplayed;b.disabled=true;try{const fmt=b.dataset.mapExport,r=await mapsRequest('jobs/'+receipt.id+'/export?format='+fmt,undefined,receipt),url=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=url;a.download='maps-'+receipt.id+'.'+fmt;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(e){notice(e.message,true)}finally{b.disabled=false}};
 '''
 
 

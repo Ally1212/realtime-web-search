@@ -52,7 +52,7 @@ assert.equal($('quickForm').hidden,false);
     def test_restored_preset_city_does_not_become_a_hidden_coordinate_override(self):
         setup=r'''
 const assert=require('node:assert/strict');
-const elements=new Map();function $(id){if(!elements.has(id))elements.set(id,{value:'',hidden:true,disabled:false,add(){},textContent:'',innerHTML:''});return elements.get(id)}
+const elements=new Map();function $(id){if(!elements.has(id))elements.set(id,{value:'',hidden:true,disabled:false,add(){},addEventListener(){},closest(){return this},textContent:'',innerHTML:''});return elements.get(id)}
 const Option=function(){};const document={createElement(){return {click(){}}}};
 const localStorage={data:{'sf-maps-last':JSON.stringify({id:'one',token:'receipt'})},getItem(k){return this.data[k]||null},setItem(k,v){this.data[k]=v}};
 const esc=String,fmt=String,time=String,safeLink=x=>x,notice=()=>{};
@@ -67,8 +67,9 @@ $('mapsCity').value='London';$('mapsCity').onchange();
 let p=mapsFormPayload();assert.equal(p.city,'London');assert.equal(p.location,undefined);
 $('mapsLat').value='1.2';$('mapsLng').value='3.4';p=mapsFormPayload();assert.deepEqual(p.location,{lat:1.2,lng:3.4});
 $('mapsCity').value='Singapore';$('mapsCity').onchange();assert.equal(mapsFormPayload().location,undefined);
-custom=true;await pollMaps('one');assert.equal($('mapsLat').value,2);assert.equal($('mapsLng').value,3);
+custom=true;await pollMaps('one',true);assert.equal($('mapsLat').value,2);assert.equal($('mapsLng').value,3);
 $('mapsCity').value='London';$('mapsCity').onchange();assert.equal(mapsFormPayload().location,undefined);
+$('mapsQuery').value='editable draft';await pollMaps('one');assert.equal($('mapsQuery').value,'editable draft');assert.equal($('mapsCity').value,'London');
 $('mapsMode').value='nearby';$('mapsMode').onchange();$('mapsType').value='dentist';p=mapsFormPayload();assert.equal(p.mode,'nearby');assert.equal(p.included_type,'dentist');assert.equal(p.city,'London');assert.equal($('mapsQuery').disabled,true);
 console.log('city switching, preset restoration, custom coordinates and nearby mode verified');
 })().catch(e=>{console.error(e);process.exit(1)});

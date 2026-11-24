@@ -70,6 +70,9 @@ PAGE = '''<!doctype html>
       </div>
       <label><span id="queryLabel">Keywords</span><input id="query" name="q" maxlength="300" required></label>
       <button id="submit" class="action" data-text="search">Search</button>
+      <button id="cancel" type="button" class="quiet" data-text="cancel" hidden>Cancel search</button>
+      <button id="retry" type="button" class="quiet" data-text="retry" hidden>Check progress</button>
+      <p id="searchScope" hidden></p>
     </form>
     <section id="output" aria-labelledby="resultTitle" hidden>
       <div class="result-header">
@@ -79,6 +82,7 @@ PAGE = '''<!doctype html>
           <a id="jsonl" data-text="jsonl">Download JSONL</a>
         </div>
       </div>
+      <p id="resultContext" hidden></p>
       <ul id="rows"></ul>
       <details id="raw" hidden><summary data-text="json">View JSON</summary><pre id="payload"></pre></details>
     </section>
