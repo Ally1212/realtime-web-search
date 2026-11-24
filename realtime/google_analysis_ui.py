@@ -18,7 +18,7 @@ SECTION = '''
     <button type="button" class="secondary mini" id="gaMixedExample" aria-pressed="false">AI coding assistants</button>
     <button type="button" class="secondary mini" id="gaWebExample" aria-pressed="false">china</button>
   </div>
-  <details class="ga-options">
+  <details class="ga-options" open>
     <summary>更多筛选</summary>
     <div class="ga-filters">
       <label>语言<select id="gaLanguage"><option value="">全部</option><option value="en">英语</option><option value="zh">中文</option></select></label>
@@ -163,6 +163,28 @@ CARD_CSS = '''
 #googleAnalysis .ga-query,#googleAnalysis #gaForm button{grid-column:1/-1;justify-self:stretch}
 #googleAnalysis .ga-findings li{display:block}
 #googleAnalysis .ga-findings button{margin-top:6px}}
+
+/* Shared control sizing for Analysis and its embedded forms. */
+#analysisView{--ga-control-height:44px}
+#googleAnalysis .ga-overview{grid-template-columns:minmax(0,1fr)}
+#googleAnalysis .ga-overview > *{min-width:0}
+#analysisView :is(#gaForm,.ga-filters,#analysisForm,#rankingForm,#grHistoryFilters,#grCompareForm){align-items:end}
+#analysisView :is(#gaForm,.ga-filters,#analysisForm,#rankingForm,#grHistoryFilters,#grCompareForm)>label{
+  display:grid;gap:5px;min-width:0;margin:0
+}
+#analysisView :is(#gaForm,.ga-filters,#analysisForm,#rankingForm,#grHistoryFilters,#grCompareForm)>label>:is(input,select),
+#analysisView :is(#gaForm,#analysisForm,#grHistoryFilters)>button{
+  box-sizing:border-box;block-size:var(--ga-control-height);min-block-size:var(--ga-control-height);margin:0;align-self:end
+}
+#analysisView :is(.ga-entry,.ga-modes,.ga-tools,.gr-actions,.analysis-tabs){align-items:center;gap:8px}
+#analysisView :is(.ga-entry,.ga-modes,.ga-tools,.gr-actions,.analysis-tabs)>button{margin:0;min-block-size:40px}
+#analysisView #grHistoryFilters{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,145px),1fr))}
+#analysisView #grHistoryFilters>button{width:100%;min-width:0}
+#googleAnalysis .ga-example-mark{display:inline-block;margin-block-end:5px;color:var(--ga-accent);font-size:.8rem;font-weight:650}
+@container (width < 680px){
+  #googleAnalysis #gaForm{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #googleAnalysis #gaForm .ga-query,#googleAnalysis #gaForm>button{grid-column:1/-1;justify-self:stretch}
+}
 '''
 
 def extend(page):
@@ -170,10 +192,10 @@ def extend(page):
     start = page.index(analysis) + len(analysis)
     end = page.index('<section id="monitorsView"', start)
     close = page.rindex('</section>', start, end)
-    existing = page[start:close]
+    existing = page[start:close].replace("<details>", "<details open>")
     page = (page[:start] + SECTION
-            + '<details class="ga-disclosure" id="gaReports"><summary>高级分析与数据总览</summary>'
-            + existing + '</details><details class="ga-disclosure" id="gaHistory"><summary>搜索历史与证据</summary></details>'
+            + '<details class="ga-disclosure" id="gaReports" open><summary>高级分析与数据总览</summary>'
+            + existing + '</details><details class="ga-disclosure" id="gaHistory" open><summary>搜索历史与证据</summary></details>'
             + page[close:])
     page = page.replace('<a href="#research" data-view="research"', '<a hidden href="#research" data-view="research"', 1)
     page = page.replace('id="insightsView" hidden data-screen-label="数据分析"',

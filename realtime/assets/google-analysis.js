@@ -10,11 +10,14 @@
   const advanced = $('gaReports');
   let controller;
   let applied = null;
+  let initialized = false;
+  let historyRequested = false;
   let researchReads = Promise.resolve();
   let lastResearchStart = 0;
   region.replaceChildren(new Option('全部', ''), ...Array.from($('analysisRegion').options)
     .filter(option => option.value).map(option => new Option(option.text, option.value)));
   history.append(legacyHistory);
+  legacyHistory.querySelectorAll('details').forEach(detail => { detail.open = true; });
   for (const [key, label] of [['analysis', 'Google 分析'], ['insights', '文本分析']]) {
     const link = document.querySelector('aside [data-view="' + key + '"]');
     if (link) link.lastChild.textContent = label;
@@ -34,7 +37,7 @@
   };
   const scopeText = value => [value?.country_code || value?.region, value?.language_code || value?.language, value?.device]
     .map(part => esc(part || '未知')).join(' / ');
-  const evidence = (label, html) => `<details><summary>${esc(label)}</summary>${html}</details>`;
+  const evidence = (label, html) => `<details open><summary>${esc(label)}</summary>${html}</details>`;
   const records = (label, html) => `<div class="ga-records" role="region" aria-label="${esc(label)}" tabindex="0">${html}</div>`;
   const list = (rows, render, css = 'ga-evidence') => `<ul class="${css}">${rows.map(row => '<li>' + render(row) + '</li>').join('')}</ul>`;
   const icon = name => grIcon(({web:'search',news:'dataset',trends:'trend',images:'dataset',maps:'location',request:'dataset'})[name]||'analysis') || grIcon('analysis');
@@ -283,13 +286,13 @@
        <p class="ga-meta">${when(rows.at(-1)?.completed_at)} 至 ${when(rows[0]?.completed_at)} · 地区 ${esc([...new Set(rows.map(row => row.query_conditions?.country_code || '未知'))].join(' / '))}
        ${data.has_more ? ' · 当前读取最近一批最多 30 次搜索记录' : ''}</p>
        ${topics.length ? '<h4>' + '标题中反复出现的词组' + '</h4>' +
-         topics.map(([name, group], i) => `<details id="gaTopic-${i}"><summary>${esc(name)} · ${group.length} / ${unique.length} 条</summary>${records(name,list(group, newsEvidence))}</details>`).join('') : ''}
-       ${notable ? `<details id="gaNewsChange"><summary>两次新闻样本对比</summary><p>${when(notable.prior.completed_at)} → ${when(notable.current.completed_at)} · ${esc(notable.market)}</p>
+         topics.map(([name, group], i) => `<details open id="gaTopic-${i}"><summary>${esc(name)} · ${group.length} / ${unique.length} 条</summary>${records(name,list(group, newsEvidence))}</details>`).join('') : ''}
+       ${notable ? `<details open id="gaNewsChange"><summary>两次新闻样本对比</summary><p>${when(notable.prior.completed_at)} → ${when(notable.current.completed_at)} · ${esc(notable.market)}</p>
           <p>较早样本 ${notable.before.length} / ${notable.oldTotal}，最新样本 ${notable.group.length} / ${notable.newTotal}。</p>
           <h4>最新样本中匹配的报道</h4>${list(notable.group,newsEvidence)}
           ${notable.before.length?'<h4>较早样本中匹配的报道</h4>'+list(notable.before,newsEvidence):''}
           ${[notable.prior,notable.current].map(row=>`<button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看 ${when(row.completed_at)} 的原始采样</button>`).join(' ')}</details>` : ''}
-       ${top.length ? '<h4>常见报道来源</h4>' + top.map(([name, group],i) => `<details id="gaPublisher-${i}"><summary>${esc(name)} · ${group.length} / ${entries.length} 条记录</summary>${records(name,list(group,newsEvidence))}</details>`).join('') : ''}
+       ${top.length ? '<h4>常见报道来源</h4>' + top.map(([name, group],i) => `<details open id="gaPublisher-${i}"><summary>${esc(name)} · ${group.length} / ${entries.length} 条记录</summary>${records(name,list(group,newsEvidence))}</details>`).join('') : ''}
        ${unique.length ? evidence('不同标题与摘要',records('新闻标题与摘要',list(unique, newsEvidence))) : ''}
        ${evidence('采样请求', records('新闻采样请求',list(rows, row => `${when(row.completed_at)} · ${esc(grHistoryStatus(row.classification))}
          <button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看原始请求</button>`)))}`);
@@ -458,7 +461,7 @@
           points.map(p=>[p.timestamp,p.value,p.is_partial?'未完成':p.value==null?'缺失':'有效记录']))) +
         (publicSeries ? `<button type="button" class="secondary mini" data-ga-request="${esc(publicSeries.row.request_id)}">查看原始热度请求</button>` : '')
         : '<p>当前条件下没有可读取的关键词热度曲线。</p>') +
-      (matches.length ? `<details id="gaTrendHotlist"><summary>地区热榜记录</summary>` + records('地区热榜记录',list(matches, ({item, row}) =>
+      (matches.length ? `<details open id="gaTrendHotlist"><summary>地区热榜记录</summary>` + records('地区热榜记录',list(matches, ({item, row}) =>
         `${esc(item.topic)} · ${scopeText(row.query_conditions)} · ${when(row.completed_at)} · ${esc(item.approx_traffic_label || '搜索量标记未知')}
          <button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看原始请求</button>`)) + '</details>'
         : '<p class="ga-meta">最近读取的最多 25 份地区热榜快照没有匹配话题。</p>'));
@@ -569,7 +572,7 @@
 
   function reportHeading(report) {
     const {query, criteria, mode} = report;
-    return `<header class="ga-view-heading"><h2 id="gaResultHeading">${esc(query)}</h2>
+    return `<header class="ga-view-heading">${report.example ? '<span class="ga-example-mark">示例 · 已保存的记录</span>' : ''}<h2 id="gaResultHeading">${esc(query)}</h2>
       <p class="ga-meta">近 ${esc(criteria.days)} 天 · ${esc(regionNames[criteria.region] || criteria.region || '全部地区')} · 已保存的${mode === 'website' ? '网页' : '搜索'}快照</p></header>`;
   }
 
@@ -687,8 +690,8 @@
       <div><h3>这组数据有什么变化</h3><ul class="ga-findings" id="gaFindings"></ul>
       <div id="gaSourceStates"></div></div><div id="gaLeadChart" hidden></div></div>
       ${resultActions(true)}
-      <details class="ga-disclosure" id="gaAllData"><summary>图表和原始证据</summary>
-      ${Object.entries(sourceNames).map(([id,label]) => `<details class="ga-source-details" id="gaDetail-${id}" hidden><summary>${label}</summary>
+      <details open class="ga-disclosure" id="gaAllData"><summary>图表和原始证据</summary>
+      ${Object.entries(sourceNames).map(([id,label]) => `<details open class="ga-source-details" id="gaDetail-${id}" hidden><summary>${label}</summary>
         <div class="ga-charts" id="gaChart-${id}"></div><div id="gaSource-${id}" tabindex="-1"></div></details>`).join('')}</details>`;
   }
 
@@ -729,7 +732,7 @@
     if (applied === report) showSourceState(report);
   }
 
-  async function analyze(text, criteria = baseCriteria(), {scope = '', reportMode = mode} = {}) {
+  async function analyze(text, criteria = baseCriteria(), {scope = '', reportMode = mode, example = false} = {}) {
     const query = reportMode === 'website' ? hostname(text) : text;
     if (!query) { loading('请输入有效的网站域名，例如 example.com。'); return; }
     for (const [id,term] of Object.entries(examples)) $(id).setAttribute('aria-pressed',String(lower(term)===lower(query)));
@@ -741,7 +744,7 @@
     cutoff.setUTCDate(cutoff.getUTCDate() - Number(criteria.days) + 1);
     const filters = {from:cutoff.toISOString(),limit:'30',
       ...(criteria.region && {country:lower(criteria.region)}), ...(criteria.language && {language:lower(criteria.language)})};
-    const report = {query, criteria, scope, mode:reportMode, from:filters.from, outputs:new Map(), states:new Map()};
+    const report = {query, criteria, scope, mode:reportMode, example, from:filters.from, outputs:new Map(), states:new Map()};
     pending = report;
     result.querySelector('.ga-previous')?.remove();
     if (applied) {
@@ -820,12 +823,12 @@
     $('gaDevice').value = '';
     region.value = '';
     $('gaLanguage').value = '';
-    analyze(query);
+    analyze(query,baseCriteria(),{example:true});
   }
   for (const [id,query] of Object.entries(examples)) $(id).onclick = () => loadExample(query);
   result.addEventListener('change', event => {
     if (event.target.id === 'gaScope' && applied)
-      analyze(applied.query, applied.criteria, {scope:event.target.value});
+      analyze(applied.query, applied.criteria, {scope:event.target.value,example:applied.example});
   });
 
   function exportAnalysis(format) {
@@ -938,13 +941,18 @@
   });
 
   advanced.addEventListener('toggle', () => {
-    if (advanced.open && !analysisLoaded) loadAnalysis().catch(error => notice(error.message, true));
+    if (view === 'analysis' && advanced.open && !analysisLoaded &&
+        $('analysisView').getAttribute('aria-busy') !== 'true') loadAnalysis().catch(error => notice(error.message,true));
   });
-  history.addEventListener('toggle', () => {
-    if (!history.open) return;
-    legacyHistory.hidden = false;
-    loadGoogleResearch().catch(error => notice(error.message, true));
-  });
+  function loadOpenHistory() {
+    if (view !== 'analysis' || !history.open || historyRequested) return;
+    historyRequested = true;
+    loadGoogleResearch().catch(error => {
+      historyRequested = false;
+      notice(error.message,true);
+    });
+  }
+  history.addEventListener('toggle',loadOpenHistory);
   const originalLoad = loadProductView;
   loadProductView = async function () {
     if (view !== 'analysis' || advanced.open) return originalLoad();
@@ -957,6 +965,11 @@
       $('pageTitle').textContent = 'Google 分析';
       $('pageSubtitle').textContent = '查看已保存的搜索变化与依据';
       legacyHistory.hidden = false;
+      if (!initialized) {
+        initialized = true;
+        if (!input.value.trim() && !pending && !applied) loadExample(examples.gaMixedExample);
+      }
+      loadOpenHistory();
     } else if (view === 'insights') {
       $('pageTitle').textContent = '文本分析';
     }
