@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const demo = 'sodium ion battery research';
+  const examples = {gaMixedExample:'AI coding assistants',gaWebExample:'china'};
   const input = $('gaInput');
   const result = $('gaResult');
   const status = $('gaStatus');
@@ -35,11 +35,82 @@
   const scopeText = value => [value?.country_code || value?.region, value?.language_code || value?.language, value?.device]
     .map(part => esc(part || '未知')).join(' / ');
   const evidence = (label, html) => `<details><summary>${esc(label)}</summary>${html}</details>`;
+  const records = (label, html) => `<div class="ga-records" role="region" aria-label="${esc(label)}" tabindex="0">${html}</div>`;
   const list = (rows, render, css = 'ga-evidence') => `<ul class="${css}">${rows.map(row => '<li>' + render(row) + '</li>').join('')}</ul>`;
-  const section = (id, title, body) => `<section class="ga-section" aria-labelledby="gaTitle-${id}"><h3 id="gaTitle-${id}">${title}</h3>${body}</section>`;
+  const icon = name => grIcon(({web:'search',news:'dataset',trends:'trend',images:'dataset',maps:'location',request:'dataset'})[name]||'analysis') || grIcon('analysis');
+  const section = (id, title, body) => `<section class="ga-section" aria-labelledby="gaTitle-${id}"><h3 class="ga-heading-icon" id="gaTitle-${id}">${icon(id)}${title}</h3>${body}</section>`;
   const display = (item, url = item.publisher_url || item.url) => link(url, item.title || item.topic || url);
   const observationsPath = '/api/site/research/legacy-observations';
   const requestPath = '/api/site/research/legacy-analysis/requests/';
+  const chartColors = ['#276657', '#355c9a', '#9a4e36', '#705891'];
+
+  function publish(source, {finding, chart = '', charts = [], data, metrics = []}) {
+    applied.outputs.set(source, {finding, data, metrics});
+    const group = $('gaChart-' + source);
+    if (!group) return;
+    group.innerHTML = [chart,...charts].filter(Boolean).map(content => `<article class="ga-chart">${content}</article>`).join('');
+    if (source === 'trends' && chart) {
+      $('gaLeadChart').innerHTML = `<article class="ga-chart">${chart}</article>`;
+      $('gaLeadChart').hidden = false;
+    }
+  }
+
+  function reportChart(title, caption, content, source = 'analysis') {
+    const labels={web:'Google 网页',news:'Google 新闻',trends:'Google 趋势',images:'Google 图片',maps:'Google 地图'};
+    return `<header class="ga-card-header"><h3 class="ga-heading-icon">${icon(source)}${esc(title)}</h3>
+      ${labels[source]?`<span class="ga-card-source">${labels[source]}</span>`:''}</header><p class="ga-meta">${esc(caption)}</p>${content}`;
+  }
+
+  function bars(rows, denominator) {
+    if (!rows.length || denominator <= 0) return '';
+    return `<ul class="ga-bars">${rows.map(({label, count, target}) =>
+      `<li><div class="ga-bar-label">${target
+        ? `<button type="button" class="secondary mini" data-ga-jump="${esc(target)}">${esc(label)}</button>`
+        : `<span>${esc(label)}</span>`}<strong class="ga-bar-number">${count} / ${denominator}</strong></div>
+        <span class="ga-bar-track" aria-hidden="true"><span class="ga-bar-fill" style="width:${Math.min(100, count / denominator * 100)}%"></span></span></li>`).join('')}</ul>`;
+  }
+
+  function dataTable(title, headers, rows) {
+    return `<div class="ga-table" role="region" aria-label="${esc(title)}" tabindex="0">
+      <table><caption>${esc(title)}</caption><thead><tr>${headers.map(label => '<th scope="col">' + esc(label) + '</th>').join('')}</tr></thead>
+      <tbody>${rows.map(([label,...values]) => '<tr><th scope="row">' + esc(label) + '</th>' +
+        values.map(value => '<td>' + esc(value ?? '未观测') + '</td>').join('') + '</tr>').join('')}</tbody></table></div>`;
+  }
+
+  function lineChart(caption, stamps, series, lowerBound, upperBound, {reversed = false, connected = true} = {}) {
+    const times = stamps.map(stamp => Date.parse(stamp));
+    const range = Math.max(1, times.at(-1) - times[0]);
+    const x = i => 51 + (times[i] - times[0]) / range * 490;
+    const y = value => 15 + (reversed ? value - lowerBound : upperBound - value) / Math.max(1, upperBound-lowerBound) * 108;
+    const lines = series.map(({values}, index) => values.map((value, i) => {
+      if (!Number.isFinite(value)) return '';
+      const previous = values[i-1];
+      const color = chartColors[index];
+      return (connected&&Number.isFinite(previous) ? `<line x1="${x(i-1)}" y1="${y(previous)}" x2="${x(i)}" y2="${y(value)}" stroke="${color}" stroke-width="2.4"/>` : '') +
+        `<circle cx="${x(i)}" cy="${y(value)}" r="2.2" fill="${color}"/>`;
+    }).join('')).join('');
+    const grid = (reversed ? [...new Set([lowerBound,2,3,5,upperBound])].filter(value=>value>=lowerBound&&value<=upperBound) : [lowerBound,upperBound]).map(value => `<line x1="51" y1="${y(value)}" x2="541" y2="${y(value)}" stroke="#dde3e8"/><text x="44" y="${y(value)+4}" text-anchor="end" font-size="12">${value}</text>`).join('');
+    const sameDay = stamps.length && stamps.every(stamp=>stamp.slice(0,10)===stamps[0].slice(0,10));
+    const tickIndexes = stamps.length <= 1 ? [0] : [0,stamps.length-1];
+    if (stamps.length>2) {
+      const middle = Math.floor(stamps.length/2);
+      if (x(middle)-x(0)>120 && x(stamps.length-1)-x(middle)>120) tickIndexes.splice(1,0,middle);
+    }
+    const tickLabel = stamp => {
+      const utc = new Date(stamp).toISOString();
+      if (sameDay) return utc.slice(11,19);
+      const sharedDay = tickIndexes.filter(i=>stamps[i]?.slice(0,10)===stamp.slice(0,10)).length>1;
+      return utc.slice(5,10) + (sharedDay?' '+utc.slice(11,16):'');
+    };
+    const dateLabels = tickIndexes.filter(i=>stamps[i]).map(i=>{
+      const anchor = i===0?'start':i===stamps.length-1?'end':'middle';
+      return `<text x="${x(i)}" y="146" text-anchor="${anchor}" font-size="15">${esc(tickLabel(stamps[i]))}</text>`;
+    }).join('');
+    const labels = series.map(({label}, index) => `<strong style="color:${chartColors[index]}">${esc(label)}</strong>`).join(' · ');
+    return `<figure><figcaption>${esc(caption)} · ${sameDay ? esc(stamps[0].slice(0,10))+' UTC · ' : 'UTC · '}${labels}</figcaption><svg viewBox="0 0 560 155" aria-hidden="true">${grid}${dateLabels}${lines}</svg></figure>` +
+      dataTable('采样明细（UTC）', ['观测时间',...series.map(item=>item.label)],
+        stamps.map((stamp,i)=>[(sameDay ? new Date(stamp).toISOString().slice(11,19) : dateTime.format(new Date(stamp))),...series.map(item=>item.values[i])]));
+  }
 
   async function read(path, params, signal) {
     const url = path + (params ? '?' + new URLSearchParams(params) : '');
@@ -99,7 +170,7 @@
       <button type="button" class="secondary mini" data-ga-request="${esc(entry.row.request_id)}">查看原始请求</button>`;
   }
 
-  function repeatedPhrases(entries, query) {
+  function repeatedPhrases(entries, query, minimum = 2, limit = 5) {
     const ignored = new Set(('a an and are as at be by for from has how in is it of on or that the their this to was were what when which will with you your ' + lower(query)).split(/[^\p{L}\p{N}]+/u));
     const phrases = new Map();
     const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, {granularity:'word'}) : null;
@@ -118,20 +189,11 @@
         phrases.get(phrase).push(entry);
       }
     }
-    return [...phrases].filter(([, group]) => group.length >= 2)
-      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).slice(0, 5);
+    return [...phrases].filter(([, group]) => group.length >= minimum)
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).slice(0, limit);
   }
 
-  const demoTopics = [
-    ['产业与商业化', /\b(?:commercial\w*|industr(?:y|ial)|manufactur\w*|production line|gigafactor\w*)\b/i],
-    ['储能应用', /\b(?:energy storage|grid storage|stationary storage|grid.scale)\b/i],
-    ['循环与寿命', /\b(?:cycle life|cycling stability|long life|lifespan|capacity retention)\b/i],
-  ];
-
-  function news(data, query) {
-    const rows = scopedRows(data, query);
-    if (!rows.length) return section('news', 'Google News · 新闻简报', '<p>当前范围没有找到该关键词的公开新闻快照。</p>');
-    const entries = rows.flatMap(row => (row.items || []).map(item => ({item, row})));
+  function distinctNews(entries) {
     const distinct = new Map();
     for (const entry of entries) {
       const {title, snippet} = entry.item;
@@ -140,7 +202,42 @@
         if (!distinct.has(key)) distinct.set(key, entry);
       }
     }
-    const unique = [...distinct.values()];
+    return [...distinct.values()];
+  }
+
+  function newsComparison(rows, query) {
+    const key = row => {
+      const {country_code, language_code} = row.query_conditions || {};
+      const defined = value => value && lower(value) !== 'unknown';
+      return defined(country_code) && defined(language_code) ? lower(country_code) + '/' + lower(language_code) : '';
+    };
+    const eligible = rows.filter(row => row.classification === 'results' && key(row) &&
+      !['hit','cache_hit','cached'].includes(lower(row.cache_status)));
+    eligible.sort((a,b) => Date.parse(b.completed_at) - Date.parse(a.completed_at));
+    const current = eligible[0];
+    const prior = current && eligible.find(row => key(row) === key(current) &&
+      Date.parse(current.completed_at) - Date.parse(row.completed_at) >= 86400000);
+    if (!prior) return null;
+    const texts = row => distinctNews((row.items || []).map(item => ({item,row})));
+    const earlier = texts(prior), later = texts(current);
+    if (earlier.length < 5 || later.length < 5) return null;
+    const topics = entries => repeatedPhrases(entries,query,1,Infinity);
+    const older = new Map(topics(earlier));
+    const next = topics(later).map(([name,group]) => ({name, group, before:older.get(name) || []}))
+      .filter(({group,before}) => group.length >= 2 && group.length/later.length - before.length/earlier.length >= .15)
+      .sort((a,b) => (b.group.length-a.group.length)/later.length - (b.before.length-a.before.length)/earlier.length)[0];
+    return next ? {...next, current, prior, oldTotal:earlier.length, newTotal:later.length, market:key(current)} : null;
+  }
+
+  function news(data, query) {
+    const rows = scopedRows(data, query);
+    const insufficient = {kind:'insufficient', title:'报道样本不足', detail:'这个范围内还没有可用的新闻主题。', target:'gaSource-news'};
+    if (!rows.length) {
+      publish('news', {finding:insufficient, data:[]});
+      return section('news', 'Google News · 新闻简报', '<p>当前范围没有找到该关键词的公开新闻快照。</p>');
+    }
+    const entries = rows.flatMap(row => (row.items || []).map(item => ({item, row})));
+    const unique = distinctNews(entries);
     const publishers = new Map();
     for (const entry of entries) {
       const key = entry.item.publisher;
@@ -149,25 +246,60 @@
       publishers.get(key).push(entry);
     }
     const top = [...publishers].sort((a, b) => b[1].length - a[1].length).slice(0, 5);
-    const isDemo = lower(query) === demo;
-    const topics = isDemo ? demoTopics.map(([name, pattern]) => [name, unique.filter(({item}) =>
-      pattern.test((item.title || '') + ' ' + (item.snippet || '')))]).filter(([, group]) => group.length)
-      : repeatedPhrases(unique, query);
+    const topics = repeatedPhrases(unique, query);
+    topics.sort((a,b) => b[1].length-a[1].length);
+    const notable = newsComparison(rows, query);
+    const themes = topics.map(([label,group], i)=>({label,count:group.length,target:'gaTopic-'+i}));
+    const finding = notable ? {
+      kind:'detected', title:notable.before.length ? `「${notable.name}」在最新新闻样本中更常见` : `最新新闻样本出现「${notable.name}」`,
+      detail:`${notable.market} · 提及 ${notable.before.length}/${notable.oldTotal} → ${notable.group.length}/${notable.newTotal} 条 · 两份采样相隔至少一天`,
+      action:'查看新增报道，判断是否值得继续追踪。', target:'gaNewsChange',
+    } : topics.length ? {
+      kind:'detected', title:`报道提到「${topics[0][0]}」`,
+      detail:`${topics[0][1].length} / ${unique.length} 条去重文本 · 来自 ${rows.length} 次新闻采样`,
+      action:'打开相关标题和摘要，找出值得调研的具体问题。', target:'gaTopic-0',
+    } : insufficient;
+    const publishersChart = top.map(([label,group],i)=>({label,count:group.length,target:'gaPublisher-'+i}));
+    const newsDays = new Map();
+    for (const row of rows) {
+      if (!Number.isFinite(Date.parse(row.completed_at))) continue;
+      const day = new Date(row.completed_at).toISOString().slice(0,10);
+      newsDays.set(day,(newsDays.get(day)||0)+1);
+    }
+    const dayCounts = [...newsDays].sort(([a],[b])=>a.localeCompare(b)).slice(-12).map(([label,count])=>({label,count}));
+    publish('news', {finding, data:{rows, topics:themes, comparison:notable},
+      chart:themes.length ? reportChart('新闻主题', '提及数 / 去重标题与摘要总数。', bars(themes,unique.length),'news') : '',
+      charts:[
+        top.length ? reportChart('报道来源', '按保存记录计数，同一报道可能出现在多次采样中。',bars(publishersChart,entries.length),'news') : '',
+        dayCounts.length ? reportChart('新闻采样日期', '每个 UTC 日期保存的采样次数。',bars(dayCounts,rows.length),'news') : '',
+      ],
+      metrics:[...themes.map(theme=>[theme.label,theme.count,unique.length,'提及 / 去重文本']),
+        ...top.map(([name,group])=>[name,group.length,entries.length,'记录 / 保存记录']),
+        ...dayCounts.map(({label,count})=>[label,count,rows.length,'新闻采样 / 本次读取的采样数'])],
+    });
     const successful = rows.filter(row => row.classification === 'results' || row.classification === 'empty').length;
     return section('news', 'Google News · 新闻简报',
       `<p class="ga-facts"><strong>${successful} / ${rows.length} 次成功采样</strong><span>${entries.length} 条保存记录</span><span>${unique.length} 条不同标题／摘要</span></p>
        <p class="ga-meta">${when(rows.at(-1)?.completed_at)} 至 ${when(rows[0]?.completed_at)} · 地区 ${esc([...new Set(rows.map(row => row.query_conditions?.country_code || '未知'))].join(' / '))}
-       ${data.has_more ? ' · 当前只读最近一批最多 20 次搜索记录' : ''}</p>
-       ${topics.length ? '<h4>' + (isDemo ? '报道主题 · 按词组匹配标题与摘要' : '标题中反复出现的词组') + '</h4>' +
-         topics.map(([name, group]) => evidence(`${name} · ${group.length} / ${unique.length} 条`, list(group, newsEvidence))).join('') : ''}
-       ${top.length ? '<h4>常见报道来源</h4>' + top.map(([name, group]) => evidence(`${name} · ${group.length} / ${entries.length} 条记录`, list(group, newsEvidence))).join('') : ''}
-       ${unique.length ? evidence('查看不同标题与摘要', list(unique, newsEvidence)) : ''}
-       ${evidence('查看采样请求', list(rows, row => `${when(row.completed_at)} · ${esc(grHistoryStatus(row.classification))}
-         <button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看原始请求</button>`))}`);
+       ${data.has_more ? ' · 当前读取最近一批最多 30 次搜索记录' : ''}</p>
+       ${topics.length ? '<h4>' + '标题中反复出现的词组' + '</h4>' +
+         topics.map(([name, group], i) => `<details id="gaTopic-${i}"><summary>${esc(name)} · ${group.length} / ${unique.length} 条</summary>${records(name,list(group, newsEvidence))}</details>`).join('') : ''}
+       ${notable ? `<details id="gaNewsChange"><summary>两次新闻样本对比</summary><p>${when(notable.prior.completed_at)} → ${when(notable.current.completed_at)} · ${esc(notable.market)}</p>
+          <p>较早样本 ${notable.before.length} / ${notable.oldTotal}，最新样本 ${notable.group.length} / ${notable.newTotal}。</p>
+          <h4>最新样本中匹配的报道</h4>${list(notable.group,newsEvidence)}
+          ${notable.before.length?'<h4>较早样本中匹配的报道</h4>'+list(notable.before,newsEvidence):''}
+          ${[notable.prior,notable.current].map(row=>`<button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看 ${when(row.completed_at)} 的原始采样</button>`).join(' ')}</details>` : ''}
+       ${top.length ? '<h4>常见报道来源</h4>' + top.map(([name, group],i) => `<details id="gaPublisher-${i}"><summary>${esc(name)} · ${group.length} / ${entries.length} 条记录</summary>${records(name,list(group,newsEvidence))}</details>`).join('') : ''}
+       ${unique.length ? evidence('不同标题与摘要',records('新闻标题与摘要',list(unique, newsEvidence))) : ''}
+       ${evidence('采样请求', records('新闻采样请求',list(rows, row => `${when(row.completed_at)} · ${esc(grHistoryStatus(row.classification))}
+         <button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看原始请求</button>`)))}`);
   }
 
   function web(data, criteria) {
-    if (!data.samples) return section('web', 'Google Web · 网站可见度', '<p>当前关键词与条件下没有可用的公开网页快照。</p>');
+    if (!data.samples) {
+      publish('web',{finding:{kind:'insufficient',title:'网页排名样本不足',detail:'当前范围没有查到这个词的公开网页快照。',target:'gaSource-web'},data});
+      return section('web', 'Google Web · 网站可见度', '<p>当前关键词与条件下没有可用的公开网页快照。</p>');
+    }
     const scope = data.scope || {};
     const top = data.top10 || {};
     const pair = top.pair || [];
@@ -176,6 +308,49 @@
     const monitor = (target) => `<button type="button" class="secondary mini" data-ga-monitor="${esc(target)}">加入关键词监测</button>`;
     const snapshots = data.timeline || [];
     const requestedDomain = criteria.domain || data.auto_domains?.[0] || '';
+    const tracked = (data.domains || []).slice(0,4);
+    const ranks = snapshots.filter(row=>Number.isFinite(Date.parse(row.fetched_at))).slice(-24);
+    const rankSeries = tracked.map(({domain})=>({label:domain, values:ranks.map(row=>row.ranks[domain] ?? null)}));
+    const rankValues = rankSeries.flatMap(row=>row.values).filter(Number.isFinite);
+    const domainBars = top.samples ? (top.domains||[]).map(d=>({label:d.domain,count:d.hits}))
+      : (data.domain_presence||[]).slice(0,6).map(d=>({label:d.domain,count:d.samples}));
+    const movers = (top.domains||[]).filter(d=>d.previous_rank!=null&&d.latest_rank!=null&&d.previous_rank!==d.latest_rank)
+      .sort((a,b)=>Math.abs(b.previous_rank-b.latest_rank)-Math.abs(a.previous_rank-a.latest_rank));
+    const changed = pair.length===2 && (movers.length || top.new_urls.length || top.missing_urls.length);
+    const finding = changed ? {kind:'detected', title:movers.length ?
+      `${movers[0].domain} 从第 ${movers[0].previous_rank} 名变为第 ${movers[0].latest_rank} 名`
+      : `前 10 名有 ${top.new_urls.length} 个网址新出现，${top.missing_urls.length} 个未再次出现`,
+      detail:`${when(pair[1].observed_at)} → ${when(pair[0].observed_at)} · 同搜索条件`,
+      action:'查看变化页面，再决定跟踪哪个网站。',target:'gaWebChanges'}
+      : {kind:pair.length===2?'detected':'insufficient',title:pair.length===2?'前 10 名未观察到变化':'还不能判断网页排名变化',
+        detail:`已有 ${data.samples} 份有效快照，其中 ${top.samples || 0} 份可完整核对前 10 名。`,
+        action:'可以查看已观察到的排名，或把关键词加入监测。',target:'gaSource-web'};
+    const chart = ranks.length && rankValues.length
+      ? lineChart(top.complete_scope?'按日期查看实际名次':'按日期查看实际名次 · 搜索条件未完整记录',
+        ranks.map(row=>row.fetched_at),rankSeries,1,Math.max(5,...rankValues),{reversed:true,connected:top.complete_scope===true}) : '';
+    const distribution = (data.distribution||[]).map(({bucket,count})=>({label:bucket==='unknown'?'名次未知':bucket,count}));
+    const rankedTotal = distribution.reduce((sum,row)=>sum+row.count,0);
+    const countryCounts = new Map();
+    for (const group of data.scope_choices||[]) {
+      if (group.page!==1) continue;
+      const country = group.region||'地区未知';
+      countryCounts.set(country,(countryCounts.get(country)||0)+group.samples);
+    }
+    const countryBars = [...countryCounts].map(([label,count])=>({label,count})).sort((a,b)=>b.count-a.count);
+    const firstPageTotal = countryBars.reduce((sum,row)=>sum+row.count,0);
+    publish('web',{finding,data,chart:domainBars.length ? reportChart('网站出现次数',
+      top.samples ? '分母为前 10 名完整的快照，图表按所选搜索条件生成。' : '分母为当前条件下的有效快照，显示域名出现次数。',
+      bars(domainBars,top.samples||data.samples),'web') : '',
+      charts:[
+        chart ? reportChart('网页名次记录', '名次越小越靠前。未观测的点留空。',chart,'web') : '',
+        rankedTotal ? reportChart('网页名次分布', '当前搜索条件下的网页结果，按观测名次分组。',bars(distribution,rankedTotal),'web') : '',
+        firstPageTotal ? reportChart('网页采样地区', '该关键词的首页采样按地区统计，包含所有可选条件组。',bars(countryBars.slice(0,8),firstPageTotal),'web') : '',
+      ],
+      metrics:[...domainBars.map(row=>[row.label,row.count,top.samples||data.samples,top.samples?'进入前 10 名 / 完整快照':'出现 / 有效快照']),
+        ...distribution.map(row=>[row.label,row.count,rankedTotal,'名次区间 / 网页记录总数']),
+        ...countryBars.map(row=>[row.label,row.count,firstPageTotal,'地区首页采样 / 首页采样总数']),
+        ...rankSeries.flatMap(({label,values})=>values.flatMap((value,i)=>value==null ? []
+          : [[label+' · '+ranks[i].fetched_at,value,null,'已观测自然排名']]))]});
     const coverage = top.samples ? `可完整核对前 10 名的样本 ${top.samples} 次`
       : '可完整核对前 10 名的样本不足，已观察到的排名仍可查看。';
     const score = top.samples ? list(top.domains, domain => {
@@ -183,10 +358,10 @@
       return `<strong>${esc(domain.domain)}</strong><p>进入前 10 名 ${domain.hits} / ${top.samples} 次${trend}</p>`;
     }, 'ga-ranks') : list(data.domains || [], domain =>
       `<strong>${esc(domain.domain)}</strong><p>最近一份快照 · ${observed(domain.latest_rank)}</p>`, 'ga-ranks');
-    const comparison = pair.length === 2 ? `<h4>前 10 名结果变化</h4><p>${when(pair[1].observed_at)} → ${when(pair[0].observed_at)} · 新出现 ${top.new_urls.length} 个网址 · 未再次出现 ${top.missing_urls.length} 个网址</p>
+    const comparison = pair.length === 2 ? `<div id="gaWebChanges" tabindex="-1"><h4>前 10 名结果变化</h4><p>${when(pair[1].observed_at)} → ${when(pair[0].observed_at)} · 新出现 ${top.new_urls.length} 个网址 · 未再次出现 ${top.missing_urls.length} 个网址</p>
       ${evidence('查看变化网址与两次原始请求', list(top.new_urls, url => '新出现 · ' + link(url)) +
         list(top.missing_urls, url => '未再次出现 · ' + link(url)) + list(pair, s =>
-          `<button type="button" class="secondary mini" data-ga-request="${esc(s.request_id)}">查看 ${when(s.observed_at)} 的请求</button>`))}`
+          `<button type="button" class="secondary mini" data-ga-request="${esc(s.request_id)}">查看 ${when(s.observed_at)} 的请求</button>`))}</div>`
       : '<p class="ga-meta">对比变化需要两次搜索条件一致、且前 10 名完整的观测。</p>';
     return section('web', 'Google Web · 网站可见度',
       `<p class="ga-facts"><strong>${data.samples} 次有效观测</strong><span>${coverage}</span></p>
@@ -220,175 +395,496 @@
     return response.ok ? getSeries(await response.json()) : null;
   }
 
-  function trends([data, keywordData, privateSeries], query) {
-    const series = [...(keywordData.requests || []).flatMap(row => (row.items || []).map(item => item.numeric_trend_series)),
-      privateSeries]
-      .find(item => item && lower(item.query) === lower(query));
+  function trendChange(points) {
+    const window = points.filter(point=>!point.is_partial).slice(-6);
+    if (window.length<6 || window.some(point=>point.value==null)) return null;
+    const gaps = window.slice(1).map((point, i)=>Date.parse(point.timestamp)-Date.parse(window[i].timestamp));
+    const minGap = Math.min(...gaps);
+    if (minGap<=0 || Math.max(...gaps)>minGap*1.25) return null;
+    const mean = values => values.reduce((sum, point)=>sum+point.value,0)/values.length;
+    const previous = mean(window.slice(0,3)), recent = mean(window.slice(3));
+    return {previous, recent, delta:recent-previous, from:window[0].timestamp, to:window.at(-1).timestamp};
+  }
+
+  function trends([data, keywordData, privateSeries], query, from) {
+    const publicSeries = (keywordData.requests || []).flatMap(row => (row.items || [])
+      .map(item => ({row,series:item.numeric_trend_series})))
+      .find(({series}) => series && lower(series.query)===lower(query));
+    const series = publicSeries?.series || (lower(privateSeries?.query)===lower(query)? privateSeries : null);
     const matches = (data.requests || []).flatMap(row => (row.items || [])
       .filter(item => item.kind === 'trending_now_topic' && lower(item.topic).includes(lower(query)))
       .map(item => ({item, row})));
-    const points = series?.points?.filter(point => point.has_data !== false && point.hasData !== false);
+    const points = (series?.points || []).filter(point=>Date.parse(point.timestamp)>=Date.parse(from))
+      .map(({timestamp,value,is_partial,has_data,hasData})=>({timestamp, is_partial, value:
+        Number.isFinite(value)&&value>=0&&value<=100&&has_data!==false&&hasData!==false ? value : null}))
+      .sort((a,b)=>Date.parse(a.timestamp)-Date.parse(b.timestamp));
+    const complete = points.filter(point=>!point.is_partial&&point.value!=null);
+    const change = trendChange(points);
+    const markets = new Set(matches.map(({row})=>row.query_conditions?.country_code).filter(Boolean));
+    const format = new Intl.NumberFormat('zh-CN',{maximumFractionDigits:1});
+    const changed = change && Math.abs(change.delta)>=10;
+    const rise = changed && change.delta>0;
+    const regionLabel = series?.region || '地区未提供';
+    const finding = changed ? {
+      kind:'detected',title:rise?'这份样本的搜索热度上升':'这份样本的搜索热度下降',
+      detail:`${regionLabel} · 相同频率的 3 点均值 ${format.format(change.previous)} → ${format.format(change.recent)} / 100 · ${when(change.from)} 至 ${when(change.to)}`,
+      action:rise?'可结合相关报道，进一步调查升温集中在哪些具体问题。':'可继续观察，确认下降是否持续。',
+      target:'gaSource-trends',
+    } : matches.length ? {kind:'detected',title:'话题在地区热榜出现过',
+      detail:`${matches.length} 条热榜记录 · ${markets.size ? '已知地区 '+[...markets].join(' / ') : '地区未提供'}`,
+      action:'打开上榜记录和关联报道，查看具体事件。',target:'gaTrendHotlist'}
+      : {kind:change?'detected':'insufficient',title:change?'近期相对热度没有明显变化':'热度趋势样本不足',
+        detail:change?'相邻两个观测段的均值变化小于 10 个指数点。':'需要同一地区的连续有效热度点，才能判断方向。',
+        target:'gaSource-trends'};
+    const plot = points.slice(-120);
+    const chart = complete.length ? lineChart('Google Trends 相对热度 0–100 · 未观测与未完成点留空',plot.map(p=>p.timestamp),
+      [{label:regionLabel,values:plot.map(p=>p.is_partial ? null : p.value)}],0,100) : '';
+    const marketCounts = new Map();
+    for (const {row} of matches) {
+      const market = row.query_conditions?.country_code || '地区未知';
+      marketCounts.set(market,(marketCounts.get(market)||0)+1);
+    }
+    const marketBars = [...marketCounts].sort(([,a],[,b])=>b-a).map(([label,count])=>({label,count,target:'gaTrendHotlist'}));
+    publish('trends',{finding,chart:chart ? reportChart('搜索热度',`${regionLabel} · ${complete.length} 个有效观测点 · 0–100 是相对指数`,chart,'trends') : '',
+      charts:[marketBars.length?reportChart('地区热榜记录','按匹配话题的已存热榜记录计数。',bars(marketBars,matches.length),'trends'):''],
+      data:{series:series ? {region:series.region,query:series.query,time_range:series.time_range,
+        request_id:publicSeries?.row.request_id,points} : null, matches, change},
+      metrics:[...points.filter(p=>p.value!=null&&!p.is_partial).map(p=>[p.timestamp,p.value,100,'相对热度 / 指数上限']),
+        ...marketBars.map(({label,count})=>[label,count,matches.length,'此地区热榜记录数'])]});
     return section('trends', 'Google Trends · 搜索热度',
-      (points?.length ? qTrendChart({numeric_trend_series: {...series, points}})
+      (complete.length ? `<p>${esc(regionLabel)} · ${complete.length} 个有效时间点</p>` +
+        (change ? `<p>较早 3 点均值 ${format.format(change.previous)}，最近 3 点均值 ${format.format(change.recent)}。<br>${when(change.from)} 至 ${when(change.to)}</p>` : '') +
+        evidence('查看完整热度记录',dataTable('Google Trends 相对热度',['时间（UTC）','相对热度','状态'],
+          points.map(p=>[p.timestamp,p.value,p.is_partial?'未完成':p.value==null?'缺失':'有效记录']))) +
+        (publicSeries ? `<button type="button" class="secondary mini" data-ga-request="${esc(publicSeries.row.request_id)}">查看原始热度请求</button>` : '')
         : '<p>当前条件下没有可读取的关键词热度曲线。</p>') +
-      (matches.length ? evidence('查看地区热榜记录', list(matches, ({item, row}) =>
+      (matches.length ? `<details id="gaTrendHotlist"><summary>地区热榜记录</summary>` + records('地区热榜记录',list(matches, ({item, row}) =>
         `${esc(item.topic)} · ${scopeText(row.query_conditions)} · ${when(row.completed_at)} · ${esc(item.approx_traffic_label || '搜索量标记未知')}
-         <button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看原始请求</button>`))
-        : '<p class="ga-meta">最近读取的最多 15 份地区热榜快照没有匹配话题。</p>'));
+         <button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看原始请求</button>`)) + '</details>'
+        : '<p class="ga-meta">最近读取的最多 25 份地区热榜快照没有匹配话题。</p>'));
   }
 
   function images(data, query) {
     const rows = scopedRows(data, query);
     const items = rows.flatMap(row => (row.items || []).map(item => ({item, row})));
+    const counts = new Map();
+    for (const {item} of items) {
+      const type = item.width && item.height ? (item.width===item.height?'方图':item.width>item.height?'横图':'竖图') : '尺寸未知';
+      counts.set(type,(counts.get(type)||0)+1);
+    }
+    const sizes = [...counts].map(([label,count])=>({label,count}));
+    publish('images',{data:rows,chart:sizes.length?reportChart('图片尺寸分布','按已存图片记录的宽高分组。',bars(sizes,items.length),'images'):'',
+      metrics:sizes.map(({label,count})=>[label,count,items.length,'图片记录数'])});
     return section('images', 'Google Images · 图片来源', items.length
       ? `<p>${rows.length} 次搜索 · ${items.length} 条图片记录 · 最近采集 ${when(rows[0].completed_at)}</p>` +
-        evidence('查看图片链接与来源网页', list(items, ({item, row}) =>
+        evidence('图片与来源网页', records('图片与来源网页',list(items, ({item, row}) =>
           `${display(item)} · ${item.width && item.height ? item.width + ' × ' + item.height : '尺寸未知'}
            <p>${item.source_page_url ? link(item.source_page_url, '来源网页') : '来源网页未知'}${item.thumbnail_url ? ' · ' + link(item.thumbnail_url, '打开缩略图') : ''}</p>
-           <button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看原始请求</button>`))
+           <button type="button" class="secondary mini" data-ga-request="${esc(row.request_id)}">查看原始请求</button>`)))
       : '<p>当前条件没有匹配的公开图片快照。</p>');
   }
 
-  async function maps() {
+  async function maps(signal) {
     let saved;
     try { saved = JSON.parse(localStorage.getItem('sf-maps-last') || 'null'); } catch {}
-    const fallback = '<p>在「快速使用」获取或恢复 Maps 快照，可按城市和半径查看商家。</p><a href="#maps">打开 Google Maps</a>';
-    if (!saved?.id || !saved?.token) return section('maps', 'Google Maps · 已存商家', fallback);
-    const signal = controller.signal;
+    if (!saved?.id || !saved?.token) return null;
     const res = await fetch('/api/maps/jobs/' + encodeURIComponent(saved.id) + '/results', {
       signal, headers: {'X-SearchFlow-Quick': '1', 'X-Quick-Token': saved.token},
     });
-    if (!res.ok) return section('maps', 'Google Maps · 已存商家', fallback);
-    const snapshot = await res.json();
-    const p = snapshot.parameters || {};
-    const places = snapshot.result_cache?.places;
-    if (!Array.isArray(places) || !places.length) return section('maps', 'Google Maps · 已存商家', fallback);
+    return res.ok ? res.json() : null;
+  }
+
+  function mapReport(snapshot, query, filters) {
+    const fallback = '<p>没有匹配当前关键词与地区的已保存商家快照。</p><a href="#maps">打开 Google Maps</a>';
+    const p = snapshot?.parameters || {};
+    const places = snapshot?.result_cache?.places;
+    if (!Array.isArray(places) || !places.length || lower(p.query||p.included_type)!==lower(query) ||
+        (filters.country && lower(p.region)!==filters.country) ||
+        (filters.language && lower(p.language)!==filters.language)) {
+      publish('maps',{data:[]});
+      return section('maps', 'Google Maps · 已存商家', fallback);
+    }
+    const grouped = new Map();
+    for (const place of places) {
+      const type = place.primary_type || '类型未知';
+      grouped.set(type,(grouped.get(type)||0)+1);
+    }
+    const categories = [...grouped].map(([label,count])=>({label,count})).sort((a,b)=>b.count-a.count);
+    publish('maps',{data:{parameters:p, places},
+      chart:reportChart('地图商家类型','同城市与半径的已存快照。',bars(categories.slice(0,8),places.length),'maps'),
+      metrics:categories.map(({label,count})=>[label,count,places.length,'商家数'])});
     return section('maps', 'Google Maps · 最近保存的商家快照',
-      `<p>${esc(p.query || p.included_type || '商家搜索')} · ${esc(p.city || '城市未知')} · 半径 ${esc(p.radius_m ?? '未知')} 米 · ${places.length} 家</p>` +
-      evidence('对照样本内的商家评分、评价数和距离', list(places, place =>
-        `${link(place.google_maps_uri, place.name || '名称未知')}<p>${esc(place.formatted_address || '地址未知')} · 评分 ${esc(place.rating ?? '未知')} · 评价 ${esc(place.user_rating_count ?? '未知')} · 距中心 ${esc(place.distance_m ?? '未知')} 米</p>`))
+      `<p>${esc(p.query || p.included_type || '商家搜索')} · ${esc(p.city || '城市未知')} · 半径 ${esc(p.radius_m ?? '未知')} 米 · ${places.length} 家 · 浏览器最近保存的快照</p>` +
+      evidence('商家评分、评价数和距离', records('地图商家',list(places, place =>
+        `${link(place.google_maps_uri, place.name || '名称未知')}<p>${esc(place.formatted_address || '地址未知')} · 评分 ${esc(place.rating ?? '未知')} · 评价 ${esc(place.user_rating_count ?? '未知')} · 距中心 ${esc(place.distance_m ?? '未知')} 米</p>`)))
       + '<a href="#maps">打开 Maps 明细与下载</a>');
   }
 
   function baseCriteria() {
     return {days: $('gaDays').value, region: region.value, language: $('gaLanguage').value,
-      domain: $('gaDomain').value.trim(), competitors: $('gaCompetitors').value.trim()};
+      device: $('gaDevice').value, domain: $('gaDomain').value.trim(), competitors: $('gaCompetitors').value.trim()};
   }
 
-  async function analyze(query, criteria = baseCriteria(), {scope = '', pick = false, asKeyword = false} = {}) {
+  let mode = 'keyword';
+  let pending = null;
+  const drafts = {keyword: '', website: ''};
+  const visited = new Map();
+  function setMode(next) {
+    if (mode === next) return;
+    controller?.abort();
+    pending = null;
+    loading('');
+    drafts[mode] = input.value;
+    if (applied) {
+      if (applied.jobs) {
+        for (const [id,state] of applied.states) {
+          if (state === 'loading') applied.states.set(id,'error');
+        }
+        showSourceState(applied);
+      }
+      result.querySelector('.ga-previous')?.remove();
+      const content = document.createDocumentFragment();
+      content.append(...result.childNodes);
+      visited.set(mode,{report:applied,content});
+    }
+    const previous = visited.get(next);
+    mode = next;
+    input.value = drafts[next];
+    input.placeholder = next === 'website' ? '例如 example.com' : '例如 solar energy';
+    $('gaInputLabel').textContent = next === 'website' ? '网站域名' : '关键词';
+    $('gaExamples').hidden = next === 'website';
+    document.querySelectorAll('[data-ga-keyword-filter]').forEach(element => { element.hidden = next === 'website'; });
+    document.querySelectorAll('[data-ga-mode]').forEach(button => {
+      button.setAttribute('aria-pressed',String(button.dataset.gaMode === next));
+    });
+    result.replaceChildren(...(previous ? [previous.content] : []));
+    applied = previous?.report || null;
+    visited.delete(next);
+  }
+
+  function loading(message, busy = false) {
+    $('gaProgress').hidden = !busy;
+    status.textContent = message;
+  }
+
+  function reportHeading(report) {
+    const {query, criteria, mode} = report;
+    return `<header class="ga-view-heading"><h2 id="gaResultHeading">${esc(query)}</h2>
+      <p class="ga-meta">近 ${esc(criteria.days)} 天 · ${esc(regionNames[criteria.region] || criteria.region || '全部地区')} · 已保存的${mode === 'website' ? '网页' : '搜索'}快照</p></header>`;
+  }
+
+  function resultActions(monitor = false) {
+    return `<div class="ga-tools ga-report-actions">
+      ${monitor ? '<button type="button" class="secondary mini" data-ga-monitor hidden>加入关键词监测</button>' : ''}
+      <button type="button" class="secondary mini" data-ga-export="csv" disabled>下载指标 CSV</button>
+      <button type="button" class="secondary mini" data-ga-export="json" disabled>下载分析 JSON</button>
+    </div>`;
+  }
+
+  function showReport(report, html) {
+    applied = report;
+    result.innerHTML = `<section class="ga-overview ga-report" aria-labelledby="gaResultHeading">
+      ${reportHeading(report)}${html}<div id="gaRequestEvidence" hidden role="status"></div></section>`;
+  }
+
+  function updateDownloads(report) {
+    const csv = result.querySelector('[data-ga-export="csv"]');
+    const json = result.querySelector('[data-ga-export="json"]');
+    if (csv) csv.disabled = ![...report.outputs.values()].some(output => output.metrics.length);
+    if (json) json.disabled = !report.outputs.size;
+  }
+
+  function webReport(query, criteria, signal, scope = '') {
+    const params = {query, days:criteria.days, region:criteria.region, language:criteria.language,
+      domain:criteria.domain, competitors:criteria.competitors, scope};
+    const path = '/api/product/analytics';
+    return read(path, params, signal).then(data => {
+      if (scope) return data;
+      const choices = data.scope_choices || [];
+      const selected = choices.find(group => group.page === 1 && (!criteria.device || group.device === criteria.device))
+        || choices.find(group => !criteria.device || group.device === criteria.device);
+      if (criteria.device && !selected) return {samples:0,scope_choices:choices};
+      return selected && data.scope_id !== selected.id ? read(path, {...params,scope:selected.id},signal) : data;
+    });
+  }
+
+  const rank = value => value == null ? '未观测' : '第 ' + value + ' 名';
+  const siteScope = scope => {
+    const device = {desktop:'桌面端',mobile:'移动端'}[scope.device] || scope.device;
+    return [regionNames[scope.region] || scope.region, {en:'英语',zh:'中文'}[scope.language] || scope.language, device]
+      .filter(Boolean).map(esc).join(' · ') || '搜索条件未完整记录';
+  };
+  function siteRow(query, data, domain) {
+    const top = data.top10 || {};
+    const ranks = top.domains?.find(item => lower(item.domain) === domain);
+    return {query, scope:data.scope || {}, samples:top.samples || 0, observed:data.samples || 0,
+      hits:ranks?.hits || 0, latest:ranks?.latest_rank ?? null, previous:ranks?.previous_rank ?? null, pair:top.pair || []};
+  }
+
+  async function websiteReport(report, filters, signal) {
+    const {query:domain, criteria} = report;
+    const data = await read(observationsPath, {...filters,source:'google_web',domain,...(criteria.device && {device:criteria.device})}, signal);
+    const matching = (data.requests || []).filter(row => row.query &&
+      (!criteria.device || row.query_conditions?.device === criteria.device));
+    const terms = [...new Set(matching.map(row => row.query))];
+    const rows = [];
+    const failed = [];
+    for (const query of terms.slice(0, 6)) {
+      signal.throwIfAborted();
+      try {
+        const details = await webReport(query, {...criteria,domain,competitors:''},signal);
+        rows.push(siteRow(query,details,domain));
+      } catch (error) {
+        if (signal.aborted) throw error;
+        failed.push(query);
+      }
+    }
+    return {rows, failed, candidates:terms.length, hasMore:Boolean(data.has_more)};
+  }
+
+  function siteContent(report, data) {
+    const {rows, failed, candidates, hasMore} = data;
+    const comparable = rows.filter(row => row.pair.length === 2 && row.latest !== null && row.previous !== null);
+    const change = comparable.filter(row => row.latest !== row.previous)
+      .sort((a,b) => Math.abs(b.previous-b.latest)-Math.abs(a.previous-a.latest))[0];
+    const summary = change ? `<div class="ga-site-highlight"><h3>「${esc(change.query)}」从${rank(change.previous)}变为${rank(change.latest)}</h3>
+      <p class="ga-meta">${when(change.pair[1].observed_at)} → ${when(change.pair[0].observed_at)} · ${siteScope(change.scope)}</p></div>`
+      : `<p class="ga-meta">${comparable.length ? '可直接对比的关键词没有观察到名次变化。'
+        : '这些关键词还缺少可直接比较的名次。每个关键词需要两次同条件的完整首页快照。'}</p>`;
+    const table = rows.length ? `<div class="ga-table" role="region" aria-label="按关键词查看排名" tabindex="0">
+      <table><caption>按关键词查看排名</caption><thead><tr><th scope="col">关键词与条件</th><th scope="col">上一次</th>
+      <th scope="col">最近一次</th><th scope="col">进入前 10 名</th></tr></thead><tbody>
+      ${rows.map(row => `<tr><th scope="row">
+        <button type="button" class="secondary mini" data-ga-keyword="${esc(row.query)}" data-ga-domain="${esc(report.query)}">${esc(row.query)}</button>
+        <p class="ga-meta">${siteScope(row.scope)}</p></th>
+        <td>${row.pair.length > 1 ? rank(row.previous) : '—'}</td><td>${row.samples ? rank(row.latest) : '—'}</td>
+        <td>${row.samples ? row.hits + '/' + row.samples + ' 次' : '样本不足'}</td></tr>`).join('')}</tbody></table></div>` : '';
+    const references = rows.filter(row => row.pair.length).map(row =>
+      evidence(row.query + ' · 原始搜索',row.pair.map(sample =>
+        `<button type="button" class="secondary mini" aria-expanded="false" data-ga-request="${esc(sample.request_id)}">查看 ${when(sample.observed_at)} 的快照</button>`).join(' '))).join('');
+    const tracked = change || rows.find(row => row.latest !== null) || rows[0];
+    const count = rows.reduce((sum,row) => sum+row.samples,0);
+    return `<div class="ga-site-layout">
+      <div>${rows.length ? summary + table : failed.length ? '' : '<p>当前范围内没有找到包含这个域名的公开网页快照。可以扩大时间范围，或用已知关键词查看排名。</p>'}
+      ${references}</div>
+      <aside class="ga-site-summary"><h3>样本概况</h3>
+        <dl><div><dt>已核对的关键词</dt><dd>${rows.length} 个</dd></div><div><dt>完整首页快照</dt><dd>${count} 次</dd></div></dl>
+        ${hasMore || candidates > 6 ? '<p class="ga-meta">从最近匹配记录中核对最多 6 个关键词。</p>' : ''}
+        ${tracked ? `<button type="button" class="secondary mini" data-ga-monitor="${esc(report.query)}"
+          data-ga-monitor-query="${esc(tracked.query)}" data-ga-monitor-region="${esc(tracked.scope.region || '')}"
+          data-ga-monitor-language="${esc(tracked.scope.language || '')}">跟踪「${esc(tracked.query)}」</button>` : ''}
+      </section></div>
+      ${failed.length ? '<p class="ga-meta">有 '+failed.length+' 个关键词暂时无法读取。 <button type="button" class="secondary mini" data-ga-retry="report">重试</button></p>' : ''}
+      ${evidence('怎么统计的','<p class="ga-meta">每个关键词独立选取同条件的首页快照。完整首页包含 10 个已知自然名次，缓存重复不计。未观测表示该次首页快照中没有看到这个网站。</p>')}
+      ${resultActions()}`;
+  }
+
+  const sourceNames = {web:'网页排名',news:'新闻报道',trends:'搜索热度',images:'Google 图片',maps:'Google 地图'};
+  const primarySources = ['web','news','trends'];
+
+  function keywordContent() {
+    return `<div class="ga-keyword-layout">
+      <div><h3>这组数据有什么变化</h3><ul class="ga-findings" id="gaFindings"></ul>
+      <div id="gaSourceStates"></div></div><div id="gaLeadChart" hidden></div></div>
+      ${resultActions(true)}
+      <details class="ga-disclosure" id="gaAllData"><summary>图表和原始证据</summary>
+      ${Object.entries(sourceNames).map(([id,label]) => `<details class="ga-source-details" id="gaDetail-${id}" hidden><summary>${label}</summary>
+        <div class="ga-charts" id="gaChart-${id}"></div><div id="gaSource-${id}" tabindex="-1"></div></details>`).join('')}</details>`;
+  }
+
+  function showSourceState(report) {
+    const items = primarySources.flatMap(id => {
+      const state = report.states.get(id);
+      const finding = report.outputs.get(id)?.finding;
+      if (state === 'error') return [];
+      if (!finding) return state === 'loading' ? [`<li class="ga-pending-source"><span>${sourceNames[id]}正在读取…</span></li>`] : [];
+      return [`<li><div><strong>${esc(finding.title)}</strong><p class="ga-meta">${esc(finding.detail)}</p></div>
+      <button type="button" class="secondary mini" data-ga-jump="${esc(finding.target)}">查看依据</button></li>`];
+    });
+    const errors = Object.keys(sourceNames).filter(id => report.states.get(id) === 'error');
+    $('gaFindings').innerHTML = items.join('');
+    $('gaSourceStates').innerHTML = errors.map(id => `<p class="ga-meta">${sourceNames[id]}暂时读不到。 <button type="button" class="secondary mini" data-ga-retry="${id}">重试</button></p>`).join('');
+    const monitor = result.querySelector('[data-ga-monitor]');
+    if (monitor) monitor.hidden = !report.web?.samples;
+    updateDownloads(report);
+  }
+
+  async function readSource(report, id, job, signal) {
+    try {
+      const data = await job.read(signal);
+      if (signal.aborted || (pending !== report && applied !== report)) return;
+      if (applied !== report) showReport(report,keywordContent());
+      if (id === 'web') report.web = data;
+      const html = job.render(data);
+      const supplementary = !primarySources.includes(id);
+      if (!supplementary || report.outputs.get(id)?.metrics.length) {
+        $('gaDetail-'+id).hidden = false;
+        $('gaSource-'+id).innerHTML = html;
+      }
+      report.states.set(id,'ready');
+    } catch {
+      if ((signal.aborted && signal.reason !== 'timeout') || (pending !== report && applied !== report)) return;
+      report.states.set(id,'error');
+    }
+    if (applied === report) showSourceState(report);
+  }
+
+  async function analyze(text, criteria = baseCriteria(), {scope = '', reportMode = mode} = {}) {
+    const query = reportMode === 'website' ? hostname(text) : text;
+    if (!query) { loading('请输入有效的网站域名，例如 example.com。'); return; }
+    for (const [id,term] of Object.entries(examples)) $(id).setAttribute('aria-pressed',String(lower(term)===lower(query)));
     controller?.abort();
     controller = new AbortController();
-    const signal = controller.signal;
-    status.textContent = '正在读取已保存的 Google 数据…';
-    const hadResults = result.childElementCount > 0;
-    const timeout = setTimeout(() => {
-      if (controller.signal === signal) controller.abort('timeout');
-    }, 30000);
+    const {signal} = controller;
+    const cutoff = new Date();
+    cutoff.setUTCHours(0, 0, 0, 0);
+    cutoff.setUTCDate(cutoff.getUTCDate() - Number(criteria.days) + 1);
+    const filters = {from:cutoff.toISOString(),limit:'30',
+      ...(criteria.region && {country:lower(criteria.region)}), ...(criteria.language && {language:lower(criteria.language)})};
+    const report = {query, criteria, scope, mode:reportMode, from:filters.from, outputs:new Map(), states:new Map()};
+    pending = report;
+    result.querySelector('.ga-previous')?.remove();
+    if (applied) {
+      const label = document.createElement('p');
+      label.className = 'ga-meta ga-previous';
+      label.textContent = '上一份报告';
+      $('gaResultHeading').before(label);
+    } else {
+      result.innerHTML = '<div class="ga-report ga-skeleton" aria-hidden="true"><div></div><div></div><div></div></div>';
+    }
+    loading('正在读取「' + query + '」的已保存数据…',true);
+    const timeout = setTimeout(() => { if (controller.signal === signal) controller.abort('timeout'); },30000);
     try {
-      const domain = asKeyword ? '' : hostname(query);
-      const cutoff = new Date();
-      cutoff.setUTCHours(0, 0, 0, 0);
-      cutoff.setUTCDate(cutoff.getUTCDate() - Number(criteria.days) + 1);
-      const filters = {from: cutoff.toISOString(), limit: '20',
-        ...(criteria.region && {country: criteria.region.toLowerCase()}),
-        ...(criteria.language && {language: criteria.language})};
-      if (domain) {
-        const data = await read(observationsPath, {...filters, source:'google_web', domain}, signal);
-        const rows = data.requests || [];
-        const terms = [...new Set(rows.map(row => row.query).filter(Boolean))];
-        const suggestions = terms.length ? '<p>这些已存搜索中看到了该域名。选择关键词，查看它与竞品的可见度。</p>'
-          + list(terms, term => `<button type="button" class="secondary mini" data-ga-keyword="${esc(term)}" data-ga-domain="${esc(domain)}">${esc(term)}</button>`)
-          : '<p>当前范围没有查到该域名的公开网页快照。可以输入一个关键词，并把此域名设为对比目标。</p>';
-        if (signal.aborted) return;
-        applied = null;
-        result.innerHTML = section('domain', `查看 ${esc(domain)} 的已存搜索`, suggestions);
-        status.textContent = `已读取 ${rows.length} 次匹配请求 · 最近 ${criteria.days} 天（UTC）`;
-        $('gaDomain').value = domain;
-        return;
+      if (reportMode === 'website') {
+        const data = await websiteReport(report,filters,signal);
+        if (signal.aborted || pending !== report) return;
+        report.outputs.set('web',{data,metrics:data.rows.flatMap(row => row.samples ? [
+          [row.query + ' · 进入前 10 名',row.hits,row.samples,siteScope(row.scope)],
+          [row.query + ' · 最近名次',row.latest,null,siteScope(row.scope)],
+          [row.query + ' · 上一次名次',row.previous,null,siteScope(row.scope)],
+        ] : [])});
+        showReport(report,siteContent(report,data));
+        updateDownloads(report);
+      } else {
+        const exact = {...filters,query,query_match:'exact'};
+        report.jobs = {
+          web:{read:s => webReport(query,criteria,s,scope),render:data => web(data,criteria)},
+          news:{read:s => read(observationsPath,{...exact,source:'google_news'},s),render:data => news(data,query)},
+          trends:{read:s => Promise.all([
+            read(observationsPath,{...exact,source:'google_trends',query:'trending-now',limit:'25'},s),
+            read(observationsPath,{...exact,source:'google_trends',limit:'5'},s),
+            savedTrend(query,filters,s).catch(() => null),
+          ]),render:data => trends(data,query,filters.from)},
+          images:{read:s => read(observationsPath,{...exact,source:'google_images',limit:'12'},s),render:data => images(data,query)},
+          maps:{read:maps,render:data => mapReport(data,query,filters)},
+        };
+        for (const id of Object.keys(report.jobs)) report.states.set(id,'loading');
+        const jobs = Object.entries(report.jobs);
+        await Promise.all(jobs.filter(([id]) => primarySources.includes(id)).map(([id,job]) => readSource(report,id,job,signal)));
+        if (applied === report) await Promise.all(jobs.filter(([id]) => !primarySources.includes(id)).map(([id,job]) => readSource(report,id,job,signal)));
       }
-      const webParams = {...criteria, query, scope};
-      const initialWeb = read('/api/product/analytics', webParams, signal).then(data => {
-        if (scope || data.scope?.page === 1) return data;
-        const firstPage = data.scope_choices?.find(entry => entry.page === 1);
-        return firstPage ? read('/api/product/analytics', {...webParams, query:data.query, scope:firstPage.id}, signal) : data;
-      });
-      if (pick) {
-        const saved = await initialWeb;
-        query = saved.query;
-        if (!query) throw Error('当前范围没有可试用的网页关键词。');
-        input.value = query;
-      }
-      const next = {query, criteria, scope};
-      const exact = {...filters, query, query_match:'exact'};
-      const jobs = [
-        ['web', 'Google Web', initialWeb, data => {
-          next.web = data;
-          return web(data, criteria);
-        }],
-        ['news', 'Google News', read(observationsPath, {...exact, source:'google_news'}, signal), data => news(data, query)],
-        ['trends', 'Google Trends', Promise.all([
-          read(observationsPath, {...exact, source:'google_trends', query:'trending-now', limit:'15'}, signal),
-          read(observationsPath, {...exact, source:'google_trends', limit:'5'}, signal),
-          savedTrend(query, filters, signal).catch(() => null),
-        ]), data => trends(data, query)],
-        ['images', 'Google Images', read(observationsPath, {...exact, source:'google_images', limit:'5'}, signal), data => images(data, query)],
-        ['maps', 'Google Maps', maps(), value => value],
-      ];
-      let errors = 0;
-      let mainErrors = 0;
-      const content = await Promise.all(jobs.map(async ([id, title, job, render]) => {
-        try {
-          const data = await job;
-          if (!signal.aborted) return render(data);
-        } catch (error) {
-          errors++;
-          if (id !== 'maps') mainErrors++;
-          return section(id, title, `<p>${esc(error.message)}</p>`);
-        }
-      }));
-      if (controller.signal !== signal || (signal.aborted && signal.reason !== 'timeout')) return;
-      if (signal.aborted || mainErrors === jobs.length - 1) {
-        status.textContent = hadResults ? '这次分析暂时无法读取，仍显示上次结果。' : '暂时无法读取分析，请重试。';
-        return;
-      }
-      applied = next;
-      result.innerHTML = content.join('') + '<div id="gaRequestEvidence" hidden role="status"></div>';
-      status.textContent = `最近 ${criteria.days} 天（UTC）· 已保存的搜索样本${errors ? ' · ' + errors + ' 个来源读取失败' : ''}`;
-
-    } catch (error) {
-      if (controller.signal === signal && (!signal.aborted || signal.reason === 'timeout'))
-        status.textContent = signal.aborted ? '读取超时，请重试。' : error.message;
+    } catch {
+      // A failed read leaves the previous report interactive.
     } finally {
       clearTimeout(timeout);
+      if (pending === report) {
+        pending = null;
+        if (applied === report) loading('「' + query + '」报告已更新。');
+        else {
+          if (!applied) result.replaceChildren();
+          loading('暂时无法读取「' + query + '」。' + (applied ? '下方仍是上一份报告。' : '请点击「查看分析」重试。'));
+        }
+      }
     }
   }
 
+  document.querySelectorAll('[data-ga-mode]').forEach(button => {
+    button.onclick = () => setMode(button.dataset.gaMode);
+  });
   $('gaForm').addEventListener('submit', event => {
     event.preventDefault();
-    if (input.value.trim()) analyze(input.value.trim());
+    const value = input.value.trim();
+    if (!value) return;
+    if (mode === 'keyword' && hostname(value)) {
+      setMode('website');
+      input.value = value;
+    }
+    analyze(value);
   });
-  $('gaNewsExample').onclick = () => {
-    input.value = demo;
+  function loadExample(query) {
+    setMode('keyword');
+    input.value = query;
     $('gaDays').value = '90';
     $('gaDomain').value = '';
     $('gaCompetitors').value = '';
+    $('gaDevice').value = '';
     region.value = '';
     $('gaLanguage').value = '';
-    analyze(demo);
-  };
-  $('gaWebExample').onclick = () => analyze('', baseCriteria(), {pick:true});
+    analyze(query);
+  }
+  for (const [id,query] of Object.entries(examples)) $(id).onclick = () => loadExample(query);
   result.addEventListener('change', event => {
     if (event.target.id === 'gaScope' && applied)
-      analyze(applied.query, applied.criteria, {scope:event.target.value, asKeyword:true});
+      analyze(applied.query, applied.criteria, {scope:event.target.value});
   });
+
+  function exportAnalysis(format) {
+    const {query, criteria, scope, from, outputs} = applied;
+    if (format==='json') {
+      const sources = Object.fromEntries(outputs);
+      const report = {query,mode:applied.mode,criteria,scope:applied.web?.scope_id||scope,from,generated_at:new Date().toISOString(),
+        methodology:'基于已保存快照。网页按同条件比较，新闻按去重文本统计，热度使用 0–100 相对指数。',
+        findings:[...outputs.values()].map(output => output.finding).filter(Boolean),sources};
+      saveBlob(new Blob([JSON.stringify(report,null,2)],{type:'application/json;charset=utf-8'}),'google-analysis.json');
+      return;
+    }
+    const cell = value => {
+      let text = String(value??'');
+      if (/^[=+@-]/.test(text.trimStart())) text="'"+text;
+      return '"'+text.replace(/"/g,'""')+'"';
+    };
+    const rows = [['查询','来源','指标','值','分母','口径','地区筛选','观测时间起点（UTC）']];
+    for (const [source,{metrics}] of outputs) {
+      for (const metric of metrics) rows.push([query,source,...metric,criteria.region||'全部',from]);
+    }
+    saveBlob(new Blob(['\uFEFF'+rows.map(row=>row.map(cell).join(',')).join('\r\n')],
+      {type:'text/csv;charset=utf-8'}),'google-analysis.csv');
+  }
+
   let evidenceRead = 0;
   result.addEventListener('click', async event => {
     const button = event.target.closest('button');
     if (!button) return;
-    if (button.dataset.gaKeyword) {
+    if (button.dataset.gaRetry && applied) {
+      if (pending && pending !== applied) return;
+      const report = applied;
+      const id = button.dataset.gaRetry;
+      if (id === 'report') { await analyze(report.query,report.criteria); return; }
+      const job = report.jobs?.[id];
+      if (!job) return;
+      button.disabled = true;
+      button.textContent = '正在重试…';
+      const retry = new AbortController();
+      const timeout = setTimeout(() => retry.abort('timeout'),20000);
+      try { await readSource(report,id,job,retry.signal); }
+      finally { clearTimeout(timeout); }
+    } else if (button.dataset.gaJump) {
+      const target = $(button.dataset.gaJump);
+      if (!target) return;
+      $('gaAllData').open=true;
+      const source = target.closest('.ga-source-details');
+      if (source) source.open = true;
+      if (target instanceof HTMLDetailsElement) target.open=true;
+      const focus = target instanceof HTMLDetailsElement ? target.querySelector('summary') : target;
+      focus.focus({preventScroll:true});
+      focus.scrollIntoView({block:'start'});
+    } else if (button.dataset.gaExport && applied) {
+      exportAnalysis(button.dataset.gaExport);
+    } else if (button.dataset.gaKeyword) {
+      setMode('keyword');
       input.value = button.dataset.gaKeyword;
       $('gaDomain').value = button.dataset.gaDomain;
-      analyze(input.value, baseCriteria(), {asKeyword:true});
+      analyze(input.value);
     } else if (button.hasAttribute('data-ga-monitor') && applied) {
       const draft = ['monitorQuery','monitorDomain','monitorCompetitors'].some(id => $(id).value.trim());
       if (draft) {
@@ -396,17 +892,18 @@
         return;
       }
       const scope = applied.web?.scope || {};
-      $('monitorQuery').value = applied.query;
-      $('monitorDomain').value = button.dataset.gaMonitor;
+      $('monitorQuery').value = button.dataset.gaMonitorQuery || applied.query;
+      const domain = button.dataset.gaMonitor || applied.web?.auto_domains?.[0] || '';
+      $('monitorDomain').value = domain;
       $('monitorCompetitors').value = applied.criteria.competitors.replace(/，/g, ',');
-      for (const [id, value] of [['monitorRegion', scope.region || applied.criteria.region], ['monitorLanguage', scope.language || applied.criteria.language]]) {
+      for (const [id, value] of [['monitorRegion', button.dataset.gaMonitorRegion || scope.region || applied.criteria.region], ['monitorLanguage', button.dataset.gaMonitorLanguage || scope.language || applied.criteria.language]]) {
         const select = $(id);
         const option = [...select.options].find(o => lower(o.value) === lower(value));
         select.selectedIndex = option ? option.index : 0;
       }
       window.addEventListener('hashchange', () => {
         $('monitorForm').scrollIntoView({block:'start'});
-        $(button.dataset.gaMonitor ? 'monitorQuery' : 'monitorDomain').focus({preventScroll:true});
+        $(domain ? 'monitorQuery' : 'monitorDomain').focus({preventScroll:true});
       }, {once:true});
       location.hash = 'monitors';
     } else if (button.dataset.gaRequest) {
@@ -422,7 +919,7 @@
       }
       button.setAttribute('aria-expanded', 'true');
       button.setAttribute('aria-controls', target.id);
-      button.closest('.ga-section').after(target);
+      (button.closest('details, .ga-section') || button.parentElement).after(target);
       target.hidden = false;
       target.textContent = '正在读取证据…';
       const current = () => evidenceRead === attempt && target.isConnected && button.getAttribute('aria-expanded') === 'true';
@@ -458,7 +955,7 @@
     originalShow();
     if (view === 'analysis') {
       $('pageTitle').textContent = 'Google 分析';
-      $('pageSubtitle').textContent = '查找发现、核对原始证据、持续监测';
+      $('pageSubtitle').textContent = '查看已保存的搜索变化与依据';
       legacyHistory.hidden = false;
     } else if (view === 'insights') {
       $('pageTitle').textContent = '文本分析';
