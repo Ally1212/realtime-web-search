@@ -21,27 +21,193 @@ loadOverview=loadArchiveOverview;
 document.querySelector('.workbench-health')?.remove();
 $('sourceStats')?.closest('details')?.remove();
 document.querySelector('.archive-note')?.remove();
-const developer=document.createElement('section');developer.id='developerView';developer.hidden=true;
-developer.innerHTML=`<div class="panel sf-dev-intro"><h2>接入 SearchFlow 数据 API</h2><p>从你的应用创建任务、轮询结果，再下载结构化数据。</p><code class="sf-api-base"></code><div class="sf-dev-auth"><strong>请求凭据</strong><p><code>X-SearchFlow-Access-Key</code>：站点访问凭据</p><p><code>Authorization: Bearer &lt;API_KEY&gt;</code>：客户 API 密钥</p><p>创建任务时使用 <code>Idempotency-Key</code>；相同参数重试沿用原值。请在服务端保存凭据。</p></div><a href="/v1/openapi.json?catalog=data" target="_blank" rel="noopener">下载完整 OpenAPI ↗</a></div><div id="sfApiCatalog" class="sf-api-workspace"><div class="loading">正在读取接口文档…</div></div>`;
-$('apiView').after(developer);developer.querySelector('.sf-api-base').textContent=location.origin;
-let schemaDoc=null,docsLoading=false;
-const resolveSchema=s=>s?.$ref?schemaDoc.components?.schemas?.[s.$ref.split('/').at(-1)]||s:s||{};
-function schemaRows(schema,prefix='',depth=0){schema=resolveSchema(schema);if(depth>3)return [];return Object.entries(schema.properties||{}).flatMap(([name,value])=>{const s=resolveSchema(value),key=prefix+name;return [{name:key,required:(schema.required||[]).includes(name),schema:s},...(s.type==='object'?schemaRows(s,key+'.',depth+1):[])];});}
-function schemaType(s){return (s.type|| (s.properties?'object':'—'))+(s.nullable?' / null':'')+(s.enum?' · '+s.enum.join(' / '):'');}
-function parameterTable(rows){return rows.length?'<div class="table-scroll"><table><thead><tr><th>参数</th><th>类型 / 取值</th><th>说明</th></tr></thead><tbody>'+rows.map(r=>'<tr><td><code>'+esc(r.name)+'</code><small class="sf-api-required">'+(r.required?'必填':'可选')+'</small></td><td>'+esc(schemaType(r.schema))+'</td><td>'+esc(r.schema.description||'')+(r.schema.default!==undefined?'<div class="help">默认 '+esc(JSON.stringify(r.schema.default))+'</div>':'')+'</td></tr>').join('')+'</tbody></table></div>':'<p class="help">无额外参数。</p>';}
-function sample(schema,depth=0){const s=resolveSchema(schema);if(depth>3)return null;if(s.example!==undefined)return s.example;if(s.default!==undefined)return s.default;if(s.enum)return s.enum[0];if(s.type==='object'||s.properties)return Object.fromEntries(Object.entries(s.properties||{}).filter(([k])=>(s.required||[]).includes(k)||['source','region','language','mode','city','radius_m','location'].includes(k)).map(([k,v])=>[k,sample(v,depth+1)]));if(s.type==='array')return [sample(s.items,depth+1)];if(s.type==='integer'||s.type==='number')return s.minimum??1;if(s.type==='boolean')return false;return '<'+(s.format||'value')+'>';}
-function showEndpoint(index){const {path,method,op}=schemaDoc.entries[index],root=$('sfApiDetail'),body=op.requestBody?.content?.['application/json']?.schema;
- const parameters=(op.parameters||[]).map(p=>({name:p.name+' ('+p.in+')',required:p.required,schema:resolveSchema(p.schema)}));
- root.innerHTML='<h2>'+esc(op.summary||path)+'</h2><div class="sf-api-path"><b>'+esc(method.toUpperCase())+'</b><code>'+esc(path)+'</code></div>'+(op.description?'<p class="help">'+esc(op.description)+'</p>':'')+'<h3>请求参数</h3>'+parameterTable(parameters)+(body?'<h3>JSON 请求体</h3>'+parameterTable(schemaRows(body)):'')+'<div class="section-head"><h3>调用示例</h3><button type="button" class="secondary mini" id="sfCopyApi">复制</button></div><pre class="product-code" id="sfApiExample"></pre><h3>响应状态</h3>'+parameterTable(Object.entries(op.responses||{}).map(([code,r])=>({name:code,required:false,schema:{type:r.description||'响应'}})))+'<details><summary>完整响应结构</summary><pre class="product-code" id="sfApiResponses"></pre></details>';
- const query=new URLSearchParams((op.parameters||[]).filter(p=>p.in==='query'&&(p.required||p.schema?.default!==undefined)).map(p=>[p.name,String(sample(p.schema))]));
- const examplePath=path.replace(/\{([^}]+)\}/g,(_,name)=>'YOUR_'+name.toUpperCase())+(query.size?'?'+query:'');
- let example=`curl --fail-with-body -X ${method.toUpperCase()} '${location.origin}${examplePath}' \\\n  -H "X-SearchFlow-Access-Key: $SEARCHFLOW_ACCESS_KEY" \\\n  -H "Authorization: Bearer $SEARCHFLOW_API_KEY"`;
- if(method==='post')example+=' \\\n  -H "Idempotency-Key: YOUR_UNIQUE_REQUEST_KEY"';
- if(body)example+=' \\\n  -H "Content-Type: application/json" \\\n  --data '+"'"+JSON.stringify(sample(body),null,2).replaceAll("'","'\\''")+"'";
- $('sfApiExample').textContent=example;$('sfApiResponses').textContent=JSON.stringify(op.responses,null,2);$('sfCopyApi').onclick=async e=>{const button=e.currentTarget;try{await navigator.clipboard.writeText(example);button.textContent='已复制'}catch{notice('请选中示例文本复制',true)}};
- for(const b of developer.querySelectorAll('[data-api-endpoint]'))b.setAttribute('aria-current',Number(b.dataset.apiEndpoint)===index?'true':'false');
+const developer=document.createElement('section');
+developer.id='developerView';
+developer.hidden=true;
+developer.innerHTML=`
+  <div class="sf-data-reference">
+    <p class="sf-data-lead">从第一个接口开始，复制命令到终端，即可读取一条已有记录。</p>
+    <div class="sf-data-key" id="sfDataKey" hidden>
+      <p id="sfDataAuth" role="status"></p>
+      <button id="sfRetryDemoKey" class="secondary mini" type="button" hidden>重试读取 Key</button>
+    </div>
+    <nav class="sf-data-toc" aria-label="数据 API 目录"></nav>
+    <div id="sfApiStatus" role="status" class="sf-doc-status"></div>
+    <div id="sfApiCatalog" role="region" aria-label="接口文档"></div>
+    <section class="sf-data-rules" aria-labelledby="sfDataRules">
+      <h2 id="sfDataRules">调用规则</h2>
+      <p>命令中出现 <code>REQUEST_ID</code>、<code>TASK_ID</code>、<code>SUBSCRIPTION_ID</code> 或 <code>BATCH_ID</code> 时，替换为上一步返回的编号。创建接口的同一笔请求重试时沿用原 <code>Idempotency-Key</code>。</p>
+      <p><code>401</code> 检查 Key，<code>404</code> 检查编号和空间，<code>409</code> 检查任务是否就绪或幂等键是否冲突，<code>429</code> 按 <code>Retry-After</code> 等待。</p>
+      <div class="sf-data-download"><a id="sfMarkdownGuide" href="/v1/docs" download="searchflow-api-guide.md">下载 Markdown 指南</a><a href="/v1/openapi.json?catalog=data" download="searchflow-openapi.json">下载 OpenAPI</a></div>
+    </section>
+  </div>`;
+$('apiView').after(developer);
+let docsLoading=false;
+let docsLoaded=false;
+let demoKey='';
+let keyLoading=false;
+let updateCommands=[];
+const docsSkeleton='<div class="sf-doc-skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i></div>';
+
+async function readDeveloperJson(path,timeout){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeout);
+  try{
+    const response=await fetch(path,{signal:controller.signal,cache:'no-store'});
+    if(!response.ok)throw Error('HTTP '+response.status);
+    return await response.json();
+  }finally{
+    clearTimeout(timer);
+  }
 }
-async function loadDeveloper(){if(schemaDoc||docsLoading)return;docsLoading=true;try{const r=await fetch('/v1/openapi.json?catalog=data');if(!r.ok)throw Error('接口文档暂时无法读取');schemaDoc=await r.json();schemaDoc.entries=Object.entries(schemaDoc.paths).flatMap(([path,ops])=>Object.entries(ops).filter(([method])=>['get','post','patch','put','delete'].includes(method)).map(([method,op])=>({path,method,op})));$('sfApiCatalog').innerHTML='<nav class="sf-api-endpoints" aria-label="选择数据接口">'+schemaDoc.entries.map((x,i)=>'<button type="button" data-api-endpoint="'+i+'"><b>'+esc(x.method.toUpperCase())+'</b><span>'+esc(x.path)+'</span></button>').join('')+'</nav><article id="sfApiDetail" class="panel"></article>';$('sfApiCatalog').onclick=e=>{const b=e.target.closest('[data-api-endpoint]');if(b)showEndpoint(Number(b.dataset.apiEndpoint))};showEndpoint(0);}catch(e){schemaDoc=null;$('sfApiCatalog').innerHTML='<div class="report-error"><p>'+esc(e.message)+'</p><button type="button" id="sfRetryDocs">重新加载</button></div>';$('sfRetryDocs').onclick=loadDeveloper;}finally{docsLoading=false;}}
+
+async function loadDemoKey(){
+  if(keyLoading)return;
+  keyLoading=true;
+  const status=$('sfDataAuth'), retry=$('sfRetryDemoKey');
+  retry.hidden=true;
+  status.textContent='正在读取演示 Key，可以先浏览接口。';
+  try{
+    const {key}=await readDeveloperJson('/api/site/data-demo-key',5000);
+    if(typeof key!=='string'||!/^sf_access_[A-Za-z0-9_-]+$/.test(key))throw Error('No demo key');
+    demoKey=key;
+    for(const update of updateCommands) update(key);
+    status.textContent='示例命令已填入当前登录 Key。';
+  }catch{
+    status.textContent='演示 Key 暂不可用。命令可复制，请先替换其中的 Key。';
+    retry.hidden=false;
+  }finally{
+    keyLoading=false;
+    if(docsLoaded)$('sfDataKey').hidden=false;
+  }
+}
+$('sfRetryDemoKey').onclick=loadDemoKey;
+function apiFieldRows(schema, prefix='', level=0){
+  if(level>2)return [];
+  return Object.entries(schema?.properties||{}).flatMap(([name,value])=>{
+    const path=prefix+name;
+    return [{name:path,schema:value,required:(schema.required||[]).includes(name)},
+            ...apiFieldRows(value,path+'.',level+1)];
+  });
+}
+function apiFieldTable(rows){
+  if(!rows.length)return '';
+  return '<div class="table-scroll sf-data-table"><table><thead><tr><th scope="col">字段</th><th scope="col">类型与取值</th><th scope="col">说明</th></tr></thead><tbody>'+
+    rows.map(({name,schema,required})=>'<tr><td><code>'+esc(name)+'</code><span>'+ (required?'必填':'可选')+'</span></td><td>'+
+      esc([schema.type,(schema.enum||[]).join(' · '),schema.default===undefined?'':'默认 '+JSON.stringify(schema.default)].filter(Boolean).join(' / '))+
+      '</td><td>'+esc(schema.description||'')+'</td></tr>').join('')+'</tbody></table></div>';
+}
+function resolveApiSchema(documentation,schema){
+  if(!schema?.$ref)return schema||{};
+  return documentation.components?.schemas?.[schema.$ref.split('/').at(-1)]||{};
+}
+function sample(documentation,schema,depth=0){const s=resolveApiSchema(documentation,schema);if(depth>3)return null;if(s.example!==undefined)return s.example;if(s.default!==undefined)return s.default;if(s.enum)return s.enum[0];if(s.type==='object'||s.properties)return Object.fromEntries(Object.entries(s.properties||{}).filter(([k])=>(s.required||[]).includes(k)||['source','region','language','mode','city','radius_m','location'].includes(k)).map(([k,v])=>[k,sample(documentation,v,depth+1)]));if(s.type==='array')return [sample(documentation,s.items,depth+1)];if(s.type==='integer'||s.type==='number')return s.minimum??1;if(s.type==='boolean')return false;return '<'+(s.format||'value')+'>';}
+function apiExample(documentation,path,method,op,key,siteGuide){
+  const requestBody=op.requestBody?.content?.['application/json'];
+  const query=new URLSearchParams((op.parameters||[]).filter(p=>p.in==='query'&&(p.required||(!siteGuide&&p.schema?.default!==undefined)))
+    .map(p=>[p.name,p.schema?.enum?.[0]??p.schema?.default??p.name.toUpperCase()]));
+  Object.entries(op['x-searchflow-example-query']||{}).forEach(([name,value])=>query.set(name,value));
+  if(path.endsWith('/export')&&!query.has('format'))query.set('format','jsonl');
+  const id=path.startsWith('/v1/data/requests/')?'REQUEST_ID':path.startsWith('/v1/data/subscriptions/')?'SUBSCRIPTION_ID':'TASK_ID';
+  const url=location.origin+path.replace('{id}',id).replace('{batch_id}','BATCH_ID')+(query.size?'?'+query:'');
+  const lines=[`curl -fsS${method==='get'?'':' -X '+method.toUpperCase()} '${url}'`,
+    '  -H "Authorization: Bearer '+(key||'$SEARCHFLOW_API_KEY')+'"'];
+  if(!siteGuide)lines.splice(1,0,'  -H "X-SearchFlow-Access-Key: $SEARCHFLOW_ACCESS_KEY"');
+  if((!siteGuide&&method==='post')||op.parameters?.some(p=>p.in==='header'&&p.name.toLowerCase()==='idempotency-key')){
+    lines.push("  -H 'Idempotency-Key: REPLACE_WITH_REQUEST_KEY'");
+  }
+  if(requestBody){
+    const body=JSON.stringify(requestBody.example??sample(documentation,requestBody.schema)).replaceAll("'","'\\''");
+    lines.push("  -H 'Content-Type: application/json'", "  -d '"+body+"'");
+  }
+  if(path.endsWith('/export'))lines.push("  -o results."+query.get('format'));
+  return lines.join(' '+String.fromCharCode(92)+'\n');
+}
+function renderDataApi(documentation,groups,siteGuide){
+  const root=$('sfApiCatalog');
+  const nav=developer.querySelector('.sf-data-toc');
+  root.replaceChildren();
+  nav.replaceChildren();
+  updateCommands=[];
+  for(const group of groups){
+    const section=document.createElement('section');
+    section.className='sf-data-topic';
+    section.tabIndex=-1;
+    section.innerHTML='<h2>'+esc(group.title)+'</h2>'+(group.description?'<p>'+esc(group.description)+'</p>':'');
+    const link=document.createElement('button');
+    link.type='button';
+    link.className='secondary mini';
+    link.textContent=group.title;
+    link.onclick=()=>{section.focus({preventScroll:true});section.scrollIntoView({block:'start'});};
+    nav.append(link);
+    for(const [path,operations] of Object.entries(documentation.paths)){
+      for(const [method,op] of Object.entries(operations)){
+        if(!['get','post','patch','put','delete'].includes(method)|| (siteGuide&&op['x-searchflow-group']!==group.id))continue;
+        const article=document.createElement('article');
+        const body=op.requestBody?.content?.['application/json']?.schema;
+        const params=(op.parameters||[]).map(p=>({name:p.name,schema:resolveApiSchema(documentation,p.schema),required:p.required}));
+        article.className='sf-data-operation';
+        article.innerHTML='<h3>'+esc(op.summary||path)+'</h3><div class="sf-data-path"><b>'+esc(method.toUpperCase())+'</b><code>'+esc(path)+'</code></div>'+
+          '<p>'+esc(op['x-searchflow-result']||op.description||'')+'</p>'+
+          '<div class="sf-data-example"><div class="sf-data-code-head"><strong>curl 示例</strong><button type="button" class="secondary mini">复制命令</button></div><pre><code></code></pre><span role="status"></span></div>'+
+          (params.length?'<h4>请求参数</h4>'+apiFieldTable(params):'')+
+          (body?'<h4>JSON 请求体</h4>'+(apiFieldTable(apiFieldRows(resolveApiSchema(documentation,body)))||'<p>发送空对象 <code>{}</code>。</p>'):'');
+        const command=article.querySelector('pre code');
+        const feedback=article.querySelector('[role=status]');
+        const button=article.querySelector('button');
+        button.setAttribute('aria-label','复制命令：'+(op.summary||path));
+        const update=key=>{command.textContent=apiExample(documentation,path,method,op,key,siteGuide);};
+        update(demoKey);
+        updateCommands.push(update);
+        button.onclick=async()=>{
+          try {
+            await navigator.clipboard.writeText(command.textContent);
+            feedback.textContent='已复制。';
+          } catch {
+            const range=document.createRange();
+            range.selectNodeContents(command);
+            const selection=window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            feedback.textContent='命令已选中，可使用系统快捷键复制。';
+          }
+        };
+        section.append(article);
+      }
+    }
+    root.append(section);
+  }
+}
+async function loadDeveloper(){
+  if(docsLoaded||docsLoading)return;
+  docsLoading=true;
+  const root=$('sfApiCatalog'), status=$('sfApiStatus');
+  status.textContent='正在加载接口文档…';
+  root.innerHTML=docsSkeleton;
+  root.setAttribute('aria-busy','true');
+  // The gateway's optional demonstration credential never delays document rendering.
+  try{
+    const documentation=await readDeveloperJson('/v1/openapi.json?catalog=data',10000);
+    if(!documentation.paths||!Object.keys(documentation.paths).length)throw Error('No API paths');
+    const groups=documentation['x-searchflow-groups'];
+    const siteGuide=Array.isArray(groups)&&groups.length>0;
+    renderDataApi(documentation,siteGuide?groups:[{title:'数据接口',description:''}],siteGuide);
+    $('sfMarkdownGuide').hidden=!siteGuide;
+    docsLoaded=true;
+    status.textContent='';
+    if(siteGuide){
+      $('sfDataKey').hidden=false;
+      loadDemoKey();
+    }
+  }catch{
+    status.textContent='接口文档暂时无法加载。';
+    root.innerHTML='<button type="button" class="secondary">重新加载文档</button>';
+    root.querySelector('button').onclick=loadDeveloper;
+  }finally{
+    docsLoading=false;
+    root.setAttribute('aria-busy','false');
+  }
+}
 // Maps is a request mode, never a separate screen.
 mapsDeveloperExample=()=>{};mapsWorkspaceNodes.splice(mapsWorkspaceNodes.indexOf($('mapsDeveloper')),1);$('mapsDeveloper')?.remove();
 for(const d of [...$('apiView').children])if(d.tagName==='DETAILS'&&d.querySelector('summary')?.textContent==='开发者接口文档')d.remove();

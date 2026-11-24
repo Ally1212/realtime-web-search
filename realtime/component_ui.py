@@ -39,7 +39,7 @@ def extend(page: str) -> str:
     page = page.replace('</head>', '<script id="sfBootScript">document.documentElement.classList.add("sf-booting")</script></head>', 1)
     skeleton = '<div id="sfBootSkeleton" class="sf-boot-skeleton" role="status" aria-label="正在加载工作台"><div class="sf-skeleton-title"></div><div class="sf-skeleton-flow"></div><div class="sf-skeleton-cards"><i></i><i></i><i></i><i></i></div></div>'
     page = re.sub(r'(<main[^>]*id="mainContent"[^>]*>)', lambda m: m[0]+skeleton, page, count=1)
-    css = (ASSETS / 'component-ui.css').read_text()
+    css = (ASSETS / 'component-ui.css').read_text() + (ASSETS / 'developer-api.css').read_text()
     js = (ASSETS / 'component-ui.js').read_text()
     assert '</head>' in page and '</body>' in page
     # Escape a closing script in bundled source/comments before HTML embedding.

@@ -1,0 +1,35 @@
+.sf-data-reference{max-width:900px;margin-inline:auto;overflow-wrap:anywhere;color:#202925}
+.sf-data-reference h2{font-size:25px;margin:0 0 10px;letter-spacing:-.02em}
+.sf-data-reference p{line-height:1.65;max-width:75ch;margin:0 0 12px}
+.sf-data-lead{font-size:16px}
+.sf-data-auth{color:#15583d;padding:8px 12px;background:#edf4ef;border-radius:5px}
+.sf-data-toc{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 27px}
+.sf-data-topic,.sf-data-rules{border-top:1px solid #dce5df;padding-block:23px;scroll-margin-top:12px}
+.sf-data-topic:not(:first-child){margin-top:9px}
+.sf-data-operation{padding-block:17px;border-top:1px solid #e8eeea}
+.sf-data-operation:first-of-type{margin-top:17px}
+.sf-data-operation h3{font-size:18px;margin:0 0 8px}
+.sf-data-operation h4{font-size:14px;margin:14px 0 6px}
+.sf-data-path{display:flex;gap:8px;align-items:baseline;margin-bottom:8px}
+.sf-data-path b{color:#15583d;font:600 12px ui-monospace,monospace}
+.sf-data-reference code{white-space:normal}
+.sf-data-example{background:#f2f6f3;border:1px solid #e0e8e2;border-radius:7px;margin:10px 0}
+.sf-data-code-head{display:flex;justify-content:space-between;align-items:center;padding:7px 12px;font-size:13px}
+.sf-data-example pre{border-top:1px solid #e0e8e2;padding:11px 12px;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.sf-data-example pre code{white-space:inherit}
+.sf-data-example [role=status]:not(:empty){display:block;padding:0 12px 7px;color:#15583d;font-size:13px}
+.sf-data-table table{min-width:0}
+.sf-data-table :is(th,td){white-space:normal}
+.sf-data-table td span{display:block;color:#526159;font-size:11px}
+.sf-data-download{display:flex;gap:16px;flex-wrap:wrap}
+.sf-data-reference :is(button,a,section):focus-visible{outline:2px solid #15583d;outline-offset:3px}
+
+.sf-data-key{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;margin-block:8px 12px}
+.sf-data-key p,.sf-doc-status{font-size:14px;color:#465c50;margin:0}
+.sf-doc-status:empty,.sf-data-toc:empty{display:none}
+.sf-doc-skeleton{display:grid;gap:12px;min-height:164px;margin:8px 0 18px;padding:20px;
+ border:1px solid #e1e8e3;border-radius:10px;background:#f8faf8}
+.sf-doc-skeleton i{display:block;height:12px;width:min(70%,420px);border-radius:5px;background:#e6ede7}
+.sf-doc-skeleton i:first-child{height:16px;width:min(45%,220px)}
+.sf-doc-skeleton i:last-child{width:100%;height:43px}
+#sfApiCatalog[aria-busy="false"]>button{margin-block:9px 16px}
