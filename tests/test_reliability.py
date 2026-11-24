@@ -66,12 +66,15 @@ class ReliabilityUITests(unittest.TestCase):
 import assert from 'node:assert/strict';
 let resultMode='results',resultOffset=0,query='A',calls=[];
 const resultParams=()=>new URLSearchParams({q:query});
+''' + PAGE[PAGE.index('let appliedResultFilters='):PAGE.index('async function loadResults()')] + r'''
 let loadResults=()=>new Promise((resolve,reject)=>calls.push({resolve,reject}));
 ''' + RESULT_SINGLE_FLIGHT_JS + r'''
 const first=loadResults(); assert.equal(loadResults(),first); assert.equal(calls.length,1);
-query='B';const second=loadResults();assert.equal(calls.length,2);
+appliedResultFilters=requestResultFilters().toString();
+query='draft';assert.equal(loadResults(),first);assert.equal(calls.length,1);
+pendingResultFilters='q=B';const second=loadResults();assert.equal(calls.length,2);
 calls[0].resolve();await first;await Promise.resolve();assert.equal(loadResults(),second);
-query='A';const third=loadResults();assert.notEqual(third,first);assert.equal(calls.length,3);
+pendingResultFilters='q=A';const third=loadResults();assert.notEqual(third,first);assert.equal(calls.length,3);
 calls[1].resolve();calls[2].reject(Error('read failed'));
 await Promise.allSettled([second,third]);await Promise.resolve();
 const retry=loadResults();assert.equal(calls.length,4);calls[3].resolve();await retry;
