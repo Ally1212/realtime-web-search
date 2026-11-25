@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .product import ProductError, ProductStore, middle_search_payload
 from .google_domain import DomainError
+from .quick_task_history import BrowserTasks, LIST_PATH, list_request, send
 
 
 def secret():
@@ -45,6 +46,11 @@ def handle(handler, method, *, public=None):
             if not key:
                 raise ProductError('unavailable', '快速请求正在准备，请稍后重试', 503)
             store = ProductStore(handler.config.database_url)
+            browser = BrowserTasks(handler.headers, key)
+            if parsed.path == LIST_PATH:
+                account = store.authenticate(key, rate_limit=False)
+                list_request(handler, method, parsed.query, browser, store, account['id'], body, receipt, key)
+                return True
             account = store.authenticate(key)
         if parsed.path == '/api/quick-request/catalog' and method == 'GET' and not parsed.query:
             from .serp_console import REGIONS, NEWS_LOCALES
@@ -110,7 +116,9 @@ def handle(handler, method, *, public=None):
             result = {'id': jid, 'reused': reused}
             if key:
                 result['token'] = receipt(key, jid)
-            handler.send_json(result, 202)
+                send(handler, result, 202, browser.remember([jid]))
+            else:
+                handler.send_json(result, 202)
             return True
         if parsed.path == '/api/quick-request/cancel-submission':
             if method != 'POST' or parsed.query:
@@ -128,7 +136,8 @@ def handle(handler, method, *, public=None):
         if not match:
             raise ProductError('not_found', '任务不存在', 404)
         jid, action = match.groups()
-        if key and not hmac.compare_digest(handler.headers.get('X-Quick-Token', ''), receipt(key, jid)):
+        if key and not (hmac.compare_digest(handler.headers.get('X-Quick-Token', ''), receipt(key, jid))
+                        or (method == 'GET' and browser.allows(jid))):
             raise ProductError('not_found', '任务不存在', 404)
         if action == 'cancel' and method == 'POST' and not parsed.query:
             handler.send_json(store.cancel(account['id'], jid))

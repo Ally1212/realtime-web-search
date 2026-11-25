@@ -1,0 +1,20 @@
+#quickTaskList { min-width: 0; margin-block-end: 16px; }
+#quickTaskList [hidden] { display: none !important; }
+#quickTaskList .section-head { flex-wrap: wrap; gap: 8px 16px; }
+#quickTaskList .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin: 0; }
+#quickTaskList .actions button { margin: 0; }
+#quickTaskRows { list-style: none; margin: 0 0 8px; padding: 0; }
+#quickTaskRows > li { border-block-start: 1px solid var(--line,#dedede); padding: 12px 0; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px 14px; align-items: center; }
+#quickTaskRows span, #quickTaskRows small { display: block; overflow-wrap: anywhere; }
+#quickTaskRows .quick-task-state { font-weight: 650; }
+#quickTaskRows progress { display: block; inline-size: min(100%,16rem); accent-color: #205b4b; margin-block-start: 4px; }
+#quickTaskRows button { margin: 0; }
+#quickTaskNotice:empty { display: none; }
+#quickTaskResult { border-block-start: 1px solid var(--line,#dedede); margin-block-start: 14px; padding-block-start: 12px; overflow-wrap: anywhere; }
+#quickTaskResult h3 { margin-block: 0 8px; }
+#quickTaskResultRows { padding-inline-start: 20px; }
+#quickTaskResultRows:empty { margin: 0; }
+@media (max-width: 450px) {
+  #quickTaskRows > li { grid-template-columns: minmax(0,1fr); }
+  #quickTaskRows button { justify-self: start; }
+}

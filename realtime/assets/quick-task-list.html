@@ -1,0 +1,23 @@
+<section class="panel" id="quickTaskList" aria-labelledby="quickTaskHeading">
+  <div class="section-head">
+    <h2 id="quickTaskHeading">我的快速搜索</h2>
+    <div class="actions">
+      <button type="button" class="secondary" id="quickTaskRefresh">刷新进度</button>
+      <a href="#api">打开快速使用</a>
+    </div>
+  </div>
+  <p class="help">显示本次站点登录在这个浏览器里保存的快速搜索，可跨标签页查看进度和下载。</p>
+  <p class="help" id="quickTaskNotice" role="status"></p>
+  <p id="quickTaskEmpty" class="help">这里还没有任务。要找旧任务，请回到提交搜索的原标签页刷新一次。</p>
+  <ul id="quickTaskRows" aria-label="快速搜索任务"></ul>
+  <button type="button" id="quickTaskMore" class="secondary" hidden>显示更多</button>
+  <section id="quickTaskResult" aria-label="快速搜索结果" hidden>
+    <h3 id="quickTaskResultTitle" tabindex="-1"></h3>
+    <p id="quickTaskResultStatus" role="status"></p>
+    <ul id="quickTaskResultRows"></ul>
+    <div class="actions" id="quickTaskDownloads" hidden>
+      <button type="button" class="secondary" data-quick-task-format="csv">下载 CSV</button>
+      <button type="button" class="secondary" data-quick-task-format="jsonl">下载 JSONL</button>
+    </div>
+  </section>
+</section>

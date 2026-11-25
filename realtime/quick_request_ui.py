@@ -120,4 +120,5 @@ def extend(page):
     page=page.replace('配置权限，调用搜索接口与导出结果','选择数据条件，获取并下载完整结果').replace('管理权限与 API 配置','快速获取数据').replace('</style>',CSS+'</style>',1)
     marker="window.addEventListener('hashchange',showView);showView();setInterval(refreshView,10000);";assert marker in page
     from .maps_api_ui import extend as maps_api_ui
-    return maps_api_ui(page.replace(marker,JS+'\n'+marker,1))
+    from .quick_task_ui import extend as quick_tasks
+    return quick_tasks(maps_api_ui(page.replace(marker,JS+'\n'+marker,1)))
